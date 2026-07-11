@@ -36,6 +36,13 @@ pub use enums::{
     ArmT32RegisterShift,
     ArmT32SpecialRegister,
     // neutral ARM-wide aliases (the 4-bit condition code and barrel-shift operand are shared by A32 + T32)
+    Arm32Condition,
+    Arm32RegisterShift,
     Arm32ShiftType,
     Arm32ExtendType,
+    Arm32ParallelOperation,
+    Arm32ParallelPrefix,
+    Arm32IndexMode,
+    Arm32MemoryOffset,
+    Arm32MemoryOffset8,
 };
