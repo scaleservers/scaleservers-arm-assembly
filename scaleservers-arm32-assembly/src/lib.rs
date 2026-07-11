@@ -31,4 +31,6 @@ pub use enums::{
     ArmT32IndexMode,
     ArmT32InstructionCondition,
     ArmT32MemoryBarrierOption,
+    ArmT32ParallelOperation,
+    ArmT32ParallelPrefix,
 };

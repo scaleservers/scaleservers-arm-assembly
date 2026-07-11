@@ -29,3 +29,6 @@ pub use armt32_instruction_condition::ArmT32InstructionCondition;
 
 mod armt32_memory_barrier_option;
 pub use armt32_memory_barrier_option::ArmT32MemoryBarrierOption;
+
+mod armt32_parallel_arithmetic;
+pub use armt32_parallel_arithmetic::{ArmT32ParallelOperation, ArmT32ParallelPrefix};
