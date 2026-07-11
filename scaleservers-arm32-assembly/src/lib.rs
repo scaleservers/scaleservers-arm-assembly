@@ -17,3 +17,9 @@
 // inner attributes / crate doc comment, since `extern crate` is an item and inner attributes must precede it.)
 #[macro_use]
 extern crate alloc;
+
+mod enums;
+pub use enums::{
+    Arm32GeneralPurposeRegister,
+    Arm32LowGeneralPurposeRegister,
+};
