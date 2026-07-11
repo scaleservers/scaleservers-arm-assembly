@@ -85,6 +85,9 @@ pub use arm32_neon_load_store_address::Arm32NeonLoadStoreAddress;
 mod arm32_mve_registers;
 pub use arm32_mve_registers::Arm32MveVectorRegister;
 
+mod arm32_vmov_lane_size;
+pub use arm32_vmov_lane_size::Arm32VmovLaneSize;
+
 // ---- neutral ARM-wide aliases ----
 // The 4-bit condition code and the barrel-shift operand are identical in the A32 and T32 instruction sets,
 // so they are also exposed under neutral `Arm32*` names for use by `ArmA32Instruction`. The historical

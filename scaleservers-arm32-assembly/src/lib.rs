@@ -71,4 +71,5 @@ pub use enums::{
     Arm32NeonSha3Op,
     Arm32NeonSha2Op,
     Arm32MveVectorRegister,
+    Arm32VmovLaneSize,
 };
