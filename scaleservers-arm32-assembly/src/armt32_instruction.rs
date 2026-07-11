@@ -782,6 +782,2174 @@ pub enum ArmT32Instruction {
     MveVcvtRound(/*rounding*/u8, /*unsigned*/bool, Arm32MveFloatSize, /*qd*/Arm32MveVectorRegister, /*qm*/Arm32MveVectorRegister),
 }
 
+impl ArmT32Instruction {
+    /// Decode one T32 (Thumb) instruction from a little-endian byte iterator, advancing `iter_offset` past
+    /// the bytes consumed. Returns `Ok(None)` at a clean end of input, `Ok(Some(_))` for a decoded
+    /// instruction, or a [`DecodeError`] for malformed or unknown bytes. Never panics on arbitrary input.
+    ///
+    /// T32 is variable-length: when the first halfword is the prefix of a 32-bit instruction this reads a
+    /// full 4 bytes. If that yields [`DecodeError::InvalidOpcode`], a caller scanning a stream may back the
+    /// iterator up and retry a 16-bit decode at the original `iter_offset + 2`; `iter_offset` is left at the
+    /// correct position (e.g. original + 4) in every case.
+    ///
+    /// This resolves the CDE-vs-generic-coprocessor ambiguity with [`ArmDecodeContext::default`]
+    /// (coprocessors 0-7 are CDE). Use [`decode_with`](Self::decode_with) to choose a different context.
+    pub fn decode<'a, I>(iter: &mut I, iter_offset: &mut usize) -> Result<Option<Self>, DecodeError> where I: Iterator<Item = &'a u8> {
+        Self::decode_with(iter, iter_offset, &ArmDecodeContext::default())
+    }
+
+    /// Decode one T32 instruction exactly like [`decode`](Self::decode), but with an explicit
+    /// [`ArmDecodeContext`] that resolves "same bytes, different meaning" ambiguities (the family-wide
+    /// Rule R4). The only such case in T32 is the CDE custom-datapath (`CX*`/`VCX*`) vs. generic coprocessor
+    /// (`CDP/MCR/LDC/...`) overlap on coprocessors 0-7 -- see [`ArmDecodeContext`] for the details. With
+    /// [`ArmDecodeContext::default`] the result is identical to [`decode`](Self::decode).
+    pub fn decode_with<'a, I>(iter: &mut I, iter_offset: &mut usize, context: &ArmDecodeContext) -> Result<Option<Self>, DecodeError> where I: Iterator<Item = &'a u8> {
+        // retrieve the first two bytes (which could be either a 16-bit instruction or the first word of a 32-bit instruction)
+        let halfword0 = match next_u16le_from_iter(iter, iter_offset) {
+            Ok(value) => match value {
+                Some(some_value) => some_value,
+                None => return Ok(None) // EOF; nothing to decode
+            },
+            Err(error) => return Err(error), // bubble up error to our caller
+        };
+
+        // NOTE: as the full opcode information is not fully contained in the topmost 6 bits of the first halfword, we match halfwords against a mask to detect valid instructions (and do the same with a full word against 32-bit mask if no 16-bit mask matched)
+
+        // NOTE: we will set the following flag to true if we detect the leading pattern for a 32-bit instruction during out 16-bit decoding filter
+        let mut matched_first_16_bits_of_32_bit_mask = false;
+
+        /* 16-bit instructions */
+
+        // NOTE: as an optimization procedure, we could group the 16-bit (and possibly the 32-bit) instructions into groups based on an initial bitmask check using the following opcode categories.
+        /* NOTE: 16-bit instructions contain a preliminary opcode in the 6 topmost bits of the halfword instruction, per the ARMv6-M Architecture Reference
+         * 00xxxx => shift (immediate), add, subtract, move and compare
+         * 010000 => data processing
+         * 010001 => special data instructions and branch and exchange
+         * 01001x => load from literal pool
+         * 0101xx |
+         * 011xxx |
+         * 100xxx => load/store single data item
+         * 10100x => generate pc-relative address
+         * 10101x => generate sp-relative address
+         * 1011xx => miscellaneous 16-bit instructions
+         * 11000x => store multiple registers
+         * 11001x => load multiple registers
+         * 1101xx => conditional branch, and supervisor call
+         * 11100x => unconditional branch
+         */ 
+
+        // mask: 0b1111_1111_1100_0000
+        match halfword0 & 0b1111_1111_1100_0000 {
+            opcode if opcode == ArmT32OpcodePattern_16Bit::Adc_Register_T1 as u16 => {
+                let (rdn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Adc_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rdn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::And_Register_T1 as u16 => {
+                let (rdn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::And_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rdn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Asr_Register_T1 as u16 => {
+                let (rdn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Asr_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rdn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Bic_Register_T1 as u16 => {
+                let (rdn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Bic_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rdn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Cmn_Register_T1 as u16 => {
+                let (rn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Cmn_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Cmp_Register_T1 as u16 => {
+                let (rn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Cmp_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Eor_Register_T1 as u16 => {
+                let (rdn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Eor_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rdn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Lsl_Register_T1 as u16 => {
+                let (rdn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Lsl_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rdn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Lsr_Register_T1 as u16 => {
+                let (rdn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Lsr_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rdn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            // NOTE: MOV (register) T2 is decoded by the Lsl_Immediate_T1 arm instead -- it is the `imm5 == 0` case
+            // of LSL (immediate) T1 -- so there is deliberately no separate Mov_Register_T2 arm here.
+            op if op == ArmT32OpcodePattern_16Bit::Mul_T1 as u16 => {
+                let (rdm, rn) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Mul_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rdm), Arm32LowGeneralPurposeRegister::from_operand_bits(rn))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Mvn_Register_T1 as u16 => {
+                let (rd, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Mvn_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Orr_Register_T1 as u16 => {
+                let (rdn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Orr_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rdn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Rev_T1 as u16 => {
+                let (rd, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Rev_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Rev16_T1 as u16 => {
+                let (rd, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Rev16_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Revsh_T1 as u16 => {
+                let (rd, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Revsh_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Ror_Register_T1 as u16 => {
+                let (rdn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Ror_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rdn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Rsb_Immediate_T1 as u16 => {
+                let (rd, rn) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Rsb_Immediate_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), Arm32LowGeneralPurposeRegister::from_operand_bits(rn))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Sbc_Register_T1 as u16 => {
+                let (rdn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Sbc_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rdn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Sxtb_T1 as u16 => {
+                let (rd, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Sxtb_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Sxth_T1 as u16 => {
+                let (rd, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Sxth_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Tst_Register_T1 as u16 => {
+                let (rn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Tst_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Uxtb_T1 as u16 => {
+                let (rd, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Uxtb_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Uxth_T1 as u16 => {
+                let (rd, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305(halfword0);
+                return Ok(Some(Self::Uxth_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            _ => (), // continue to next masked set
+        }
+
+        // mask: 0b1111_1110_0000_0000
+        match halfword0 & 0b1111_1110_0000_0000 {
+            opcode if opcode == ArmT32OpcodePattern_16Bit::Add_Immediate_T1 as u16 => {
+                let (rd, rn, imm3) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__0608(halfword0);
+                return Ok(Some(Self::Add_Immediate_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), Arm32LowGeneralPurposeRegister::from_operand_bits(rn), imm3)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Add_Register_T1 as u16 => {
+                let (rd, rn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__0608(halfword0);
+                return Ok(Some(Self::Add_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), Arm32LowGeneralPurposeRegister::from_operand_bits(rn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Ldr_Register_T1 as u16 => {
+                let (rt, rn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__0608(halfword0);
+                return Ok(Some(Self::Ldr_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rt), Arm32LowGeneralPurposeRegister::from_operand_bits(rn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Ldrb_Register_T1 as u16 => {
+                let (rt, rn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__0608(halfword0);
+                return Ok(Some(Self::Ldrb_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rt), Arm32LowGeneralPurposeRegister::from_operand_bits(rn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Ldrh_Register_T1 as u16 => {
+                let (rt, rn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__0608(halfword0);
+                return Ok(Some(Self::Ldrh_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rt), Arm32LowGeneralPurposeRegister::from_operand_bits(rn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Ldrsb_Register_T1 as u16 => {
+                let (rt, rn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__0608(halfword0);
+                return Ok(Some(Self::Ldrsb_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rt), Arm32LowGeneralPurposeRegister::from_operand_bits(rn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Ldrsh_Register_T1 as u16 => {
+                let (rt, rn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__0608(halfword0);
+                return Ok(Some(Self::Ldrsh_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rt), Arm32LowGeneralPurposeRegister::from_operand_bits(rn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Pop_T1 as u16 => {
+                let (register_list, p) = ArmT32InstructionDecoder::decode_instruction_halfword__0007__0808(halfword0);
+                let registers = gpr_coding_utils::convert_gpr_register_list_u8_and_p_u1_to_registers_vector(register_list, p);
+                return Ok(Some(Self::Pop_T1(registers)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Push_T1 as u16 => {
+                let (register_list, m) = ArmT32InstructionDecoder::decode_instruction_halfword__0007__0808(halfword0);
+                let registers = gpr_coding_utils::convert_gpr_register_list_u8_and_m_u1_to_registers_vector(register_list, m);
+                return Ok(Some(Self::Push_T1(registers)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Str_Register_T1 as u16 => {
+                let (rt, rn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__0608(halfword0);
+                return Ok(Some(Self::Str_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rt), Arm32LowGeneralPurposeRegister::from_operand_bits(rn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Strb_Register_T1 as u16 => {
+                let (rt, rn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__0608(halfword0);
+                return Ok(Some(Self::Strb_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rt), Arm32LowGeneralPurposeRegister::from_operand_bits(rn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Strh_Register_T1 as u16 => {
+                let (rt, rn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__0608(halfword0);
+                return Ok(Some(Self::Strh_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rt), Arm32LowGeneralPurposeRegister::from_operand_bits(rn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Sub_Immediate_T1 as u16 => {
+                let (rd, rn, imm3) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__0608(halfword0);
+                return Ok(Some(Self::Sub_Immediate_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), Arm32LowGeneralPurposeRegister::from_operand_bits(rn), imm3)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Sub_Register_T1 as u16 => {
+                let (rd, rn, rm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__0608(halfword0);
+                return Ok(Some(Self::Sub_Register_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), Arm32LowGeneralPurposeRegister::from_operand_bits(rn), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+            },
+
+
+            _ => (), // continue to next masked set
+        }
+
+        // mask: 0b1111_1000_0000_0000
+        match halfword0 & 0b1111_1000_0000_0000 {
+            op if op == ArmT32OpcodePattern_16Bit::Add_Immediate_T2 as u16 => {
+                let (imm8, rdn) = ArmT32InstructionDecoder::decode_instruction_halfword__0007__080a(halfword0);
+                return Ok(Some(Self::Add_Immediate_T2(Arm32LowGeneralPurposeRegister::from_operand_bits(rdn), imm8)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Add_SpPlusImmediate_T1 as u16 => {
+                let (imm8, rd) = ArmT32InstructionDecoder::decode_instruction_halfword__0007__080a(halfword0);
+                let const10 = (imm8 as u16) * 4;
+                return Ok(Some(Self::Add_SpPlusImmediate_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), const10)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Adr_T1 as u16 => {
+                let (imm8, rd) = ArmT32InstructionDecoder::decode_instruction_halfword__0007__080a(halfword0);
+                let const10 = (imm8 as u16) * 4;
+                return Ok(Some(Self::Adr_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), const10)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Asr_Immediate_T1 as u16 => {
+                // NOTE: "A6.4.1 Shift operations" of the ARVv6-M ISA doc indicates that an imm5 value of ZERO is interpeted as an imm5 value of 32 (because shift 'type' is '10')
+                let (rd, rm, encoded_imm5) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__060a(halfword0);
+                let decoded_imm5 = if encoded_imm5 == 0 { 32 } else { encoded_imm5 };
+                return Ok(Some(Self::Asr_Immediate_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), Arm32LowGeneralPurposeRegister::from_operand_bits(rm), decoded_imm5)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::B_T2 as u16 => {
+                let encoded_signed_imm11 = ArmT32InstructionDecoder::decode_instruction_halfword__s000a(halfword0);
+                let decoded_signed_imm12 = encoded_signed_imm11 * 2;
+                return Ok(Some(Self::B_T2(decoded_signed_imm12)));
+            },
+            op if op == ((ArmT32OpcodePattern_32Bit::Bl_T1 as u32) >> 16) as u16 => {
+                matched_first_16_bits_of_32_bit_mask = true;
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Cmp_Immediate_T1 as u16 => {
+                let (imm8, rn) = ArmT32InstructionDecoder::decode_instruction_halfword__0007__080a(halfword0);
+                return Ok(Some(Self::Cmp_Immediate_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rn), imm8)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Ldm_T1 as u16 => {
+                let (register_list, rn) = ArmT32InstructionDecoder::decode_instruction_halfword__0007__080a(halfword0);
+                let registers = gpr_coding_utils::convert_gpr_register_list_u8_to_low_registers_vector(register_list);
+                return Ok(Some(Self::Ldm_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rn), registers)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Ldr_Immediate_T1 as u16 => {
+                let (rt, rn, encoded_imm5) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__060a(halfword0);
+                let decoded_imm7 = encoded_imm5 * 4;
+                return Ok(Some(Self::Ldr_Immediate_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rt), Arm32LowGeneralPurposeRegister::from_operand_bits(rn), decoded_imm7)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Ldr_Immediate_T2 as u16 => {
+                let (encoded_imm8, rt) = ArmT32InstructionDecoder::decode_instruction_halfword__0007__080a(halfword0);
+                let decoded_imm10 = (encoded_imm8 as u16) * 4;
+                return Ok(Some(Self::Ldr_Immediate_T2(Arm32LowGeneralPurposeRegister::from_operand_bits(rt), decoded_imm10)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Ldr_Literal_T1 as u16 => {
+                let (encoded_imm8, rt) = ArmT32InstructionDecoder::decode_instruction_halfword__0007__080a(halfword0);
+                let decoded_imm10 = (encoded_imm8 as u16) * 4;
+                return Ok(Some(Self::Ldr_Literal_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rt), decoded_imm10)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Ldrb_Immediate_T1 as u16 => {
+                let (rt, rn, imm5) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__060a(halfword0);
+                return Ok(Some(Self::Ldrb_Immediate_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rt), Arm32LowGeneralPurposeRegister::from_operand_bits(rn), imm5)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Ldrh_Immediate_T1 as u16 => {
+                let (rt, rn, encoded_imm5) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__060a(halfword0);
+                let decoded_imm6 = encoded_imm5 * 2;
+                return Ok(Some(Self::Ldrh_Immediate_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rt), Arm32LowGeneralPurposeRegister::from_operand_bits(rn), decoded_imm6)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Lsl_Immediate_T1 as u16 => {
+                let (rd, rm, imm5) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__060a(halfword0);
+                //
+                // NOTE: if this instruction is encoded with an imm5 value of 0b00000, then it is a MovRegister_T2 instruction (and not an LslImmediate_T1 instruction); in other words...an LSL with a shift of zero is just a MOV
+                if imm5 == 0 {
+                    return Ok(Some(Self::Mov_Register_T2(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), Arm32LowGeneralPurposeRegister::from_operand_bits(rm))));
+                } else {
+                    return Ok(Some(Self::Lsl_Immediate_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), Arm32LowGeneralPurposeRegister::from_operand_bits(rm), imm5)));
+                }
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Lsr_Immediate_T1 as u16 => {
+                // NOTE: "A6.4.1 Shift operations" of the ARVv6-M ISA doc indicates that an imm5 value of ZERO is interpeted as an imm5 value of 32 (because shift 'type' is '01')
+                let (rd, rm, encoded_imm5) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__060a(halfword0);
+                let decoded_imm5 = if encoded_imm5 == 0 { 32 } else { encoded_imm5 };
+                return Ok(Some(Self::Lsr_Immediate_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), Arm32LowGeneralPurposeRegister::from_operand_bits(rm), decoded_imm5)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Mov_Immediate_T1 as u16 => {
+                let (imm8, rd) = ArmT32InstructionDecoder::decode_instruction_halfword__0007__080a(halfword0);
+                return Ok(Some(Self::Mov_Immediate_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rd), imm8)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Stm_T1 as u16 => {
+                let (register_list, rn) = ArmT32InstructionDecoder::decode_instruction_halfword__0007__080a(halfword0);
+                let registers = gpr_coding_utils::convert_gpr_register_list_u8_to_low_registers_vector(register_list);
+                return Ok(Some(Self::Stm_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rn), registers)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Str_Immediate_T1 as u16 => {
+                let (rt, rn, encoded_imm5) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__060a(halfword0);
+                let decoded_imm7 = encoded_imm5 * 4;
+                return Ok(Some(Self::Str_Immediate_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rt), Arm32LowGeneralPurposeRegister::from_operand_bits(rn), decoded_imm7)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Str_Immediate_T2 as u16 => {
+                let (encoded_imm8, rt) = ArmT32InstructionDecoder::decode_instruction_halfword__0007__080a(halfword0);
+                let decoded_imm10 = (encoded_imm8 as u16) * 4;
+                return Ok(Some(Self::Str_Immediate_T2(Arm32LowGeneralPurposeRegister::from_operand_bits(rt), decoded_imm10)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Strb_Immediate_T1 as u16 => {
+                let (rt, rn, imm5) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__060a(halfword0);
+                return Ok(Some(Self::Strb_Immediate_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rt), Arm32LowGeneralPurposeRegister::from_operand_bits(rn), imm5)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Strh_Immediate_T1 as u16 => {
+                let (rt, rn, encoded_imm5) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0305__060a(halfword0);
+                let decoded_imm6 = encoded_imm5 * 2;
+                return Ok(Some(Self::Strh_Immediate_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rt), Arm32LowGeneralPurposeRegister::from_operand_bits(rn), decoded_imm6)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Sub_Immediate_T2 as u16 => {
+                let (imm8, rdn) = ArmT32InstructionDecoder::decode_instruction_halfword__0007__080a(halfword0);
+                return Ok(Some(Self::Sub_Immediate_T2(Arm32LowGeneralPurposeRegister::from_operand_bits(rdn), imm8)));
+            },
+            _ => (), // continue to next masked set
+        }
+
+        // mask: 0b1111_1111_0000_0000
+        match halfword0 & 0b1111_1111_0000_0000 {
+            op if op == ArmT32OpcodePattern_16Bit::Add_Register_T2 as u16 => {
+                let (rdn, rm, dn) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0306__0707(halfword0);
+                //
+                let n = (dn << 3) | rdn;
+                let m = rm;
+                //
+                let n_as_gpr = Arm32GeneralPurposeRegister::from_operand_bits(n);
+                let m_as_gpr = Arm32GeneralPurposeRegister::from_operand_bits(m);
+                //
+                // NOTE: if d is 0b1101 or m is 0b1101, it's an ::Add_SpPlusRegister_T* instruction instead
+                if m_as_gpr == Arm32GeneralPurposeRegister::R13 {
+                    return Ok(Some(Self::Add_SpPlusRegister_T1(n_as_gpr)));
+                }
+                if n_as_gpr == Arm32GeneralPurposeRegister::R13 {
+                    return Ok(Some(Self::Add_SpPlusRegister_T2(m_as_gpr)));
+                }
+                //
+                // otherwise, this is a standard ::Add_Register_T2 encoding
+                return Ok(Some(Self::Add_Register_T2(n_as_gpr, m_as_gpr)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Bkpt_T1 as u16 => {
+                let imm8 = ArmT32InstructionDecoder::decode_instruction_halfword__0007(halfword0);
+                return Ok(Some(Self::Bkpt_T1(imm8)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Cmp_Register_T2 as u16 => {
+                let (rn, rm, n) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0306__0707(halfword0);
+                //
+                let n = (n << 3) | rn;
+                let m = rm;
+                //
+                let n_as_gpr = Arm32GeneralPurposeRegister::from_operand_bits(n);
+                let m_as_gpr = Arm32GeneralPurposeRegister::from_operand_bits(m);
+                //
+                return Ok(Some(Self::Cmp_Register_T2(n_as_gpr, m_as_gpr)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Mov_Register_T1 as u16 => {
+                let (rd, rm, d) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0306__0707(halfword0);
+                //
+                let rd_as_u4 = (d << 3) | rd;
+                //
+                return Ok(Some(Self::Mov_Register_T1(Arm32GeneralPurposeRegister::from_operand_bits(rd_as_u4), Arm32GeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Svc_T1 as u16 => {
+                let imm8 = ArmT32InstructionDecoder::decode_instruction_halfword__0007(halfword0);
+                return Ok(Some(Self::Svc_T1(imm8)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Udf_T1 as u16 => {
+                let imm8 = ArmT32InstructionDecoder::decode_instruction_halfword__0007(halfword0);
+                return Ok(Some(Self::Udf_T1(imm8)));
+            },
+        _ => (), // continue to next masked set
+        }
+
+        // mask: 0b1111_1111_1000_0000
+        match halfword0 & 0b1111_1111_1000_0000 {
+            op if op == ArmT32OpcodePattern_16Bit::Add_SpPlusImmediate_T2 as u16 => {
+                let imm7 = ArmT32InstructionDecoder::decode_instruction_halfword__0006(halfword0);
+                let const9 = (imm7 as u16) * 4;
+                return Ok(Some(Self::Add_SpPlusImmediate_T2(const9)));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Sub_SpMinusImmediate_T1 as u16 => {
+                let imm7 = ArmT32InstructionDecoder::decode_instruction_halfword__0006(halfword0);
+                let const9 = (imm7 as u16) * 4;
+                return Ok(Some(Self::Sub_SpMinusImmediate_T1(const9)));
+            },
+
+            _ => (), // continue to next masked set
+        }
+
+        // mask: 0b1111_1111_0111_1000
+        match halfword0 & 0b1111_1111_0111_1000 {
+            op if op == ArmT32OpcodePattern_16Bit::Add_SpPlusRegister_T1 as u16 => {
+                // NOTE: this encoding is the same encoding as ::Add_Register_T2 -- but with 0b1101 specified in bits 3..=6 (i.e. "rm" in ::Add_Register_T2)
+                let (rdm, dm) = ArmT32InstructionDecoder::decode_instruction_halfword__0002__0707(halfword0);
+                //
+                let m = (dm << 3) | rdm;
+                //
+                let m_as_gpr = Arm32GeneralPurposeRegister::from_operand_bits(m);
+                //
+                return Ok(Some(Self::Add_SpPlusRegister_T1(m_as_gpr)));
+            },
+            _ => (), // continue to next masked set
+        }
+
+        // mask: 0b1111_1111_1000_0111
+        match halfword0 & 0b1111_1111_1000_0111 {
+            op if op == ArmT32OpcodePattern_16Bit::Add_SpPlusRegister_T2 as u16 => {
+                let rm = ArmT32InstructionDecoder::decode_instruction_halfword__0306(halfword0);
+                return Ok(Some(Self::Add_SpPlusRegister_T2(Arm32GeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Blx_Register_T1 as u16 => {
+                // NOTE: ::Blx_Register_T1's mask excluding the "(#)" bits is: 0b1111_1111_1000_0000; as we expand the ARMT32 instruction set, we may want to switch this to match against the no-#-bits mask (e.g. 0b1111_1111_1000_0000)
+                let rm = ArmT32InstructionDecoder::decode_instruction_halfword__0306(halfword0);
+                return Ok(Some(Self::Blx_Register_T1(Arm32GeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Bx_T1 as u16 => {
+                // NOTE: ::Bx_T1's mask excluding the "(#)" bits is: 0b1111_1111_1000_0000; as we expand the ARMT32 instruction set, we may want to switch this to match against the no-#-bits mask (e.g. 0b1111_1111_1000_0000)
+                let rm = ArmT32InstructionDecoder::decode_instruction_halfword__0306(halfword0);
+                return Ok(Some(Self::Bx_T1(Arm32GeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            // ARMv8-M: BXNS / BLXNS (bit 2 set vs BX / BLX)
+            op if op == ArmT32OpcodePattern_16Bit::Bxns_T1 as u16 => {
+                let rm = ArmT32InstructionDecoder::decode_instruction_halfword__0306(halfword0);
+                return Ok(Some(Self::Bxns_T1(Arm32GeneralPurposeRegister::from_operand_bits(rm))));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Blxns_T1 as u16 => {
+                let rm = ArmT32InstructionDecoder::decode_instruction_halfword__0306(halfword0);
+                return Ok(Some(Self::Blxns_T1(Arm32GeneralPurposeRegister::from_operand_bits(rm))));
+            },
+
+            _ => (), // continue to next masked set
+        }
+
+        // mask: 0b1111_0000_0000_0000
+        match halfword0 & 0b1111_0000_0000_0000 {
+            op if op == ArmT32OpcodePattern_16Bit::B_T1 as u16 => {
+                let (encoded_signed_imm8, cond) = ArmT32InstructionDecoder::decode_instruction_halfword__s0007__080b(halfword0);
+                //
+                // NOTE: if this instruction is encoded with a cond value of 0b1110 or 0b1111, it is a UDF or SVC instruction respectively
+                //       [we should have already parsed those instructions earlier in this function, but these are failsafes to allow us to rearrange the order of our filtering without side-effects]
+                match cond {
+                    0b1110 => {
+                        // NOTE: imm8 is interpreted an unsinged integer (i.e. zero-extended) for the Udf_T1 instruction
+                        let imm8_as_u8 = encoded_signed_imm8 as u8;
+                        return Ok(Some(Self::Udf_T1(imm8_as_u8)));
+                    },
+                    0b1111 => {
+                        // NOTE: imm8 is interpreted an unsinged integer (i.e. zero-extended) for the Svc_T1 instruction
+                        let imm8_as_u8 = encoded_signed_imm8 as u8;
+                        return Ok(Some(Self::Svc_T1(imm8_as_u8)));
+                    },
+                    _ => {
+                        let decoded_signed_imm9 = (encoded_signed_imm8 as i16) * 2;
+
+                        return Ok(Some(Self::B_T1(ArmT32InstructionCondition::from_operand_bits(cond), decoded_signed_imm9)));
+                    }
+                }
+            },
+            _ => (), // continue to next masked set
+        }
+
+        // mask: 0b1111_1111_1110_1111
+        match halfword0 & 0b1111_1111_1110_1111 {
+            op if op == ArmT32OpcodePattern_16Bit::Cps_T1 as u16 => {
+                // NOTE: Cps_T1's true mask excluding the "(#)" bits is: 0b1111_1111_1110_0000
+                let im = ArmT32InstructionDecoder::decode_instruction_halfword__0404(halfword0);
+                let primask_effect = ArmT32CpsPrimaskEffect::from_operand_bits(im);
+                return Ok(Some(Self::Cps_T1(primask_effect)));
+            },
+            _ => (), // continue to next masked set
+        }
+
+        // mask: 0b1111_1111_1111_0000
+        match halfword0 & 0b1111_1111_1111_0000 {
+            op if op == ((ArmT32OpcodePattern_32Bit::Msr_Register_T1 as u32) >> 16) as u16 => {
+                matched_first_16_bits_of_32_bit_mask = true;
+            },
+            op if op == ((ArmT32OpcodePattern_32Bit::Udf_T2 as u32) >> 16) as u16 => {
+                matched_first_16_bits_of_32_bit_mask = true;
+            },
+            _ => (), // continue to next masked set
+        }
+
+        // mask: 0b1111_1111_1111_1111
+        match halfword0 {
+            op if op == ArmT32OpcodePattern_16Bit::Nop_T1 as u16 => {
+                return Ok(Some(Self::Nop_T1));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Sev_T1 as u16 => {
+                return Ok(Some(Self::Sev_T1));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Wfe_T1 as u16 => {
+                return Ok(Some(Self::Wfe_T1));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Wfi_T1 as u16 => {
+                return Ok(Some(Self::Wfi_T1));
+            },
+            op if op == ArmT32OpcodePattern_16Bit::Yield_T1 as u16 => {
+                return Ok(Some(Self::Yield_T1));
+            },
+            //
+            op if op == ((ArmT32OpcodePattern_32Bit::Dmb_T1 as u32) >> 16) as u16 => {
+                matched_first_16_bits_of_32_bit_mask = true;
+            },
+            op if op == ((ArmT32OpcodePattern_32Bit::Dsb_T1 as u32) >> 16) as u16 => {
+                matched_first_16_bits_of_32_bit_mask = true;
+            },
+            op if op == ((ArmT32OpcodePattern_32Bit::Isb_T1 as u32) >> 16) as u16 => {
+                matched_first_16_bits_of_32_bit_mask = true;
+            },
+            op if op == ((ArmT32OpcodePattern_32Bit::Mrs_T1 as u32) >> 16) as u16 => {
+                matched_first_16_bits_of_32_bit_mask = true;
+            },           
+            _ => (), // continue to next masked set
+        }
+
+        // M7n IT (If-Then): 0xBF__ with a NONZERO low nibble (the mask). A zero low nibble is a hint
+        // (NOP/YIELD/WFE/WFI/SEV), already matched above.
+        if halfword0 & 0xFF00 == 0xBF00 && (halfword0 & 0x000F) != 0 {
+            let firstcond = ((halfword0 >> 4) & 0xF) as u8;
+            let mask = (halfword0 & 0xF) as u8;
+            return Ok(Some(Self::It_T1(ArmT32InstructionCondition::from_operand_bits(firstcond), mask)));
+        }
+
+        // M7m CBZ / CBNZ (16-bit, ARMv7-M): forward compare-and-branch.  mask: 0b1111_1101_0000_0000
+        match halfword0 & 0b1111_1101_0000_0000 {
+            0xB100 => { let (rn, offset) = decode_halfword_compare_branch(halfword0); return Ok(Some(Self::Cbz_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rn), offset))); },
+            0xB900 => { let (rn, offset) = decode_halfword_compare_branch(halfword0); return Ok(Some(Self::Cbnz_T1(Arm32LowGeneralPurposeRegister::from_operand_bits(rn), offset))); },
+            _ => (),
+        }
+
+        // Architectural fallback: per the ARM ARM, any halfword whose top five bits are 0b11101 / 0b11110
+        // / 0b11111 is the first halfword of a 32-bit Thumb instruction. The per-instruction detection
+        // above covers the ARMv6-M 32-bit forms; this catches the ARMv7-M 32-bit additions (and any other
+        // 32-bit lead) so they reach the 32-bit decode section below.
+        if !matched_first_16_bits_of_32_bit_mask {
+            let leading_five_bits = halfword0 >> 11;
+            if leading_five_bits == 0b11101 || leading_five_bits == 0b11110 || leading_five_bits == 0b11111 {
+                matched_first_16_bits_of_32_bit_mask = true;
+            }
+        }
+
+        if matched_first_16_bits_of_32_bit_mask {
+            let halfword1 = match next_u16le_from_iter(iter, iter_offset) {
+                Ok(value) => match value {
+                    Some(some_value) => some_value,
+                    None => return Err(DecodeError::InvalidOpcode), // if we could not capture any additional bytes, let the caller know the opcode was invalid
+                },
+                Err(error) => return Err(error), // bubble up error to our caller
+            };
+
+            let word = combine_instruction_halfwords_into_word(&[halfword0, halfword1]);
+
+            /* 32-bit instructions */
+
+            // ---- VMOVX / VINS (Armv8.1-M half-precision FP, single-precision regs) -- bit28=1 keeps these out
+            // of the VFP VMOV.F32 space (0xEE); insert=bit7. Decoded before the MVE blocks (0xFE space). ----
+            if word & MVE_VMOVX_MASK == MVE_VMOVX_BASE {
+                let sd = Arm32SinglePrecisionRegister::from_field_and_bit((word >> 12) & 0xF, (word >> 22) & 1);
+                let sm = Arm32SinglePrecisionRegister::from_field_and_bit(word & 0xF, (word >> 5) & 1);
+                return Ok(Some(Self::Vmovx_T1((word >> 7) & 1 == 1, sd, sm)));
+            }
+            // VRINTR (FP round to integral): opc2=0110, [11:8]=1010 (.f32) / 1011 (.f64). Sd=Vd:D, Sm=Vm:M.
+            if word & 0xEEBF_0ED0 == 0xEEB6_0A40 {
+                let (vd, d, vm, m) = ((word >> 12) & 0xF, (word >> 22) & 1, word & 0xF, (word >> 5) & 1);
+                return Ok(Some(if (word >> 8) & 1 == 1 {
+                    Self::Vrintr_Double_T1(Arm32DoublePrecisionRegister::from_field_and_bit(vd, d), Arm32DoublePrecisionRegister::from_field_and_bit(vm, m))
+                } else {
+                    Self::Vrintr_Single_T1(Arm32SinglePrecisionRegister::from_field_and_bit(vd, d), Arm32SinglePrecisionRegister::from_field_and_bit(vm, m))
+                }));
+            }
+            // VRINTZ (round toward zero): opc2=0110 like VRINTR, but [7]=1.
+            if word & 0xEEBF_0ED0 == 0xEEB6_0AC0 {
+                let (vd, d, vm, m) = ((word >> 12) & 0xF, (word >> 22) & 1, word & 0xF, (word >> 5) & 1);
+                return Ok(Some(if (word >> 8) & 1 == 1 {
+                    Self::Vrintz_Double_T1(Arm32DoublePrecisionRegister::from_field_and_bit(vd, d), Arm32DoublePrecisionRegister::from_field_and_bit(vm, m))
+                } else {
+                    Self::Vrintz_Single_T1(Arm32SinglePrecisionRegister::from_field_and_bit(vd, d), Arm32SinglePrecisionRegister::from_field_and_bit(vm, m))
+                }));
+            }
+            // VRINTX (round to integral, signalling inexact): opc2=0111, [7]=0.
+            if word & 0xEEBF_0ED0 == 0xEEB7_0A40 {
+                let (vd, d, vm, m) = ((word >> 12) & 0xF, (word >> 22) & 1, word & 0xF, (word >> 5) & 1);
+                return Ok(Some(if (word >> 8) & 1 == 1 {
+                    Self::Vrintx_Double_T1(Arm32DoublePrecisionRegister::from_field_and_bit(vd, d), Arm32DoublePrecisionRegister::from_field_and_bit(vm, m))
+                } else {
+                    Self::Vrintx_Single_T1(Arm32SinglePrecisionRegister::from_field_and_bit(vd, d), Arm32SinglePrecisionRegister::from_field_and_bit(vm, m))
+                }));
+            }
+            // VJCVT (VJCVTZS): opc2=1001, [7:6]=11 -- JS f64 -> s32. Sd (result) = Vd:D, Dm (source) = Vm:M.
+            if word & 0xFFBF_0FD0 == 0xEEB9_0BC0 {
+                let sd = Arm32SinglePrecisionRegister::from_field_and_bit((word >> 12) & 0xF, (word >> 22) & 1);
+                let dm = Arm32DoublePrecisionRegister::from_field_and_bit(word & 0xF, (word >> 5) & 1);
+                return Ok(Some(Self::Vjcvt_T1(sd, dm)));
+            }
+
+            // ---- ARMv8-M hints/barriers, CLRM, and VSEL (decoded early: SSBB/PSSBB precede the generic DSB,
+            //      CLRM precedes LDMIA, VSEL is in the 0xFE FP space). ----
+            if word & 0xFFFF_FFF0 == 0xF3AF_80F0 { return Ok(Some(Self::Dbg_T1((word & 0xF) as u8))); }
+            if word == 0xF3AF_8010 { return Ok(Some(Self::Esb_T1)); }
+            // PACBTI hints (no operands) and data-processing (PACG/AUTG/BXAUT) -- decoded before the multiplies.
+            if word == 0xF3AF_800F { return Ok(Some(Self::PacbtiHint_T1(0))); } // bti
+            if word == 0xF3AF_801D { return Ok(Some(Self::PacbtiHint_T1(1))); } // pac
+            if word == 0xF3AF_802D { return Ok(Some(Self::PacbtiHint_T1(2))); } // aut
+            if word == 0xF3AF_800D { return Ok(Some(Self::PacbtiHint_T1(3))); } // pacbti
+            {
+                let g = Arm32GeneralPurposeRegister::from_operand_bits;
+                let rn = g(((word >> 16) & 0xF) as u8);
+                let rm = g((word & 0xF) as u8);
+                if word & 0xFFF0_F0F0 == 0xFB60_F000 {   // PACG: Rd[11:8]
+                    return Ok(Some(Self::PacbtiData_T1(0, g(((word >> 8) & 0xF) as u8), rn, rm)));
+                }
+                if word & 0xFFF0_0FF0 == 0xFB50_0F00 {   // AUTG: [11:8]=1111, Rd[15:12], [7:4]=0000
+                    return Ok(Some(Self::PacbtiData_T1(1, g(((word >> 12) & 0xF) as u8), rn, rm)));
+                }
+                if word & 0xFFF0_0FF0 == 0xFB50_0F10 {   // BXAUT: [11:8]=1111, Rd[15:12], [7:4]=0001
+                    return Ok(Some(Self::PacbtiData_T1(2, g(((word >> 12) & 0xF) as u8), rn, rm)));
+                }
+            }
+            if word == 0xF3BF_8F40 { return Ok(Some(Self::Ssbb_T1)); }
+            if word == 0xF3BF_8F44 { return Ok(Some(Self::Pssbb_T1)); }
+            if word == 0xF3BF_8F70 { return Ok(Some(Self::Sb_T1)); }
+            // VSCCLRM (FP secure context clear): Rn=15 marker, [11:8]=1010(single)/1011(double), Vd:D = first
+            // FP reg, imm8 = count. Decoded before the generic VLDM block (which would read Rn=PC).
+            if word & 0xFFBF_0E01 == 0xEC9F_0A00 {
+                let double = (word >> 8) & 1 == 1;
+                let (vd, d) = (((word >> 12) & 0xF) as u8, ((word >> 22) & 1) as u8);
+                let first = if double { (d << 4) | vd } else { (vd << 1) | d };
+                return Ok(Some(Self::Vscclrm_T1(double, first, (word & 0xFF) as u8)));
+            }
+            if word & 0xFFFF_2000 == 0xE89F_0000 { return Ok(Some(Self::Clrm_T1((word & 0xDFFF) as u16))); }
+            if word & 0xFE80_0E50 == 0xFE00_0A00 {
+                let cond = ((word >> 20) & 0b11) as u8;
+                let (vd, vn, vm) = ((word >> 12) & 0xF, (word >> 16) & 0xF, word & 0xF);
+                let (d, n, m) = ((word >> 22) & 1, (word >> 7) & 1, (word >> 5) & 1);
+                return Ok(Some(if (word >> 8) & 1 == 1 {
+                    Self::Vsel_Double_T1(cond, Arm32DoublePrecisionRegister::from_field_and_bit(vd, d), Arm32DoublePrecisionRegister::from_field_and_bit(vn, n), Arm32DoublePrecisionRegister::from_field_and_bit(vm, m))
+                } else {
+                    Self::Vsel_Single_T1(cond, Arm32SinglePrecisionRegister::from_field_and_bit(vd, d), Arm32SinglePrecisionRegister::from_field_and_bit(vn, n), Arm32SinglePrecisionRegister::from_field_and_bit(vm, m))
+                }));
+            }
+            // VMAXNM / VMINNM (FP): [23]=1 + [21:20]=00 (vs VSEL's [23]=0 and VRINT-directed's [21:20]=11). op[6]: 0=max/1=min, size[8].
+            if word & 0xFFB0_0E10 == 0xFE80_0A00 {
+                let is_min = (word >> 6) & 1 == 1;
+                let (vd, vn, vm) = ((word >> 12) & 0xF, (word >> 16) & 0xF, word & 0xF);
+                let (d, n, m) = ((word >> 22) & 1, (word >> 7) & 1, (word >> 5) & 1);
+                return Ok(Some(if (word >> 8) & 1 == 1 {
+                    let (dd, dn, dm) = (Arm32DoublePrecisionRegister::from_field_and_bit(vd, d), Arm32DoublePrecisionRegister::from_field_and_bit(vn, n), Arm32DoublePrecisionRegister::from_field_and_bit(vm, m));
+                    if is_min { Self::Vminnm_Double_T1(dd, dn, dm) } else { Self::Vmaxnm_Double_T1(dd, dn, dm) }
+                } else {
+                    let (sd, sn, sm) = (Arm32SinglePrecisionRegister::from_field_and_bit(vd, d), Arm32SinglePrecisionRegister::from_field_and_bit(vn, n), Arm32SinglePrecisionRegister::from_field_and_bit(vm, m));
+                    if is_min { Self::Vminnm_Single_T1(sd, sn, sm) } else { Self::Vmaxnm_Single_T1(sd, sn, sm) }
+                }));
+            }
+            // VRINTA/N/P/M (directed FP round): [21:18]=1110 + [6]=1 (vs VMAXNM's [21:20]=00; [18]=0 vs VCVT-directed's [18]=1). mode[17:16], size[8].
+            if word & 0xFFBC_0ED0 == 0xFEB8_0A40 {
+                let mode = Arm32DirectedRound::from_rm_bits((word >> 16) & 0b11);
+                let (vd, vm) = ((word >> 12) & 0xF, word & 0xF);
+                let (d, m) = ((word >> 22) & 1, (word >> 5) & 1);
+                return Ok(Some(if (word >> 8) & 1 == 1 {
+                    Self::Vrint_Directed_Double_T1(mode, Arm32DoublePrecisionRegister::from_field_and_bit(vd, d), Arm32DoublePrecisionRegister::from_field_and_bit(vm, m))
+                } else {
+                    Self::Vrint_Directed_Single_T1(mode, Arm32SinglePrecisionRegister::from_field_and_bit(vd, d), Arm32SinglePrecisionRegister::from_field_and_bit(vm, m))
+                }));
+            }
+            // VCVTA/N/P/M (directed FP->int): the [18]=1 sibling of VRINT-directed ([18]=0). [7]=signed is left
+            // free by the mask; mode[17:16], size[8] (0=f32 source, 1=f64). Result is always a single-word Sd.
+            if word & 0xFFBC_0E50 == 0xFEBC_0A40 {
+                let mode = Arm32DirectedRound::from_rm_bits((word >> 16) & 0b11);
+                let signed = (word >> 7) & 1 == 1;
+                let (vd, vm) = ((word >> 12) & 0xF, word & 0xF);
+                let (d, m) = ((word >> 22) & 1, (word >> 5) & 1);
+                let sd = Arm32SinglePrecisionRegister::from_field_and_bit(vd, d);
+                return Ok(Some(if (word >> 8) & 1 == 1 {
+                    Self::Vcvt_Directed_FromDouble_T1(mode, sd, Arm32DoublePrecisionRegister::from_field_and_bit(vm, m), signed)
+                } else {
+                    Self::Vcvt_Directed_FromSingle_T1(mode, sd, Arm32SinglePrecisionRegister::from_field_and_bit(vm, m), signed)
+                }));
+            }
+            // ARMv8.1-M MVE scalar-shift extension (all 0xEA5x). Decode order matters: the SHORT forms (single
+            // GPR, [11:8]=1111) MUST precede the plain LONG forms (GPR pair, [11:8]=RdaHi:1 -- whose loose [8]=1
+            // mask would otherwise swallow [11:8]=1111). op[5:4]; imm5=immh[14:12]:imml[7:6]; Rm[15:12]; long
+            // forms use RdaLo[19:17]<<1 with [16]=1; long-register saturation-to-48 = bit7. RdaHi=111 (PC) is
+            // reassigned to the short forms by the architecture, so [11:8]=1111 is unambiguously SHORT.
+            if word & 0xFFF0_8F0F == 0xEA50_0F0F {           // SQSHL/UQSHL/SRSHR/URSHR (short, immediate)
+                let g = Arm32GeneralPurposeRegister::from_operand_bits;
+                let imm = (((word >> 12) & 0b111) << 2) | ((word >> 6) & 0b11);
+                return Ok(Some(Self::SatShiftImm_T1(((word >> 4) & 0b11) as u8, g(((word >> 16) & 0xF) as u8), imm as u8)));
+            }
+            if word & 0xFFF0_0FDF == 0xEA50_0F0D {           // SQRSHR/UQRSHL (short, register)
+                let g = Arm32GeneralPurposeRegister::from_operand_bits;
+                return Ok(Some(Self::SatShiftReg_T1((word >> 5) & 1 == 1, g(((word >> 16) & 0xF) as u8), g(((word >> 12) & 0xF) as u8))));
+            }
+            if word & 0xFFF1_810F == 0xEA50_010F && (word >> 4) & 0b11 != 0b11 {  // LSLL/LSRL/ASRL (plain long, imm; [16]=0; [5:4]=11 reserved)
+                let g = Arm32GeneralPurposeRegister::from_operand_bits;
+                let rdalo = g(((word >> 16) & 0xF) as u8);
+                let rdahi = g(((((word >> 9) & 0b111) << 1) | 1) as u8);
+                let imm = (((word >> 12) & 0b111) << 2) | ((word >> 6) & 0b11);
+                return Ok(Some(Self::LongShiftImm_T1(((word >> 4) & 0b11) as u8, rdalo, rdahi, imm as u8)));
+            }
+            if word & 0xFFF1_01CF == 0xEA50_010D && (word >> 4) & 0b11 != 0b11 {  // LSLL/LSRL/ASRL (plain long, reg; [16]=0; [5:4]=11 reserved)
+                let g = Arm32GeneralPurposeRegister::from_operand_bits;
+                let rdalo = g(((word >> 16) & 0xF) as u8);
+                let rdahi = g(((((word >> 9) & 0b111) << 1) | 1) as u8);
+                return Ok(Some(Self::LongShiftReg_T1(((word >> 4) & 0b11) as u8, rdalo, rdahi, g(((word >> 12) & 0xF) as u8))));
+            }
+            if word & 0xFFF1_810F == 0xEA51_010F {           // SQSHLL/UQSHLL/SRSHRL/URSHRL (long, immediate; [16]=1)
+                let g = Arm32GeneralPurposeRegister::from_operand_bits;
+                let rdalo = g((((word >> 17) & 0b111) << 1) as u8);
+                let rdahi = g(((((word >> 9) & 0b111) << 1) | 1) as u8);
+                let imm = (((word >> 12) & 0b111) << 2) | ((word >> 6) & 0b11);
+                return Ok(Some(Self::SatShiftLongImm_T1(((word >> 4) & 0b11) as u8, rdalo, rdahi, imm as u8)));
+            }
+            if word & 0xFFF1_015F == 0xEA51_010D {           // SQRSHRL/UQRSHLL (long, register, #sat 64|48; [16]=1)
+                let g = Arm32GeneralPurposeRegister::from_operand_bits;
+                let rdalo = g((((word >> 17) & 0b111) << 1) as u8);
+                let rdahi = g(((((word >> 9) & 0b111) << 1) | 1) as u8);
+                return Ok(Some(Self::SatShiftLongReg_T1((word >> 5) & 1 == 1, rdalo, rdahi, g(((word >> 12) & 0xF) as u8), (word >> 7) & 1 == 1)));
+            }
+            // CSEL/CSINC/CSINV/CSNEG (ARMv8.1-M): [31:20]=0xEA5, Rn[19:16]; hw2 [15:14]=10, op2[13:12], Rd[11:8],
+            // cond[7:4], Rm[3:0]. hw2[15]=1 separates these from ORRS.W ([15]=0). Decoded before that family.
+            if word & 0xFFF0_C000 == 0xEA50_8000 {
+                let g = Arm32GeneralPurposeRegister::from_operand_bits;
+                return Ok(Some(Self::Csel_T1(
+                    ((word >> 12) & 0b11) as u8,
+                    g(((word >> 8) & 0xF) as u8), g(((word >> 16) & 0xF) as u8), g((word & 0xF) as u8),
+                    ArmT32InstructionCondition::from_operand_bits(((word >> 4) & 0xF) as u8),
+                )));
+            }
+
+            // ---- ARMv8-M Security Extension (decoded first: SG sits in the LDM/STM encoding space) ----
+            if word == ArmT32OpcodePattern_32Bit::Csdb_T1 as u32 {
+                return Ok(Some(Self::Csdb_T1));
+            }
+            if word == ArmT32OpcodePattern_32Bit::Sg_T1 as u32 {
+                return Ok(Some(Self::Sg_T1));
+            }
+            // TT / TTT / TTA / TTAT : Rd[11:8], Rn[19:16], A[7], T[6]
+            if word & 0b1111_1111_1111_0000_1111_0000_0011_1111 == ArmT32OpcodePattern_32Bit::Tt_T1 as u32 {
+                let rn = ((word >> 16) & 0xF) as u8;
+                let rd = ((word >> 8) & 0xF) as u8;
+                return Ok(Some(Self::Tt_T1(Arm32GeneralPurposeRegister::from_operand_bits(rd), Arm32GeneralPurposeRegister::from_operand_bits(rn), (word >> 7) & 1 == 1, (word >> 6) & 1 == 1)));
+            }
+            // VLSTM / VLLDM : Rn[19:16]
+            if word & 0b1111_1111_1111_0000_1111_1111_1111_1111 == ArmT32OpcodePattern_32Bit::Vlstm_T1 as u32 {
+                return Ok(Some(Self::Vlstm_T1(Arm32GeneralPurposeRegister::from_operand_bits(((word >> 16) & 0xF) as u8))));
+            }
+            if word & 0b1111_1111_1111_0000_1111_1111_1111_1111 == ArmT32OpcodePattern_32Bit::Vlldm_T1 as u32 {
+                return Ok(Some(Self::Vlldm_T1(Arm32GeneralPurposeRegister::from_operand_bits(((word >> 16) & 0xF) as u8))));
+            }
+
+            // ---- ARMv8.1-M MVE "three registers of the same length" (vector-vector) ----
+            // These occupy the 0xEF.. / 0xFF.. space (top byte 1110_1111 / 1111_1111), which is otherwise
+            // unused by M-profile (no NEON), so intercepting it here cannot shadow any existing instruction.
+            // The three sub-families are disjoint in bits[11:8]+bit4; try float, then bitwise, then integer.
+            {
+                let top_byte = word >> 24;
+                if top_byte == 0xEF || top_byte == 0xFF {
+                    let qd = Arm32MveVectorRegister::from_field((word >> 13) & 0b111);
+                    let qn = Arm32MveVectorRegister::from_field((word >> 17) & 0b111);
+                    let qm = Arm32MveVectorRegister::from_field((word >> 1) & 0b111);
+                    // float: element size is the single bit 20
+                    if let Some(op) = Arm32MveFloatArithOp::from_signature(word & MVE_FLOAT_SIGNATURE_MASK) {
+                        let size = Arm32MveFloatSize::from_size_bit((word >> 20) & 1);
+                        return Ok(Some(Self::MveFloatArith(op, size, qd, qn, qm)));
+                    }
+                    // bitwise: not size-parametric (bits[21:20] are part of the signature)
+                    if let Some(op) = Arm32MveBitwiseOp::from_signature(word & MVE_BITWISE_SIGNATURE_MASK) {
+                        return Ok(Some(Self::MveBitwise(op, qd, qn, qm)));
+                    }
+                    // integer: element size in bits[21:20]; 0b11 is reserved (rejected by from_size_bits)
+                    if let Some(op) = Arm32MveIntArithOp::from_signature(word & MVE_INT_SIGNATURE_MASK)
+                        && let Some(size) = Arm32MveSize::from_size_bits((word >> 20) & 0b11) {
+                            return Ok(Some(Self::MveIntArith(op, size, qd, qn, qm)));
+                        }
+                    // VSHL/VRSHL/VQSHL/VQRSHL by vector (Qd, Qm, Qn): rounding=bit8, saturating=bit4
+                    if word & MVE_SHIFT_VEC_MASK == MVE_SHIFT_VEC_BASE
+                        && let Some(size) = Arm32MveSize::from_size_bits((word >> 20) & 0b11) {
+                            return Ok(Some(Self::MveShiftByVector(
+                                (word >> 8) & 1 == 1, (word >> 4) & 1 == 1, (word >> 28) & 1 == 1, size, qd, qm, qn,
+                            )));
+                        }
+                }
+            }
+
+            // ---- MVE shift by immediate (Qd, Qm, #amount), in the 0xEF8x / 0xFF8x space ----
+            // imm6 = bits[21:16]; imm6 >= 8 (a size bit set) is what tells a shift apart from the one-register
+            // modified-immediate (which always has imm6 < 8). The size is imm6's highest set bit; the amount
+            // is derived per direction.
+            {
+                let top_byte = word >> 24;
+                if top_byte == 0xEF || top_byte == 0xFF {
+                    let imm6 = (word >> 16) & 0x3F;
+                    if let Some(size) = mve_shift_size_from_imm6(imm6)
+                        && let Some(op) = Arm32MveShiftImmOp::from_signature(word & MVE_SHIFT_SIGNATURE_MASK) {
+                            let esize = mve_shift_esize(size);
+                            let amount = if op.is_left_shift() { imm6 - esize } else { 2 * esize - imm6 };
+                            let qd = Arm32MveVectorRegister::from_field((word >> 13) & 0b111);
+                            let qm = Arm32MveVectorRegister::from_field((word >> 1) & 0b111);
+                            return Ok(Some(Self::MveShiftImm(op, size, amount as u8, qd, qm)));
+                        }
+                }
+            }
+
+            // ---- MVE one-register modified immediate (VMOV/VMVN/VORR/VBIC #imm, VMOV.f32) ----
+            // Same 0xEF8x/0xFF8x space as the shifts; the fixed pattern below (which requires imm6[21:19]=000)
+            // is what distinguishes it from a shift. (cmode, op, imm8) are carried raw; the emitter maps them
+            // to the mnemonic / element size / value via AdvSIMDExpandImm.
+            if word & 0xEFF8_10D0 == 0xEF80_0050 {
+                let i = (word >> 28) & 1;
+                let imm3 = (word >> 16) & 0b111;
+                let imm4 = word & 0xF;
+                let imm8 = ((i << 7) | (imm3 << 4) | imm4) as u8;
+                let cmode = ((word >> 8) & 0xF) as u8;
+                let op = (word >> 5) & 1 == 1;
+                let qd = Arm32MveVectorRegister::from_field((word >> 13) & 0b111);
+                return Ok(Some(Self::MveModifiedImmediate(cmode, op, imm8, qd)));
+            }
+
+            // ---- MVE fixed-point VCVT (Qd, Qm, #fbits) ---- decoded before the 0xFFBx 2-reg-misc block so the
+            // U=1 forms (which fall in 0xFFBx) are claimed here by the tighter signature.
+            if word & MVE_VCVT_FIXED_MASK == MVE_VCVT_FIXED_BASE {
+                let imm6 = (word >> 16) & 0x3F;
+                let fbits = (64 - imm6) as u8;
+                let size = if (word >> 9) & 1 == 1 { Arm32MveFloatSize::F32 } else { Arm32MveFloatSize::F16 };
+                // .16 forms only reach fbits 1..=16 (imm6 >= 48); reject the out-of-range .16 encodings
+                if matches!(size, Arm32MveFloatSize::F32) || imm6 >= 48 {
+                    let to_fixed = (word >> 8) & 1 == 1;
+                    let unsigned = (word >> 28) & 1 == 1;
+                    let qd = Arm32MveVectorRegister::from_field((word >> 13) & 0b111);
+                    let qm = Arm32MveVectorRegister::from_field((word >> 1) & 0b111);
+                    return Ok(Some(Self::MveVcvtFixed(to_fixed, unsigned, size, fbits, qd, qm)));
+                }
+            }
+
+            // ---- MVE two-register miscellaneous (Qd, Qm), in the 0xFFBx space ----
+            if word & 0xFFF0_0000 == 0xFFB0_0000 {
+                let qd = Arm32MveVectorRegister::from_field((word >> 13) & 0b111);
+                let qm = Arm32MveVectorRegister::from_field((word >> 1) & 0b111);
+                // VMVN (register): an exact opcode with no element size
+                if word & MVE_VMVN_REG_MASK == MVE_VMVN_REG_BASE {
+                    return Ok(Some(Self::MveMvnRegister(qd, qm)));
+                }
+                let size_bits = (word >> 18) & 0b11;
+                // float VABS/VNEG first (hw0 bit16, the int/float marker, separates them from VQABS/VQNEG)
+                if let Some(op) = Arm32MveMisc2FloatOp::from_signature(word & MVE_MISC2_SIGNATURE_MASK)
+                    && let Some(size) = mve_misc2_float_size_from_bits(size_bits) {
+                        return Ok(Some(Self::MveMisc2Float(op, size, qd, qm)));
+                    }
+                // sized integer ops
+                if let Some(op) = Arm32MveMisc2Op::from_signature(word & MVE_MISC2_SIGNATURE_MASK)
+                    && let Some(size) = Arm32MveSize::from_size_bits(size_bits) {
+                        return Ok(Some(Self::MveMisc2(op, size, qd, qm)));
+                    }
+                // VCVT float<->int (hw0 0xFFB3, distinguished from VRINT's 0xFFB2 by bit16)
+                if word & MVE_VCVT_FI_FIXED_MASK == MVE_VCVT_FI_FIXED_PATTERN
+                    && let Some(size) = mve_misc2_float_size_from_bits(size_bits) {
+                        let to_int = (word >> 8) & 1 == 1;
+                        let unsigned = (word >> 7) & 1 == 1;
+                        return Ok(Some(Self::MveVcvtFloatInt(to_int, unsigned, size, qd, qm)));
+                    }
+                // VRINT (round to integral float)
+                if let Some(op) = Arm32MveVrintOp::from_signature(word & MVE_MISC2_SIGNATURE_MASK)
+                    && let Some(size) = mve_misc2_float_size_from_bits(size_bits) {
+                        return Ok(Some(Self::MveVrint(op, size, qd, qm)));
+                    }
+                // VCVTA/N/P/M (float -> int with rounding mode = bits[9:8]; signedness = bit7)
+                if word & MVE_VCVTR_MASK == MVE_VCVTR_BASE
+                    && let Some(size) = mve_misc2_float_size_from_bits(size_bits) {
+                        let rounding = ((word >> 8) & 0b11) as u8;
+                        let unsigned = (word >> 7) & 1 == 1;
+                        return Ok(Some(Self::MveVcvtRound(rounding, unsigned, size, qd, qm)));
+                    }
+            }
+
+            // ---- MVE VMAXA/VMINA (int) and VMAXNMA/VMINNMA (float), 2-register elementwise (Qda, Qm) in the
+            // 0xEE space. [19:18]=11 escapes to the FP twins (precision [28]: f16=1/f32=0); [12] selects min.
+            if word & 0xEFF3_0FF1 == 0xEE33_0E81 {
+                let qda = Arm32MveVectorRegister::from_field((word >> 13) & 0b111);
+                let qm = Arm32MveVectorRegister::from_field((word >> 1) & 0b111);
+                let is_min = (word >> 12) & 1 == 1;
+                let size_bits = (word >> 18) & 0b11;
+                if size_bits == 0b11 {
+                    let size = Arm32MveFloatSize::from_size_bit((word >> 28) & 1);
+                    return Ok(Some(Self::MveVmaxnmaMinnma(is_min, size, qda, qm)));
+                }
+                if let Some(size) = Arm32MveSize::from_size_bits(size_bits) {
+                    return Ok(Some(Self::MveVmaxaMina(is_min, size, qda, qm)));
+                }
+            }
+
+            // ---- MVE index generators VIDUP/VDDUP/VIWDUP/VDWDUP (0xEE space) ---- claimed first via the tight
+            // signature; its [11:8]=1111 / [6:4]=110 / bit16=1 frame is disjoint from the vector-by-scalar ops.
+            if word & MVE_VIDDUP_MASK == MVE_VIDDUP_BASE
+                && let Some(size) = Arm32MveSize::from_size_bits((word >> 20) & 0b11) {
+                    let decrement = (word >> 12) & 1 == 1;
+                    let rn = Arm32GeneralPurposeRegister::from_operand_bits((((word >> 17) & 0b111) << 1) as u8);
+                    let qd = Arm32MveVectorRegister::from_field((word >> 13) & 0b111);
+                    let imm2 = (((word >> 7) & 1) << 1) | (word & 1);
+                    let step = (1u32 << imm2) as u8;
+                    let rm_field = (word >> 1) & 0b111;
+                    let wrap_rm = if rm_field == 0b111 { None } else { Some(Arm32GeneralPurposeRegister::from_operand_bits(((rm_field << 1) | 1) as u8)) };
+                    return Ok(Some(Self::MveViddup(decrement, size, qd, rn, wrap_rm, step)));
+                }
+
+            // ---- MVE VBRSR (broadcast shift by GPR; vector-by-scalar shape) ----
+            if word & MVE_VBRSR_MASK == MVE_VBRSR_BASE
+                && let Some(size) = Arm32MveSize::from_size_bits((word >> 20) & 0b11) {
+                    let qd = Arm32MveVectorRegister::from_field((word >> 13) & 0b111);
+                    let qn = Arm32MveVectorRegister::from_field((word >> 17) & 0b111);
+                    let rm = Arm32GeneralPurposeRegister::from_operand_bits((word & 0xF) as u8);
+                    return Ok(Some(Self::MveVbrsr(size, qd, qn, rm)));
+                }
+
+            // ---- MVE vector-by-scalar (Qd, Qn, Rm) and VDUP (Qd, Rt), in the 0xEE.. / 0xFE.. space ----
+            // Disjoint from the scalar FPU (whose coprocessor field bits[11:8] are A/B, not the E/F of the
+            // vector-by-scalar ops); the tight per-op signature match below claims only genuine MVE words, so
+            // any real VFP/VMOV word falls through to its existing decode further down.
+            {
+                let top_byte = word >> 24;
+                if top_byte == 0xEE || top_byte == 0xFE {
+                    // VDUP first (its bits[11:8]=1011 + bit4 form is distinct from both vbs and VFP)
+                    if word & MVE_VDUP_MASK == MVE_VDUP_BASE
+                        && let Some(size) = mve_vdup_size_from_bits((word >> 22) & 1, (word >> 5) & 1) {
+                            let qd = Arm32MveVectorRegister::from_field((word >> 17) & 0b111);
+                            let rt = Arm32GeneralPurposeRegister::from_operand_bits(((word >> 12) & 0xF) as u8);
+                            return Ok(Some(Self::MveVdup(size, qd, rt)));
+                        }
+                    let qd = Arm32MveVectorRegister::from_field((word >> 13) & 0b111);
+                    let qn = Arm32MveVectorRegister::from_field((word >> 17) & 0b111);
+                    let rm = Arm32GeneralPurposeRegister::from_operand_bits((word & 0xF) as u8);
+                    // float vector-by-scalar (bits[21:20] = 0b11, size in bit 28)
+                    if let Some(op) = Arm32MveVecScalarFloatOp::from_signature(word & MVE_VBS_FLOAT_SIGNATURE_MASK) {
+                        let size = Arm32MveFloatSize::from_size_bit((word >> 28) & 1);
+                        return Ok(Some(Self::MveVecScalarFloat(op, size, qd, qn, rm)));
+                    }
+                    // integer vector-by-scalar (size in bits[21:20]; 0b11 is the float marker, rejected here)
+                    if let Some(op) = Arm32MveVecScalarIntOp::from_signature(word & MVE_VBS_INT_SIGNATURE_MASK)
+                        && let Some(size) = Arm32MveSize::from_size_bits((word >> 20) & 0b11) {
+                            return Ok(Some(Self::MveVecScalarInt(op, size, qd, qn, rm)));
+                        }
+                }
+            }
+
+            // ---- MVE cross-lane reductions to a GPR (VADDV/VMINV/VMAXV/... and VABAV), 0xEE.. / 0xFE.. ----
+            {
+                let top_byte = word >> 24;
+                if top_byte == 0xEE || top_byte == 0xFE {
+                    // VABAV: Rd[15:12], Qn[19:17], Qm[3:1], size[21:20] (distinct fixed bit 0 = 1)
+                    if word & MVE_VABAV_SIGNATURE_MASK == MVE_VABAV_BASE
+                        && let Some(size) = Arm32MveSize::from_size_bits((word >> 20) & 0b11) {
+                            let signed = (word >> 28) & 1 == 0;
+                            let rd = Arm32GeneralPurposeRegister::from_operand_bits(((word >> 12) & 0xF) as u8);
+                            let qn = Arm32MveVectorRegister::from_field((word >> 17) & 0b111);
+                            let qm = Arm32MveVectorRegister::from_field((word >> 1) & 0b111);
+                            return Ok(Some(Self::MveVabav(signed, size, rd, qn, qm)));
+                        }
+                    // 2-operand reductions: Rd[15:12], Qm[3:1], size[19:18] (rejects [19:18]=11, leaving those
+                    // encodings for the float min/max reductions below)
+                    if let Some(op) = Arm32MveReduceOp::from_signature(word & MVE_REDUCE_SIGNATURE_MASK)
+                        && let Some(size) = Arm32MveSize::from_size_bits((word >> 18) & 0b11) {
+                            let rd = Arm32GeneralPurposeRegister::from_operand_bits(((word >> 12) & 0xF) as u8);
+                            let qm = Arm32MveVectorRegister::from_field((word >> 1) & 0b111);
+                            return Ok(Some(Self::MveReduce(op, size, rd, qm)));
+                        }
+                    // floating-point min/max reductions: Rd[15:12], Qm[3:1], size = bit28
+                    if let Some(op) = Arm32MveFloatReduceOp::from_signature(word & MVE_FLOAT_REDUCE_SIGNATURE_MASK) {
+                        let size = if (word >> 28) & 1 == 1 { Arm32MveFloatSize::F16 } else { Arm32MveFloatSize::F32 };
+                        let rd = Arm32GeneralPurposeRegister::from_operand_bits(((word >> 12) & 0xF) as u8);
+                        let qm = Arm32MveVectorRegister::from_field((word >> 1) & 0b111);
+                        return Ok(Some(Self::MveFloatReduce(op, size, rd, qm)));
+                    }
+                    // VMLADAV/VMLSDAV (non-long dual MAC reduction into an even GPR). Decoded AFTER the 2-operand
+                    // reductions so VADDV/VADDVA (the only other [23:20]=1111 words) are already claimed. Rda is
+                    // even: bit 12 of its field is the X (exchange) flag.
+                    if word & MVE_DUALMAC_MASK == MVE_DUALMAC_BASE {
+                        let subtract = word & 1 == 1;
+                        if let Some((unsigned, size)) = mve_dualmac_decode_size(subtract, word) {
+                            let exchange = (word >> 12) & 1 == 1;
+                            let accumulate = (word >> 5) & 1 == 1;
+                            // exchange is signed-only (subtract already excludes unsigned via decode_size)
+                            if !(unsigned && exchange) {
+                                let rda = Arm32GeneralPurposeRegister::from_operand_bits(((word >> 12) & 0xE) as u8);
+                                let qn = Arm32MveVectorRegister::from_field((word >> 17) & 0b111);
+                                let qm = Arm32MveVectorRegister::from_field((word >> 1) & 0b111);
+                                return Ok(Some(Self::MveDualMac(subtract, exchange, accumulate, unsigned, size, rda, qn, qm)));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ---- MVE width-changing register moves (VMOVL long, VMOVN narrow, VADDLV reduction) ----
+            {
+                let top_byte = word >> 24;
+                if top_byte == 0xEE || top_byte == 0xFE {
+                    // VADDLV (64-bit reduction to a GPR pair): RdLo[15:12] (even), RdHi>>1 at [22:20] (odd,
+                    // independent of RdLo), U=bit28, accumulate=bit5
+                    if word & MVE_VADDLV_MASK == MVE_VADDLV_BASE {
+                        let accumulate = (word >> 5) & 1 == 1;
+                        let unsigned = (word >> 28) & 1 == 1;
+                        let rd_lo = Arm32GeneralPurposeRegister::from_operand_bits(((word >> 12) & 0xF) as u8);
+                        let rd_hi = Arm32GeneralPurposeRegister::from_operand_bits(((((word >> 20) & 0b111) << 1) | 1) as u8);
+                        let qm = Arm32MveVectorRegister::from_field((word >> 1) & 0b111);
+                        return Ok(Some(Self::MveVaddlv(accumulate, unsigned, rd_lo, rd_hi, qm)));
+                    }
+                    let qd = Arm32MveVectorRegister::from_field((word >> 13) & 0b111);
+                    let qm = Arm32MveVectorRegister::from_field((word >> 1) & 0b111);
+                    // VSHLL T1 (imm widening) shares the VMOVL family base; decode the imm5 shift and claim it
+                    // only when shift >= 1 (shift == 0 IS VMOVL, handled just below).
+                    if word & MVE_VSHLL_T1_MASK == MVE_VSHLL_T1_BASE {
+                        let imm5 = (word >> 16) & 0x1F;
+                        let top2 = imm5 >> 3; // [20:19]
+                        let (size, esize) = if top2 == 0b01 { (Arm32MveSize::I8, 8) } else { (Arm32MveSize::I16, 16) };
+                        if top2 != 0 && imm5 > esize {
+                            let shift = (imm5 - esize) as u8;
+                            return Ok(Some(Self::MveVshll((word >> 12) & 1 == 1, (word >> 28) & 1 == 1, size, shift, qd, qm)));
+                        }
+                    }
+                    // VMOVL (long): B/T=bit12, U=bit28, source size bit19(.8)/bit20(.16)
+                    if word & MVE_VMOVL_MASK == MVE_VMOVL_BASE {
+                        let size = if (word >> 19) & 1 == 1 { Arm32MveSize::I8 } else { Arm32MveSize::I16 };
+                        return Ok(Some(Self::MveVmovl((word >> 12) & 1 == 1, (word >> 28) & 1 == 1, size, qd, qm)));
+                    }
+                    // VMOVN (narrow): T=bit12, source size bit18 (.16 = 0 / .32 = 1)
+                    if word & MVE_VMOVN_MASK == MVE_VMOVN_BASE {
+                        let size = if (word >> 18) & 1 == 1 { Arm32MveSize::I32 } else { Arm32MveSize::I16 };
+                        return Ok(Some(Self::MveVmovn((word >> 12) & 1 == 1, size, qd, qm)));
+                    }
+                    // VQMOVN (saturating narrow, U=bit28 selects .s/.u): T=bit12, source size bit18
+                    if word & MVE_VQMOVN_MASK == MVE_VQMOVN_BASE {
+                        let size = if (word >> 18) & 1 == 1 { Arm32MveSize::I32 } else { Arm32MveSize::I16 };
+                        return Ok(Some(Self::MveVqmovn(Arm32MveQMovnKind::Vqmovn, (word >> 28) & 1 == 1, (word >> 12) & 1 == 1, size, qd, qm)));
+                    }
+                    // VQMOVUN (signed source -> unsigned saturated): T=bit12, source size bit18, no U bit
+                    if word & MVE_VQMOVUN_MASK == MVE_VQMOVUN_BASE {
+                        let size = if (word >> 18) & 1 == 1 { Arm32MveSize::I32 } else { Arm32MveSize::I16 };
+                        return Ok(Some(Self::MveVqmovn(Arm32MveQMovnKind::Vqmovun, false, (word >> 12) & 1 == 1, size, qd, qm)));
+                    }
+                    // VSHLL T2 (max shift == esize): size bit18 (.s8 = 0 / .s16 = 1), T=bit12, U=bit28
+                    if word & MVE_VSHLL_T2_MASK == MVE_VSHLL_T2_BASE {
+                        let (size, esize) = if (word >> 18) & 1 == 1 { (Arm32MveSize::I16, 16) } else { (Arm32MveSize::I8, 8) };
+                        return Ok(Some(Self::MveVshll((word >> 12) & 1 == 1, (word >> 28) & 1 == 1, size, esize, qd, qm)));
+                    }
+                }
+            }
+
+            // ---- MVE long & high multiplies (VMULL int+poly, VMULH/VRMULH, VQDMULL vector+scalar) ----
+            // These share the bit23 = 0 sub-space with VMOVN/VQMOVN (handled just above), so they are decoded
+            // AFTER that block; they are disjoint from VADDLV/long-dual-MAC (bit23 = 1). Order within: VMULH
+            // ([0]=1), VQDMULL scalar/vector ([11:8]=1111), then VMULL poly (size==11) BEFORE VMULL integer.
+            {
+                let top_byte = word >> 24;
+                if top_byte == 0xEE || top_byte == 0xFE {
+                    let qd = Arm32MveVectorRegister::from_field((word >> 13) & 0b111);
+                    let qn = Arm32MveVectorRegister::from_field((word >> 17) & 0b111);
+                    let qm = Arm32MveVectorRegister::from_field((word >> 1) & 0b111);
+                    // VMULH/VRMULH: rounding=bit12, U=bit28, size[21:20] (0b11 reserved -> rejected)
+                    if word & MVE_VMULH_MASK == MVE_VMULH_BASE
+                        && let Some(size) = Arm32MveSize::from_size_bits((word >> 20) & 0b11) {
+                            return Ok(Some(Self::MveVmulh((word >> 12) & 1 == 1, (word >> 28) & 1 == 1, size, qd, qn, qm)));
+                        }
+                    // VQDMULL scalar (T2): [6:4]=110, Rm[3:0]; sz=bit28, T=bit12
+                    if word & MVE_VQDMULL_SCALAR_MASK == MVE_VQDMULL_SCALAR_BASE {
+                        let rm = Arm32GeneralPurposeRegister::from_operand_bits((word & 0xF) as u8);
+                        return Ok(Some(Self::MveVqdmullScalar((word >> 12) & 1 == 1, (word >> 28) & 1 == 1, qd, qn, rm)));
+                    }
+                    // VQDMULL vector (T1): [11:8]=1111, [16]=0
+                    if word & MVE_VQDMULL_VEC_MASK == MVE_VQDMULL_VEC_BASE {
+                        return Ok(Some(Self::MveVqdmull((word >> 12) & 1 == 1, (word >> 28) & 1 == 1, qd, qn, qm)));
+                    }
+                    // VMULL polynomial (size[21:20]=11): bit28 = P8(0)/P16(1) -- MUST precede the integer form
+                    if word & MVE_VMULL_POLY_MASK == MVE_VMULL_POLY_BASE {
+                        let size = if (word >> 28) & 1 == 1 { Arm32MveSize::I16 } else { Arm32MveSize::I8 };
+                        return Ok(Some(Self::MveVmull(true, false, (word >> 12) & 1 == 1, size, qd, qn, qm)));
+                    }
+                    // VMULL integer: U=bit28, size[21:20]
+                    if word & MVE_VMULL_INT_MASK == MVE_VMULL_INT_BASE
+                        && let Some(size) = Arm32MveSize::from_size_bits((word >> 20) & 0b11) {
+                            return Ok(Some(Self::MveVmull(false, (word >> 28) & 1 == 1, (word >> 12) & 1 == 1, size, qd, qn, qm)));
+                        }
+                    // VQDMLADH/VQDMLSDH (+VQRD*): bit16=0 (vs VMULL/VMULH bit16=1); subtract=bit28, round=bit0, X=bit12
+                    if word & MVE_VQDMLADH_MASK == MVE_VQDMLADH_BASE
+                        && let Some(size) = Arm32MveSize::from_size_bits((word >> 20) & 0b11) {
+                            return Ok(Some(Self::MveVqdmladh(
+                                (word >> 28) & 1 == 1, word & 1 == 1, (word >> 12) & 1 == 1, size, qd, qn, qm,
+                            )));
+                        }
+                    // VSHL/VRSHL/VQSHL/VQRSHL by GPR scalar (Qda, Rm): rounding=bit17, saturating=bit7, size[19:18]
+                    if word & MVE_SHIFT_SCALAR_MASK == MVE_SHIFT_SCALAR_BASE
+                        && let Some(size) = Arm32MveSize::from_size_bits((word >> 18) & 0b11) {
+                            let rm = Arm32GeneralPurposeRegister::from_operand_bits((word & 0xF) as u8);
+                            return Ok(Some(Self::MveShiftByScalar(
+                                (word >> 17) & 1 == 1, (word >> 7) & 1 == 1, (word >> 28) & 1 == 1, size, qd, rm,
+                            )));
+                        }
+                }
+            }
+
+            // ---- MVE LONG dual-MAC reductions (VMLALDAV/VMLSLDAV/VRMLALDAVH/VRMLSLDAVH) into a GPR pair ----
+            // Decoded AFTER the cross-lane reductions (reduction block above) AND VADDLV (the width-changing
+            // block above): all of those alias this looser signature, so they must be claimed first. The
+            // complex/predication ops below all have bit23 = 0, which this signature requires to be 1.
+            {
+                let top_byte = word >> 24;
+                if (top_byte == 0xEE || top_byte == 0xFE) && word & MVE_LONG_DUALMAC_MASK == MVE_LONG_DUALMAC_BASE {
+                    let rda_hi_bits = (((word >> 20) & 0b111) << 1) | 1; // RdaHi is odd
+                    if rda_hi_bits != 15 { // r15 (PC) is not a valid accumulator
+                        if let Some((op, unsigned, size)) = mve_long_dualmac_decode(word) {
+                            let exchange = (word >> 12) & 1 == 1;
+                            // rounding-high exchange is signed-only
+                            if !(op.rounding_high() && exchange && unsigned) {
+                                let accumulate = (word >> 5) & 1 == 1;
+                                let rda_lo = Arm32GeneralPurposeRegister::from_operand_bits(((word >> 12) & 0xE) as u8);
+                                let rda_hi = Arm32GeneralPurposeRegister::from_operand_bits(rda_hi_bits as u8);
+                                let qn = Arm32MveVectorRegister::from_field((word >> 17) & 0b111);
+                                let qm = Arm32MveVectorRegister::from_field((word >> 1) & 0b111);
+                                return Ok(Some(Self::MveLongDualMac(op, exchange, accumulate, unsigned, size, rda_lo, rda_hi, qn, qm)));
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ---- MVE complex-number ops (VCADD/VHCADD/VCMUL/VCMLA) ----
+            // Four mutually-exclusive gate masks; all share Qd[15:13], Qn[19:17], Qm[3:1].
+            {
+                let top_byte = word >> 24;
+                if matches!(top_byte, 0xEE | 0xFE | 0xFC | 0xFD) {
+                    let qd = Arm32MveVectorRegister::from_field((word >> 13) & 0b111);
+                    let qn = Arm32MveVectorRegister::from_field((word >> 17) & 0b111);
+                    let qm = Arm32MveVectorRegister::from_field((word >> 1) & 0b111);
+                    // VCVT half<->single (vector): tight signature ([21:16]=111111)
+                    if word & MVE_VCVT_HALF_MASK == MVE_VCVT_HALF_BASE {
+                        return Ok(Some(Self::MveVcvtHalf((word >> 12) & 1 == 1, (word >> 28) & 1 == 1, qd, qm)));
+                    }
+                    // shift-and-narrow: the [7:6]/bit0 pair (rejecting [7:6]=00) disambiguates it from VABAV/VADDLV
+                    if word & MVE_SHIFT_NARROW_MASK == MVE_SHIFT_NARROW_BASE
+                        && let Some((op, unsigned)) = Arm32MveShiftNarrowOp::from_word((word >> 28) & 1, (word >> 6) & 0b11, word & 1) {
+                            let imm5 = (word >> 16) & 0x1F;
+                            let src_is_32 = imm5 >= 16; // sz = imm5[4]
+                            let shift = ((if src_is_32 { 32 } else { 16 }) - imm5) as u8;
+                            return Ok(Some(Self::MveShiftNarrow(op, unsigned, (word >> 12) & 1 == 1, src_is_32, shift, qd, qm)));
+                        }
+                    // predication primitives. VPNOT and VPST share one opcode (0xFE31_0F4D | mask): mask 0 is
+                    // VPNOT, mask != 0 is VPST (a predicate block). VPSEL shares the Qd/Qn/Qm layout.
+                    if word & MVE_VPST_NOT_MASK == MVE_VPST_NOT_BASE {
+                        let mask = mve_predicate_mask_from_word(word);
+                        return Ok(Some(if mask == 0 { Self::MveVpnot } else { Self::MveVpst(mask) }));
+                    }
+                    if word & MVE_VPSEL_MASK == MVE_VPSEL_BASE {
+                        return Ok(Some(Self::MveVpsel(qd, qn, qm)));
+                    }
+                    // VADC/VSBC (occupies VCADD's reserved size=0b11 slot -- claimed here first by the tight mask):
+                    // subtract = bit28, init-carry = bit12
+                    if word & MVE_VADC_MASK == MVE_VADC_BASE {
+                        return Ok(Some(Self::MveVadc((word >> 28) & 1 == 1, (word >> 12) & 1 == 1, qd, qn, qm)));
+                    }
+                    // VSHLC: imm5[20:16] = shift (0 means 32), Qda[15:13], Rdm[3:0]
+                    if word & MVE_VSHLC_MASK == MVE_VSHLC_BASE {
+                        let imm5 = (word >> 16) & 0x1F;
+                        let shift = if imm5 == 0 { 32 } else { imm5 as u8 };
+                        let rdm = Arm32GeneralPurposeRegister::from_operand_bits((word & 0xF) as u8);
+                        return Ok(Some(Self::MveVshlc(shift, qd, rdm)));
+                    }
+                    // VCADD (integer) / VHCADD: halving = bit28==0, size[21:20], rotation 90/270 = bit12
+                    if word & MVE_VCADD_INT_MASK == MVE_VCADD_INT_PATTERN
+                        && let Some(size) = Arm32MveSize::from_size_bits((word >> 20) & 0b11) {
+                            return Ok(Some(Self::MveVcaddInt((word >> 28) & 1 == 0, size, (word >> 12) & 1 == 1, qd, qn, qm)));
+                        }
+                    // VCADD (float): size = bit20, rotation 90/270 = bit24
+                    if word & MVE_VCADD_FLOAT_MASK == MVE_VCADD_FLOAT_PATTERN {
+                        let size = if (word >> 20) & 1 == 1 { Arm32MveFloatSize::F32 } else { Arm32MveFloatSize::F16 };
+                        return Ok(Some(Self::MveVcaddFloat(size, (word >> 24) & 1 == 1, qd, qn, qm)));
+                    }
+                    // VCMUL: size = bit28, rotation 0/90/180/270 = {bit12, bit0}
+                    if word & MVE_VCMUL_MASK == MVE_VCMUL_PATTERN {
+                        let size = if (word >> 28) & 1 == 1 { Arm32MveFloatSize::F32 } else { Arm32MveFloatSize::F16 };
+                        let rotate = ((word & 1) | (((word >> 12) & 1) << 1)) as u8;
+                        return Ok(Some(Self::MveVcmul(size, rotate, qd, qn, qm)));
+                    }
+                    // VCMLA: size = bit20, rotation 0/90/180/270 = {bit24, bit23}
+                    if word & MVE_VCMLA_MASK == MVE_VCMLA_PATTERN {
+                        let size = if (word >> 20) & 1 == 1 { Arm32MveFloatSize::F32 } else { Arm32MveFloatSize::F16 };
+                        let rotate = (((word >> 23) & 1) | (((word >> 24) & 1) << 1)) as u8;
+                        return Ok(Some(Self::MveVcmla(size, rotate, qd, qn, qm)));
+                    }
+                    // VCMP / VPT integer (size[21:20] valid) -- register or scalar (bit6); mask 0 = VCMP, else VPT
+                    if word & MVE_VCMP_INT_MASK == MVE_VCMP_INT_BASE
+                        && let Some(size) = Arm32MveSize::from_size_bits((word >> 20) & 0b11) {
+                            let scalar = (word >> 6) & 1 == 1;
+                            let cond = Arm32MveVcmpCondition::from_fc(mve_vcmp_fc_from_word(word, scalar));
+                            let mask = mve_predicate_mask_from_word(word);
+                            let rm = Arm32GeneralPurposeRegister::from_operand_bits((word & 0xF) as u8);
+                            return Ok(Some(match (mask == 0, scalar) {
+                                (true, false) => Self::MveVcmpReg(cond, size, qn, qm),
+                                (true, true) => Self::MveVcmpScalar(cond, size, qn, rm),
+                                (false, false) => Self::MveVptReg(cond, size, qn, qm, mask),
+                                (false, true) => Self::MveVptScalar(cond, size, qn, rm, mask),
+                            }));
+                        }
+                    // VCMP / VPT float (its [21:20] = 11 distinguishes it from the integer form; size in bit28).
+                    // Float only uses eq/ne/ge/lt/gt/le; the cs/hi fc-slots (001/011) are reserved here
+                    // (VPSEL, decoded earlier, occupies one of them), so don't claim them as a float VCMP/VPT.
+                    if word & MVE_VCMP_FLOAT_MASK == MVE_VCMP_FLOAT_BASE {
+                        let scalar = (word >> 6) & 1 == 1;
+                        let fc = mve_vcmp_fc_from_word(word, scalar);
+                        if fc != 0b001 && fc != 0b011 {
+                            let size = if (word >> 28) & 1 == 1 { Arm32MveFloatSize::F16 } else { Arm32MveFloatSize::F32 };
+                            let cond = Arm32MveVcmpCondition::from_fc(fc);
+                            let mask = mve_predicate_mask_from_word(word);
+                            let rm = Arm32GeneralPurposeRegister::from_operand_bits((word & 0xF) as u8);
+                            return Ok(Some(match (mask == 0, scalar) {
+                                (true, false) => Self::MveVcmpFloatReg(cond, size, qn, qm),
+                                (true, true) => Self::MveVcmpFloatScalar(cond, size, qn, rm),
+                                (false, false) => Self::MveVptFloatReg(cond, size, qn, qm, mask),
+                                (false, true) => Self::MveVptFloatScalar(cond, size, qn, rm, mask),
+                            }));
+                        }
+                    }
+                }
+            }
+
+            // ---- Branch Future (Armv8.1-M Low Overhead Branch): BF/BFL/BFX/BFLX/BFCSEL. Signature is
+            // hw1[15:11]=11110, hw2[0]=1, hw2[15:12]=1110 (BF/BFX/BFLX/BFCSEL) or 1100 (BFL), with a NONZERO
+            // boff=hw1[10:7]. Decoded BEFORE the low-overhead loops: WLS/DLS/LE all have boff=0 (it is a fixed
+            // zero field in their encoding), so requiring boff!=0 here cleanly separates the two families that
+            // share this space. (BL/B differ by hw1 bit12=1; these all have it 0.) Variant key:
+            // hw2[15:12]=1100 -> BFL; else hw1[6:4]=110/111 -> BFX/BFLX, hw1[6]=0 -> BFCSEL, hw1[6:5]=10 -> BF.
+            // Target offset = SignExtend(immA:immB:immC:'0'): immA=hw1[4:0], immB=hw2[10:1], immC=hw2[11]
+            // (for BFCSEL immA is only the single bit hw1[0]). ----
+            if word & 0xF800_0001 == 0xF000_0001 {
+                let boff = ((word >> 23) & 0xF) as u8;        // hw1[10:7]
+                let hw2_top = (word >> 12) & 0xF;             // hw2[15:12]
+                if boff != 0 && (hw2_top == 0b1100 || hw2_top == 0b1110) {
+                    let g = Arm32GeneralPurposeRegister::from_operand_bits;
+                    let imm_b = (word >> 1) & 0x3FF;          // hw2[10:1]
+                    let imm_c = (word >> 11) & 0x1;           // hw2[11]
+                    let off17 = |imm_a: u32| sign_extension_utils::sign_extend_int_to_i32(
+                        ((imm_a << 12) | (imm_b << 2) | (imm_c << 1)) as i32, 17);
+                    if hw2_top == 0b1100 {                    // BFL (T4)
+                        return Ok(Some(Self::Bfl_T4(boff, off17((word >> 16) & 0x1F))));
+                    } else if (word >> 20) & 0b111 == 0b110 { // BFX (T3): hw1[6:4]=110
+                        return Ok(Some(Self::Bfx_T3(boff, g(((word >> 16) & 0xF) as u8))));
+                    } else if (word >> 20) & 0b111 == 0b111 { // BFLX (T5): hw1[6:4]=111
+                        return Ok(Some(Self::Bflx_T5(boff, g(((word >> 16) & 0xF) as u8))));
+                    } else if (word >> 22) & 1 == 0 {         // BFCSEL (T2): hw1[6]=0
+                        let cond = ((word >> 18) & 0xF) as u8;    // hw1[5:2]
+                        let t = (word >> 17) & 1 == 1;            // hw1[1]
+                        let off13 = sign_extension_utils::sign_extend_int_to_i32(
+                            ((((word >> 16) & 0x1) << 12) | (imm_b << 2) | (imm_c << 1)) as i32, 13);
+                        return Ok(Some(Self::Bfcsel_T2(boff, off13, cond, t)));
+                    } else {                                   // BF (T1): hw1[6:5]=10
+                        return Ok(Some(Self::Bf_T1(boff, off17((word >> 16) & 0x1F))));
+                    }
+                }
+            }
+
+            // ---- low-overhead loops (DLS/WLS/LE/DLSTP/WLSTP/LETP/LCTP/VCTP), all 0xF0xx ----
+            // Their hw1 bit12 = 0 (0xE001/0xE801/0xC0xx), which is disjoint from B.W/BL (hw1 bit12 = 1) below.
+            if word >> 24 == 0xF0 {
+                if word == MVE_LCTP_WORD {
+                    return Ok(Some(Self::Lctp));
+                }
+                if word & MVE_VCTP_MASK == MVE_VCTP_BASE {
+                    let size = match (word >> 20) & 0b11 { 0 => 8u8, 1 => 16, 2 => 32, _ => 64 };
+                    let rn = Arm32GeneralPurposeRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+                    return Ok(Some(Self::MveVctp(size, rn)));
+                }
+                if word & MVE_LOB_DLS_MASK == MVE_LOB_DLS_BASE
+                    && let Some(tp_size) = lob_size_from_field((word >> 20) & 0b111) {
+                        let rn = Arm32GeneralPurposeRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+                        return Ok(Some(Self::LobStart(false, tp_size, rn, 0)));
+                    }
+                if word & 0xF000 == 0xC000 { // a low-overhead-loop branch (hw1[15:12] = 1100)
+                    let rn_bits = (word >> 16) & 0xF;
+                    let size_field = (word >> 20) & 0b111;
+                    if rn_bits == 0xF { // PC marks the LE/LETP loop-end
+                        let offset = lob_branch_offset(word & 0xFFFF, true);
+                        match size_field {
+                            0b000 => return Ok(Some(Self::LobEnd(false, offset))),
+                            0b001 => return Ok(Some(Self::LobEnd(true, offset))),
+                            _ => {} // 0b010 = the no-LR `le` form, not modelled
+                        }
+                    } else if let Some(tp_size) = lob_size_from_field(size_field) {
+                        let rn = Arm32GeneralPurposeRegister::from_operand_bits(rn_bits as u8);
+                        let offset = lob_branch_offset(word & 0xFFFF, false);
+                        return Ok(Some(Self::LobStart(true, tp_size, rn, offset)));
+                    }
+                }
+            }
+
+            // mask: 0b1111_1000_0000_0000_1101_0000_0000_0000
+            match word & 0b1111_1000_0000_0000_1101_0000_0000_0000 {
+                op if op == ArmT32OpcodePattern_32Bit::Bl_T1 as u32 => {
+                    let (imm11, j2, j1, imm10, s) = ArmT32InstructionDecoder::decode_instruction_word__000a__0b0b__0d0d__1019__1a1a(word);
+                    //
+                    let i1 = (!(j1 ^ s)) & 0b1;
+                    let i2 = (!(j2 ^ s)) & 0b1;
+                    let encoded_imm24_as_u32: u32 = 
+                        ((s as u32) << 23) |
+                        ((i1 as u32) << 22) |
+                        ((i2 as u32) << 21) |
+                        ((imm10 as u32) << 11) |
+                        (imm11 as u32);
+                    let encoded_signed_imm24 = sign_extension_utils::sign_extend_int_to_i32(encoded_imm24_as_u32 as i32, 24);
+                    //
+                    let decoded_signed_imm25 = encoded_signed_imm24 * 2;
+                    //
+                    return Ok(Some(Self::Bl_T1(decoded_signed_imm25)));
+                },
+                // M7m B.W (T4): same group as BL, distinguished by the second halfword's bit 12 (0x0000_9000).
+                0xF000_9000 => return Ok(Some(Self::B_T4(decode_word_branch_wide_unconditional(word)))),
+                // M7m B<c>.W (T3): conditions 0..=13 only; cond 14/15 are MSR/MRS/misc-control and fall through.
+                0xF000_8000 => {
+                    let (cond, offset) = decode_word_branch_wide_conditional(word);
+                    if cond <= 13 {
+                        return Ok(Some(Self::B_T3(ArmT32InstructionCondition::from_operand_bits(cond), offset)));
+                    }
+                },
+                _ => (), // continue to next masked set
+            }
+
+            // mask: 0b1111_1111_1111_1111_1111_1111_1111_0000
+            match word & 0b1111_1111_1111_1111_1111_1111_1111_0000 {
+                op if op == ArmT32OpcodePattern_32Bit::Dmb_T1 as u32 => {
+                    // NOTE: the mask excluding the "(#)" bits is: 0b1111_1111_1111_0000_1101_0000_1111_0000
+                    let option = ArmT32InstructionDecoder::decode_instruction_word__0003(word);
+                    return Ok(Some(Self::Dmb_T1(ArmT32MemoryBarrierOption::from_operand_bits(option))));
+                },
+                op if op == ArmT32OpcodePattern_32Bit::Dsb_T1 as u32 => {
+                    // NOTE: the mask excluding the "(#)" bits is: 0b1111_1111_1111_0000_1101_0000_1111_0000
+                    let option = ArmT32InstructionDecoder::decode_instruction_word__0003(word);
+                    return Ok(Some(Self::Dsb_T1(ArmT32MemoryBarrierOption::from_operand_bits(option))));
+                },
+                op if op == ArmT32OpcodePattern_32Bit::Isb_T1 as u32 => {
+                    // NOTE: the mask excluding the "(#)" bits is: 0b1111_1111_1111_0000_1101_0000_1111_0000
+                    let option = ArmT32InstructionDecoder::decode_instruction_word__0003(word);
+                    return Ok(Some(Self::Isb_T1(ArmT32MemoryBarrierOption::from_operand_bits(option))));
+                },
+                op if op == ArmT32OpcodePattern_32Bit::Clrex_T1 as u32 => {
+                    return Ok(Some(Self::Clrex_T1)); // ARMv7-M (the option field in bits 3:0 is SBO)
+                },
+                _ => (), // continue to next masked set
+            }
+
+            // mask: 0b1111_1111_1111_1111_1111_0000_0000_0000
+            match word & 0b1111_1111_1111_1111_1111_0000_0000_0000 {
+                op if op == ArmT32OpcodePattern_32Bit::Mrs_T1 as u32 => {
+                    // NOTE: the mask excluding the "(#)" bits is: 0b1111_1111_1110_0000_1101_0000_0000_0000
+                    let (sysm, rd) = ArmT32InstructionDecoder::decode_instruction_word__0007__080b(word);
+                    let spec_reg = ArmT32SpecialRegister::from_operand_bits(sysm);
+                    return Ok(Some(Self::Mrs_T1(Arm32GeneralPurposeRegister::from_operand_bits(rd), spec_reg)));
+                },
+                _ => (), // continue to next masked set
+            }
+
+            // mask: 0b1111_1111_1111_0000_1111_1111_0000_0000
+            match word & 0b1111_1111_1111_0000_1111_1111_0000_0000 {
+                op if op == ArmT32OpcodePattern_32Bit::Msr_Register_T1 as u32 => {
+                    // NOTE: the mask excluding the "(#)" bits is: 0b1111_1111_1110_0000_1101_0000_0000_0000
+                    let (sysm, rn) = ArmT32InstructionDecoder::decode_instruction_word__0007__1013(word);
+                    let spec_reg = ArmT32SpecialRegister::from_operand_bits(sysm);
+                    return Ok(Some(Self::Msr_Register_T1(spec_reg, Arm32GeneralPurposeRegister::from_operand_bits(rn))));
+                },
+                _ => (), // continue to next masked set
+            }
+
+            // mask: 0b1111_1111_1111_0000_1111_0000_0000_0000
+            match word & 0b1111_1111_1111_0000_1111_0000_0000_0000 {
+                op if op == ArmT32OpcodePattern_32Bit::Udf_T2 as u32 => {
+                    let (imm12, imm4) = ArmT32InstructionDecoder::decode_instruction_word__000b__1013(word);
+                    let imm16: u16 = ((imm4 as u16) << 12) | imm12;
+                    return Ok(Some(Self::Udf_T2(imm16)));
+                },
+                _ => (), // continue to next masked set
+            }
+
+            /* ---- ARMv7-M (Thumb-2) additions ---- */
+
+            // MOVW / MOVT  (imm16 = imm4:i:imm3:imm8)  mask: 0b1111_1011_1111_0000_1000_0000_0000_0000
+            match word & 0b1111_1011_1111_0000_1000_0000_0000_0000 {
+                op if op == ArmT32OpcodePattern_32Bit::Mov_Immediate_T3 as u32 => {
+                    return Ok(Some(Self::Mov_Immediate_T3(Arm32GeneralPurposeRegister::from_operand_bits(decode_word_rd_11_08(word)), decode_word_imm16_movw(word))));
+                },
+                op if op == ArmT32OpcodePattern_32Bit::Movt_T1 as u32 => {
+                    return Ok(Some(Self::Movt_T1(Arm32GeneralPurposeRegister::from_operand_bits(decode_word_rd_11_08(word)), decode_word_imm16_movw(word))));
+                },
+                _ => (),
+            }
+
+            // Data processing (modified immediate): `11110 i 0 op4 S Rn 0 imm3 Rd imm8` (bit 25 = 0,
+            // bit 15 = 0). The op4 field selects the operation, with Rn==PC / Rd==PC selecting the
+            // MOV/MVN and TST/TEQ/CMN/CMP aliases. (ADC/SBC/RSB/ORN are not modeled yet -> fall through.)
+            if word & 0b1111_1010_0000_0000_1000_0000_0000_0000 == 0b1111_0000_0000_0000_0000_0000_0000_0000 {
+                let op4 = (word >> 21) & 0b1111;
+                let set_flags = ((word >> 20) & 0b1) == 1;
+                let rn = ((word >> 16) & 0b1111) as u8;
+                let rd = ((word >> 8) & 0b1111) as u8;
+                let constant = decode_word_modified_immediate(word);
+                let rn_reg = Arm32GeneralPurposeRegister::from_operand_bits(rn);
+                let rd_reg = Arm32GeneralPurposeRegister::from_operand_bits(rd);
+                match op4 {
+                    0b0000 => { // AND (TST if Rd==PC, S)
+                        if rd == 0b1111 && set_flags { return Ok(Some(Self::Tst_Immediate_T1(rn_reg, constant))); }
+                        return Ok(Some(Self::And_Immediate_T1(rd_reg, rn_reg, constant, set_flags)));
+                    },
+                    0b0001 => return Ok(Some(Self::Bic_Immediate_T1(rd_reg, rn_reg, constant, set_flags))),
+                    0b0010 => { // ORR (MOV if Rn==PC)
+                        if rn == 0b1111 { return Ok(Some(Self::Mov_Immediate_T2(rd_reg, constant, set_flags))); }
+                        return Ok(Some(Self::Orr_Immediate_T1(rd_reg, rn_reg, constant, set_flags)));
+                    },
+                    0b0011 => { // ORN (MVN if Rn==PC)
+                        if rn == 0b1111 { return Ok(Some(Self::Mvn_Immediate_T1(rd_reg, constant, set_flags))); }
+                        return Ok(Some(Self::Orn_Immediate_T1(rd_reg, rn_reg, constant, set_flags)));
+                    },
+                    0b0100 => { // EOR (TEQ if Rd==PC, S)
+                        if rd == 0b1111 && set_flags { return Ok(Some(Self::Teq_Immediate_T1(rn_reg, constant))); }
+                        return Ok(Some(Self::Eor_Immediate_T1(rd_reg, rn_reg, constant, set_flags)));
+                    },
+                    0b1000 => { // ADD (CMN if Rd==PC, S)
+                        if rd == 0b1111 && set_flags { return Ok(Some(Self::Cmn_Immediate_T1(rn_reg, constant))); }
+                        return Ok(Some(Self::Add_Immediate_T3(rd_reg, rn_reg, constant, set_flags)));
+                    },
+                    0b1010 => return Ok(Some(Self::Adc_Immediate_T1(rd_reg, rn_reg, constant, set_flags))),
+                    0b1011 => return Ok(Some(Self::Sbc_Immediate_T1(rd_reg, rn_reg, constant, set_flags))),
+                    0b1101 => { // SUB (CMP if Rd==PC, S)
+                        if rd == 0b1111 && set_flags { return Ok(Some(Self::Cmp_Immediate_T2(rn_reg, constant))); }
+                        return Ok(Some(Self::Sub_Immediate_T3(rd_reg, rn_reg, constant, set_flags)));
+                    },
+                    0b1110 => return Ok(Some(Self::Rsb_Immediate_T2(rd_reg, rn_reg, constant, set_flags))),
+                    _ => (), // unallocated op4: not modeled -> InvalidOpcode
+                }
+            }
+
+            // Data processing (shifted register): `11101 01 op4 S Rn (0) imm3 Rd imm2 type Rm` (bit 15 = 0).
+            // op4 selects the operation; Rn==PC turns ORR/ORN into MOV/MVN (register), and Rd==PC with S
+            // turns AND/EOR/ADD/SUB into TST/TEQ/CMN/CMP (register).
+            if word & 0b1111_1110_0000_0000_1000_0000_0000_0000 == 0b1110_1010_0000_0000_0000_0000_0000_0000 {
+                let op4 = (word >> 21) & 0b1111;
+                let set_flags = ((word >> 20) & 0b1) == 1;
+                let rn = ((word >> 16) & 0b1111) as u8;
+                let rd = ((word >> 8) & 0b1111) as u8;
+                let rm = (word & 0b1111) as u8;
+                let shift = decode_register_shift(word);
+                let rn_reg = Arm32GeneralPurposeRegister::from_operand_bits(rn);
+                let rd_reg = Arm32GeneralPurposeRegister::from_operand_bits(rd);
+                let rm_reg = Arm32GeneralPurposeRegister::from_operand_bits(rm);
+                let rn_is_pc = rn == 0b1111;
+                let rd_pc_set = rd == 0b1111 && set_flags;
+                match op4 {
+                    0b0000 => return Ok(Some(if rd_pc_set { Self::Tst_Register_T2(rn_reg, rm_reg, shift) } else { Self::And_Register_T2(rd_reg, rn_reg, rm_reg, shift, set_flags) })),
+                    0b0001 => return Ok(Some(Self::Bic_Register_T2(rd_reg, rn_reg, rm_reg, shift, set_flags))),
+                    0b0010 => return Ok(Some(if rn_is_pc { Self::Mov_Register_T3(rd_reg, rm_reg, shift, set_flags) } else { Self::Orr_Register_T2(rd_reg, rn_reg, rm_reg, shift, set_flags) })),
+                    0b0011 => return Ok(Some(if rn_is_pc { Self::Mvn_Register_T2(rd_reg, rm_reg, shift, set_flags) } else { Self::Orn_Register_T1(rd_reg, rn_reg, rm_reg, shift, set_flags) })),
+                    0b0100 => return Ok(Some(if rd_pc_set { Self::Teq_Register_T1(rn_reg, rm_reg, shift) } else { Self::Eor_Register_T2(rd_reg, rn_reg, rm_reg, shift, set_flags) })),
+                    0b1000 => return Ok(Some(if rd_pc_set { Self::Cmn_Register_T2(rn_reg, rm_reg, shift) } else { Self::Add_Register_T3(rd_reg, rn_reg, rm_reg, shift, set_flags) })),
+                    0b1010 => return Ok(Some(Self::Adc_Register_T2(rd_reg, rn_reg, rm_reg, shift, set_flags))),
+                    0b1011 => return Ok(Some(Self::Sbc_Register_T2(rd_reg, rn_reg, rm_reg, shift, set_flags))),
+                    0b1101 => return Ok(Some(if rd_pc_set { Self::Cmp_Register_T3(rn_reg, rm_reg, shift) } else { Self::Sub_Register_T2(rd_reg, rn_reg, rm_reg, shift, set_flags) })),
+                    0b1110 => return Ok(Some(Self::Rsb_Register_T1(rd_reg, rn_reg, rm_reg, shift, set_flags))),
+                    _ => (), // unallocated op4 -> InvalidOpcode (incl. PKH op4=0110, decoded below)
+                }
+            }
+
+            // M8c DSP PKHBT / PKHTB (op4=0110 in the shifted-register space).  mask keeps op + bit15=0, bit4=0.
+            if word & 0b1111_1111_1110_0000_1000_0000_0001_0000 == 0xEAC0_0000 {
+                let (rd, rn, rm, amount, tb) = decode_word_pack_halfword(word);
+                return Ok(Some(if tb { Self::Pkhtb_T1(g(rd), g(rn), g(rm), amount) } else { Self::Pkhbt_T1(g(rd), g(rn), g(rm), amount) }));
+            }
+
+            // MUL / SDIV / UDIV / CLZ  mask: 0b1111_1111_1111_0000_1111_0000_1111_0000
+            match word & 0b1111_1111_1111_0000_1111_0000_1111_0000 {
+                op if op == ArmT32OpcodePattern_32Bit::Mul_T2 as u32 => {
+                    let (rn, rd, rm) = decode_word_rn_rd_rm(word);
+                    return Ok(Some(Self::Mul_T2(Arm32GeneralPurposeRegister::from_operand_bits(rd), Arm32GeneralPurposeRegister::from_operand_bits(rn), Arm32GeneralPurposeRegister::from_operand_bits(rm))));
+                },
+                op if op == ArmT32OpcodePattern_32Bit::Sdiv_T1 as u32 => {
+                    let (rn, rd, rm) = decode_word_rn_rd_rm(word);
+                    return Ok(Some(Self::Sdiv_T1(Arm32GeneralPurposeRegister::from_operand_bits(rd), Arm32GeneralPurposeRegister::from_operand_bits(rn), Arm32GeneralPurposeRegister::from_operand_bits(rm))));
+                },
+                op if op == ArmT32OpcodePattern_32Bit::Udiv_T1 as u32 => {
+                    let (rn, rd, rm) = decode_word_rn_rd_rm(word);
+                    return Ok(Some(Self::Udiv_T1(Arm32GeneralPurposeRegister::from_operand_bits(rd), Arm32GeneralPurposeRegister::from_operand_bits(rn), Arm32GeneralPurposeRegister::from_operand_bits(rm))));
+                },
+                op if op == ArmT32OpcodePattern_32Bit::Clz_T1 as u32 => {
+                    // CLZ encodes Rm in both bits 19:16 and 3:0; read it from bits 3:0
+                    let rd = decode_word_rd_11_08(word);
+                    let rm = (word & 0b1111) as u8;
+                    return Ok(Some(Self::Clz_T1(Arm32GeneralPurposeRegister::from_operand_bits(rd), Arm32GeneralPurposeRegister::from_operand_bits(rm))));
+                },
+                op if op == ArmT32OpcodePattern_32Bit::Rbit_T1 as u32 => {
+                    // RBIT (like CLZ) encodes Rm in both bits 19:16 and 3:0
+                    let rd = decode_word_rd_11_08(word);
+                    let rm = (word & 0b1111) as u8;
+                    return Ok(Some(Self::Rbit_T1(Arm32GeneralPurposeRegister::from_operand_bits(rd), Arm32GeneralPurposeRegister::from_operand_bits(rm))));
+                },
+                // M7l: REV.W / REV16.W / REVSH.W also live in this family (Rm in both 19:16 and 3:0, op in 7:4)
+                0xFA90_F080 => { let rd = decode_word_rd_11_08(word); return Ok(Some(Self::Rev_T2(g(rd), g((word & 0b1111) as u8)))); },
+                0xFA90_F090 => { let rd = decode_word_rd_11_08(word); return Ok(Some(Self::Rev16_T2(g(rd), g((word & 0b1111) as u8)))); },
+                0xFA90_F0B0 => { let rd = decode_word_rd_11_08(word); return Ok(Some(Self::Revsh_T2(g(rd), g((word & 0b1111) as u8)))); },
+                // M8a DSP saturating arithmetic (Rn 19:16, Rd 11:8, Rm 3:0)
+                0xFA80_F080 => { let (rn, rd, rm) = decode_word_rn_rd_rm(word); return Ok(Some(Self::Qadd_T1(g(rd), g(rm), g(rn)))); },
+                0xFA80_F0A0 => { let (rn, rd, rm) = decode_word_rn_rd_rm(word); return Ok(Some(Self::Qsub_T1(g(rd), g(rm), g(rn)))); },
+                0xFA80_F090 => { let (rn, rd, rm) = decode_word_rn_rd_rm(word); return Ok(Some(Self::Qdadd_T1(g(rd), g(rm), g(rn)))); },
+                0xFA80_F0B0 => { let (rn, rd, rm) = decode_word_rn_rd_rm(word); return Ok(Some(Self::Qdsub_T1(g(rd), g(rm), g(rn)))); },
+                // M8c DSP SEL (Rd, Rn, Rm)
+                0xFAA0_F080 => { let (rn, rd, rm) = decode_word_rn_rd_rm(word); return Ok(Some(Self::Sel_T1(g(rd), g(rn), g(rm)))); },
+                _ => (),
+            }
+
+            // M8d DSP parallel add/subtract (packed SIMD): operation in 22:20, prefix in 6:4, bit7=0.
+            // mask keeps the family bits (incl. bit7=0) but lets operation, prefix, and Rn/Rd/Rm vary.
+            if word & 0b1111_1111_1000_0000_1111_0000_1000_0000 == 0xFA80_F000 {
+                let operation = ArmT32ParallelOperation::from_op_bits((word >> 20) & 0b111);
+                let prefix = ArmT32ParallelPrefix::from_prefix_bits((word >> 4) & 0b111);
+                if let (Some(operation), Some(prefix)) = (operation, prefix) {
+                    let rn = ((word >> 16) & 0b1111) as u8;
+                    let rd = ((word >> 8) & 0b1111) as u8;
+                    let rm = (word & 0b1111) as u8;
+                    return Ok(Some(Self::ParallelAddSub_T1(operation, prefix, g(rd), g(rn), g(rm))));
+                }
+            }
+
+            // UBFX / SBFX / BFI / BFC  mask: 0b1111_1111_1111_0000_1000_0000_0010_0000 (lsb=imm3:imm2, widthm1/msb in bits 4:0)
+            match word & 0b1111_1111_1111_0000_1000_0000_0010_0000 {
+                op if op == ArmT32OpcodePattern_32Bit::Ubfx_T1 as u32 => {
+                    let (rn, rd, lsb, widthm1) = decode_word_bitfield(word);
+                    return Ok(Some(Self::Ubfx_T1(Arm32GeneralPurposeRegister::from_operand_bits(rd), Arm32GeneralPurposeRegister::from_operand_bits(rn), lsb, widthm1 + 1)));
+                },
+                op if op == ArmT32OpcodePattern_32Bit::Sbfx_T1 as u32 => {
+                    let (rn, rd, lsb, widthm1) = decode_word_bitfield(word);
+                    return Ok(Some(Self::Sbfx_T1(Arm32GeneralPurposeRegister::from_operand_bits(rd), Arm32GeneralPurposeRegister::from_operand_bits(rn), lsb, widthm1 + 1)));
+                },
+                op if op == ArmT32OpcodePattern_32Bit::Bfi_T1 as u32 => {
+                    let (rn, rd, lsb, msb) = decode_word_bitfield(word);
+                    let width = msb.wrapping_sub(lsb).wrapping_add(1);
+                    // Rn == 0b1111 is BFC (bitfield clear); otherwise BFI
+                    if rn == 0b1111 {
+                        return Ok(Some(Self::Bfc_T1(Arm32GeneralPurposeRegister::from_operand_bits(rd), lsb, width)));
+                    } else {
+                        return Ok(Some(Self::Bfi_T1(Arm32GeneralPurposeRegister::from_operand_bits(rd), Arm32GeneralPurposeRegister::from_operand_bits(rn), lsb, width)));
+                    }
+                },
+                _ => (),
+            }
+
+            // M7i LDRD / STRD (`Rt, Rt2, [Rn, #+/-imm]{!}` etc.). Mask keeps the opcode + bit22 + L (bit20),
+            // letting P/U/W and the operands vary. STREX/LDREX share the (P=0,W=0) "hole" in this space, so
+            // the helper returns None for them and we fall through to the LDREX/STREX decode below.
+            match word & 0b1111_1110_0101_0000_0000_0000_0000_0000 {
+                0xE850_0000 => { if let Some((rt, rt2, rn, off, mode)) = decode_word_load_store_dual(word) { return Ok(Some(Self::Ldrd_Immediate_T1(g(rt), g(rt2), g(rn), off, mode))); } },
+                0xE840_0000 => { if let Some((rt, rt2, rn, off, mode)) = decode_word_load_store_dual(word) { return Ok(Some(Self::Strd_Immediate_T1(g(rt), g(rt2), g(rn), off, mode))); } },
+                _ => (),
+            }
+
+            // M7j wide load/store multiple (LDM.W/STM.W/LDMDB/STMDB).  mask keeps the IA/DB + L bits but lets
+            // the W (writeback) bit, Rn, and the 16-bit register list vary.
+            match word & 0b1111_1111_1101_0000_0000_0000_0000_0000 {
+                0xE890_0000 => { let (rn, wb, regs) = decode_word_load_store_multiple(word); return Ok(Some(Self::Ldmia_T2(g(rn), wb, regs))); },
+                0xE880_0000 => { let (rn, wb, regs) = decode_word_load_store_multiple(word); return Ok(Some(Self::Stmia_T2(g(rn), wb, regs))); },
+                0xE910_0000 => { let (rn, wb, regs) = decode_word_load_store_multiple(word); return Ok(Some(Self::Ldmdb_T1(g(rn), wb, regs))); },
+                0xE900_0000 => { let (rn, wb, regs) = decode_word_load_store_multiple(word); return Ok(Some(Self::Stmdb_T1(g(rn), wb, regs))); },
+                _ => (),
+            }
+
+            // MVE VMOV (two 32-bit lanes) -- a pair of GPRs <-> two lanes of Qd. [11:8]=1111 + [12]=0 keeps it
+            // disjoint from both the contiguous load/store (bit12=1) and the gather/scatter below. Claimed first.
+            if word & 0xFFE0_1FE0 == 0xEC00_0F00 {
+                let to_vector = (word >> 20) & 1 == 1;
+                let rt2 = Arm32GeneralPurposeRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+                let rt = Arm32GeneralPurposeRegister::from_operand_bits((word & 0xF) as u8);
+                let qd = Arm32MveVectorRegister::from_field((word >> 13) & 0b111);
+                let idx1 = 2 + ((word >> 4) & 1) as u8;
+                return Ok(Some(Self::MveVmovTwoLane(to_vector, idx1, qd, rt, rt2)));
+            }
+
+            // MVE contiguous vector load/store (VLDRB/H/W, VSTRB/H/W). Same 0xEC../0xED.. space as VFP
+            // load/store but disjoint: the MVE forms have bits[11:9]=111 (vs VFP's 101) and the same-size
+            // marker bit12=1. Decoded BEFORE the VFP block so it claims its own words first.
+            if word & 0xFE00_0000 == 0xEC00_0000 && (word >> 12) & 1 == 1 && (word >> 9) & 0b111 == 0b111
+                && let Some(size) = Arm32MveSize::from_size_bits((word >> 7) & 0b11) {
+                    let is_load = (word >> 20) & 1 == 1;
+                    let qd = Arm32MveVectorRegister::from_field((word >> 13) & 0b111);
+                    let rn = Arm32GeneralPurposeRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+                    let size_bytes = (mve_shift_esize(size) / 8) as i32;
+                    let magnitude = ((word & 0x7F) as i32) * size_bytes;
+                    let offset = if (word >> 23) & 1 == 1 { magnitude } else { -magnitude };
+                    let mode = match (((word >> 24) & 1), ((word >> 21) & 1)) {
+                        (1, 0) => ArmT32IndexMode::Offset,
+                        (1, 1) => ArmT32IndexMode::PreIndex,
+                        _ => ArmT32IndexMode::PostIndex, // (0,1)
+                    };
+                    return Ok(Some(Self::MveLoadStore(is_load, size, qd, rn, offset, mode)));
+                }
+
+            // MVE gather/scatter (scalar base + vector offset). bit12=0 keeps it disjoint from the contiguous
+            // load/store above (bit12=1); decoded right after it.
+            if matches!(word >> 24, 0xEC | 0xFC) && word & MVE_GATHER_SCATTER_MASK == MVE_GATHER_SCATTER_BASE {
+                let is_load = (word >> 20) & 1 == 1;
+                let unsigned = (word >> 28) & 1 == 1;
+                let esize = mve_mem_size_from_log((word >> 7) & 0b11);
+                let msize = mve_mem_size_from_log((((word >> 6) & 1) << 1) | ((word >> 4) & 1));
+                let scaled = word & 1 == 1;
+                let qd = Arm32MveVectorRegister::from_field((word >> 13) & 0b111);
+                let rn = Arm32GeneralPurposeRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+                let qm = Arm32MveVectorRegister::from_field((word >> 1) & 0b111);
+                return Ok(Some(Self::MveGatherScatter(is_load, unsigned, esize, msize, scaled, qd, rn, qm)));
+            }
+
+            // MVE gather/scatter with a vector base + immediate (top byte 0xFD).
+            if word >> 24 == 0xFD && word & MVE_GATHER_VBASE_MASK == MVE_GATHER_VBASE_BASE {
+                let is_load = (word >> 20) & 1 == 1;
+                let is_dword = (word >> 8) & 1 == 1;
+                let writeback = (word >> 21) & 1 == 1;
+                let qn = Arm32MveVectorRegister::from_field((word >> 17) & 0b111);
+                let qd = Arm32MveVectorRegister::from_field((word >> 13) & 0b111);
+                let scale = if is_dword { 8 } else { 4 };
+                let magnitude = ((word & 0x7F) * scale) as i32;
+                let offset = if (word >> 23) & 1 == 1 { magnitude } else { -magnitude };
+                return Ok(Some(Self::MveGatherScatterBase(is_load, is_dword, writeback, qd, qn, offset)));
+            }
+
+            // MVE de-interleaving/interleaving load/store (top byte 0xFC, bit12=1).
+            if word >> 24 == 0xFC && word & MVE_INTERLEAVE_MASK == MVE_INTERLEAVE_BASE
+                && let Some(size) = Arm32MveSize::from_size_bits((word >> 7) & 0b11) {
+                    let is_load = (word >> 20) & 1 == 1;
+                    let is_quad = word & 1 == 1;
+                    let writeback = (word >> 21) & 1 == 1;
+                    let pass = ((word >> 5) & if is_quad { 0b11 } else { 0b1 }) as u8;
+                    let qd = Arm32MveVectorRegister::from_field((word >> 13) & 0b111);
+                    let rn = Arm32GeneralPurposeRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+                    return Ok(Some(Self::MveInterleave(is_load, is_quad, pass, size, qd, rn, writeback)));
+                }
+
+            // M8f FP load/store VLDR/VSTR (the P=1,W=0 offset form: bit21=0).  mask: op + L(bit20) + size[11:8].
+            match word & 0b1111_1111_0011_0000_0000_1111_0000_0000 {
+                0xED10_0A00 => { let (vf, d, rn, off) = decode_word_fp_load_store(word); return Ok(Some(Self::Vldr_Single_T2(Arm32SinglePrecisionRegister::from_field_and_bit(vf, d), g(rn), off))); },
+                0xED00_0A00 => { let (vf, d, rn, off) = decode_word_fp_load_store(word); return Ok(Some(Self::Vstr_Single_T2(Arm32SinglePrecisionRegister::from_field_and_bit(vf, d), g(rn), off))); },
+                0xED10_0B00 => { let (vf, d, rn, off) = decode_word_fp_load_store(word); return Ok(Some(Self::Vldr_Double_T1(Arm32DoublePrecisionRegister::from_field_and_bit(vf, d), g(rn), off))); },
+                0xED00_0B00 => { let (vf, d, rn, off) = decode_word_fp_load_store(word); return Ok(Some(Self::Vstr_Double_T1(Arm32DoublePrecisionRegister::from_field_and_bit(vf, d), g(rn), off))); },
+                _ => (),
+            }
+
+            // FLDMDBX/FSTMDBX (deprecated FP load/store multiple, decrement-before + writeback + the X word):
+            // P=1,U=0,W=1, [11:8]=1011, and imm8 is ODD (= 2*count + 1). The odd imm8 (bit0=1) distinguishes
+            // these from VLDMDB/VSTMDB (even imm8), which the generic block below would otherwise claim.
+            if word & 0xFFA0_0F01 == 0xED20_0B01 {
+                let first = Arm32DoublePrecisionRegister::from_field_and_bit((word >> 12) & 0xF, (word >> 22) & 1);
+                let count = (((word & 0xFF) - 1) / 2) as u8;
+                return Ok(Some(Self::FldmdbxFstmdbx_T1((word >> 20) & 1 == 1, g(((word >> 16) & 0xF) as u8), first, count)));
+            }
+
+            // M8g FP load/store multiple -- reached only after VLDR (P=1,W=0) above, so the remaining FP
+            // load/store words are the multiple forms. Guard PU != 00 (00 is the VMOV core-pair, not modeled).
+            match word & 0b1111_1110_0001_0000_0000_1111_0000_0000 {
+                0xEC10_0A00 if ((word >> 23) & 1) | ((word >> 24) & 1) == 1 => { let (rn, wb, db, vf, d, imm8) = decode_word_fp_load_store_multiple(word); return Ok(Some(Self::Vldm_Single_T2(g(rn), wb, db, Arm32SinglePrecisionRegister::from_field_and_bit(vf, d), imm8))); },
+                0xEC00_0A00 if ((word >> 23) & 1) | ((word >> 24) & 1) == 1 => { let (rn, wb, db, vf, d, imm8) = decode_word_fp_load_store_multiple(word); return Ok(Some(Self::Vstm_Single_T2(g(rn), wb, db, Arm32SinglePrecisionRegister::from_field_and_bit(vf, d), imm8))); },
+                0xEC10_0B00 if ((word >> 23) & 1) | ((word >> 24) & 1) == 1 => { let (rn, wb, db, vf, d, imm8) = decode_word_fp_load_store_multiple(word); return Ok(Some(Self::Vldm_Double_T1(g(rn), wb, db, Arm32DoublePrecisionRegister::from_field_and_bit(vf, d), imm8 / 2))); },
+                0xEC00_0B00 if ((word >> 23) & 1) | ((word >> 24) & 1) == 1 => { let (rn, wb, db, vf, d, imm8) = decode_word_fp_load_store_multiple(word); return Ok(Some(Self::Vstm_Double_T1(g(rn), wb, db, Arm32DoublePrecisionRegister::from_field_and_bit(vf, d), imm8 / 2))); },
+                _ => (),
+            }
+
+            // M8i VMOV between a core register pair and a double / two singles (the (P=0,U=0) hole the VLDM
+            // block above skips).  op (bit20): 0 = core -> FP, 1 = FP -> core.
+            match word & 0b1111_1111_1110_0000_0000_1111_1101_0000 {
+                0xEC40_0A10 => {
+                    let (rt2, rt) = (((word >> 16) & 0b1111) as u8, ((word >> 12) & 0b1111) as u8);
+                    let sm = Arm32SinglePrecisionRegister::from_field_and_bit(word & 0b1111, (word >> 5) & 1);
+                    // op (bit20): 1 = FP -> core (singles into the pair), 0 = core -> FP
+                    return Ok(Some(if (word >> 20) & 1 == 1 { Self::Vmov_Singles_To_CorePair_T1(g(rt), g(rt2), sm) } else { Self::Vmov_CorePair_To_Singles_T1(sm, g(rt), g(rt2)) }));
+                },
+                0xEC40_0B10 => {
+                    let (rt2, rt) = (((word >> 16) & 0b1111) as u8, ((word >> 12) & 0b1111) as u8);
+                    let dm = Arm32DoublePrecisionRegister::from_field_and_bit(word & 0b1111, (word >> 5) & 1);
+                    return Ok(Some(if (word >> 20) & 1 == 1 { Self::Vmov_Double_To_CorePair_T1(g(rt), g(rt2), dm) } else { Self::Vmov_CorePair_To_Double_T1(dm, g(rt), g(rt2)) }));
+                },
+                _ => (),
+            }
+
+            // M8h FP data-processing: [31:24]=EE, [11:9]=101, [4]=0. The 2-operand "other" group is
+            // (bit23=1, [21:20]=11); everything else is the 3-operand group. VCMP/VCVT (M8i) sit in the
+            // 2-operand group with other opc2 values and fall through here (from_bits -> None).
+            if word & 0b1111_1111_0000_0000_0000_1110_0001_0000 == 0xEE00_0A00 {
+                let double = (word >> 8) & 1 == 1;
+                let top = (word >> 23) & 1;
+                let middle = (word >> 20) & 0b11;
+                let vd_field = (word >> 12) & 0b1111;
+                let d_bit = (word >> 22) & 1;
+                let vm_field = word & 0b1111;
+                let m_bit = (word >> 5) & 1;
+                if top == 1 && middle == 0b11 {
+                    // bit6 == 0 in this group is VMOV (immediate): imm8 = imm4H:imm4L.
+                    if (word >> 6) & 1 == 0 {
+                        let imm8 = ((((word >> 16) & 0xF) << 4) | (word & 0xF)) as u8;
+                        return Ok(Some(if double {
+                            Self::Vmov_Immediate_Double_T1(Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), imm8)
+                        } else {
+                            Self::Vmov_Immediate_Single_T1(Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), imm8)
+                        }));
+                    }
+                    let opc2 = (word >> 16) & 0b1111;
+                    let op7 = (word >> 7) & 1;
+                    // half-precision conversions (opc2 0010 = f16->f32, 0011 = f32->f16; op7 = top half)
+                    if opc2 == 0b0010 {
+                        return Ok(Some(Self::Vcvt_HalfToSingle_T1(Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit), op7 == 1)));
+                    }
+                    if opc2 == 0b0011 {
+                        return Ok(Some(Self::Vcvt_SingleToHalf_T1(Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit), op7 == 1)));
+                    }
+                    // fixed-point conversions: opc2 = 1:op:1:U (i.e. 1010/1011/1110/1111).
+                    if opc2 & 0b1010 == 0b1010 && let Some((signed, bits32, frac)) = decode_word_vcvt_fixed(word) {
+                        let to_fixed = (opc2 >> 2) & 1 == 1;
+                        return Ok(Some(match (to_fixed, double) {
+                            (true, false) => Self::Vcvt_FloatToFixed_Single_T1(Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), signed, bits32, frac),
+                            (true, true) => Self::Vcvt_FloatToFixed_Double_T1(Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), signed, bits32, frac),
+                            (false, false) => Self::Vcvt_FixedToFloat_Single_T1(Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), signed, bits32, frac),
+                            (false, true) => Self::Vcvt_FixedToFloat_Double_T1(Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), signed, bits32, frac),
+                        }));
+                    }
+                    if let Some(op) = ArmT32FpDataOperation2::from_bits(opc2, op7) {
+                        return Ok(Some(if double {
+                            Self::FpDataProcess2_Double(op, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                        } else {
+                            Self::FpDataProcess2_Single(op, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                        }));
+                    }
+                    // M8i VCMP (opc2=0100, register Vm) / VCMP #0 (opc2=0101); op7 = the signalling E bit.
+                    if opc2 == 0b0100 {
+                        return Ok(Some(if double {
+                            Self::Vcmp_Double_T1(Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit), op7 == 1)
+                        } else {
+                            Self::Vcmp_Single_T1(Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit), op7 == 1)
+                        }));
+                    }
+                    if opc2 == 0b0101 {
+                        return Ok(Some(if double {
+                            Self::Vcmp_Zero_Double_T2(Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), op7 == 1)
+                        } else {
+                            Self::Vcmp_Zero_Single_T2(Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), op7 == 1)
+                        }));
+                    }
+                    // M8i VCVT: 0111 = f32<->f64, 1000 = int->float, 110x = float->int. `double` (bit8) is
+                    // the SOURCE precision for float<->int and float-narrow, the DEST precision for int->float.
+                    match opc2 {
+                        0b0111 => return Ok(Some(if double {
+                            Self::Vcvt_Double_To_Single_T1(Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                        } else {
+                            Self::Vcvt_Single_To_Double_T1(Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                        })),
+                        0b1000 => return Ok(Some(if double {
+                            Self::Vcvt_IntToFloat_ToDouble_T1(Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit), op7 == 1)
+                        } else {
+                            Self::Vcvt_IntToFloat_ToSingle_T1(Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit), op7 == 1)
+                        })),
+                        0b1100 | 0b1101 => return Ok(Some(if double {
+                            Self::Vcvt_FloatToInt_FromDouble_T1(Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit), opc2 & 1 == 1, op7 == 1)
+                        } else {
+                            Self::Vcvt_FloatToInt_FromSingle_T1(Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit), opc2 & 1 == 1, op7 == 1)
+                        })),
+                        _ => {},
+                    }
+                } else if let Some(op) = ArmT32FpDataOperation3::from_bits(top, middle, (word >> 6) & 1) {
+                    let vn_field = (word >> 16) & 0b1111;
+                    let n_bit = (word >> 7) & 1;
+                    return Ok(Some(if double {
+                        Self::FpDataProcess3_Double(op, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vn_field, n_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                    } else {
+                        Self::FpDataProcess3_Single(op, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vn_field, n_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                    }));
+                }
+            }
+
+            // M8i VMRS / VMSR (FPSCR transfer). VMRS with Rt==1111 is the APSR_nzcv (vcmp flags) form.
+            match word & 0b1111_1111_1111_1111_0000_1111_1111_1111 {
+                0xEEF1_0A10 => { let rt = ((word >> 12) & 0b1111) as u8; return Ok(Some(if rt == 0b1111 { Self::Vmrs_Apsr_Nzcv_T1 } else { Self::Vmrs_T1(g(rt)) })); },
+                0xEEE1_0A10 => { return Ok(Some(Self::Vmsr_T1(g(((word >> 12) & 0b1111) as u8)))); },
+                _ => (),
+            }
+
+            // M8i VMOV core <-> single (op bit 20: 0 = Rt->Sn, 1 = Sn->Rt).  mask excludes Vn / Rt / N.
+            match word & 0b1111_1111_1111_0000_0000_1111_0111_1111 {
+                0xEE00_0A10 => { let sn = Arm32SinglePrecisionRegister::from_field_and_bit((word >> 16) & 0b1111, (word >> 7) & 1); return Ok(Some(Self::Vmov_Core_To_Single_T1(sn, g(((word >> 12) & 0b1111) as u8)))); },
+                0xEE10_0A10 => { let sn = Arm32SinglePrecisionRegister::from_field_and_bit((word >> 16) & 0b1111, (word >> 7) & 1); return Ok(Some(Self::Vmov_Single_To_Core_T1(g(((word >> 12) & 0b1111) as u8), sn))); },
+                _ => (),
+            }
+
+            // VMOV core <-> scalar-lane ([11:8]=1011, vs VMOV-single's 1010). [20]=0 Rt->Dd[x]; [20]=1 Dn[x]->Rt (U[23]).
+            if word & 0xFF90_0F1F == 0xEE00_0B10 {
+                let (size, index) = Arm32VmovLaneSize::from_opc_fields((word >> 21) & 0b11, (word >> 5) & 0b11);
+                let dd = Arm32DoublePrecisionRegister::from_field_and_bit((word >> 16) & 0b1111, (word >> 7) & 1);
+                return Ok(Some(Self::Vmov_Core_To_Scalar_T1(size, index, dd, g(((word >> 12) & 0b1111) as u8))));
+            }
+            if word & 0xFF10_0F1F == 0xEE10_0B10 {
+                let (size, index) = Arm32VmovLaneSize::from_opc_fields((word >> 21) & 0b11, (word >> 5) & 0b11);
+                let dn = Arm32DoublePrecisionRegister::from_field_and_bit((word >> 16) & 0b1111, (word >> 7) & 1);
+                let unsigned = !matches!(size, Arm32VmovLaneSize::Word) && (word >> 23) & 1 == 1;
+                return Ok(Some(Self::Vmov_Scalar_To_Core_T1(unsigned, size, index, g(((word >> 12) & 0b1111) as u8), dn)));
+            }
+
+            // M7i PC-relative literal loads (`Rt, [pc, #+/-imm12]`); the opcode has Rn==1111. Mask excludes the
+            // U bit (bit23) and Rt/imm12, but requires the Rn==1111 nibble -- so it intercepts the Rn==PC case
+            // before the imm12 / register / indexed blocks that would otherwise mis-read it as a base register.
+            match word & 0b1111_1111_0111_1111_0000_0000_0000_0000 {
+                0xF85F_0000 => { let (rt, off) = decode_word_load_literal(word); return Ok(Some(Self::Ldr_Literal_T2(g(rt), off))); },
+                0xF81F_0000 => { let (rt, off) = decode_word_load_literal(word); return Ok(Some(Self::Ldrb_Literal_T1(g(rt), off))); },
+                0xF83F_0000 => { let (rt, off) = decode_word_load_literal(word); return Ok(Some(Self::Ldrh_Literal_T1(g(rt), off))); },
+                0xF91F_0000 => { let (rt, off) = decode_word_load_literal(word); return Ok(Some(Self::Ldrsb_Literal_T1(g(rt), off))); },
+                0xF93F_0000 => { let (rt, off) = decode_word_load_literal(word); return Ok(Some(Self::Ldrsh_Literal_T1(g(rt), off))); },
+                _ => (),
+            }
+
+            // M7i PLD / PLI, positive (imm12) form. The Rt field is 1111, which is how it is distinguished
+            // from a byte/half load; intercept it before the imm12 load block.  mask: keep op + Rt==1111.
+            match word & 0b1111_1111_1111_0000_1111_0000_0000_0000 {
+                0xF890_F000 => { let rn = ((word >> 16) & 0b1111) as u8; return Ok(Some(Self::Pld_Immediate_T1(g(rn), (word & 0xFFF) as i32))); },
+                0xF990_F000 => { let rn = ((word >> 16) & 0b1111) as u8; return Ok(Some(Self::Pli_Immediate_T1(g(rn), (word & 0xFFF) as i32))); },
+                _ => (),
+            }
+
+            // M7i PLD / PLI, negative (imm8) form (`[Rn, #-imm8]`). Rt==1111 and bits[11:8]=1100; intercept
+            // before the indexed block.  mask: keep op + Rt==1111 + the 1100 P/U/W field.
+            match word & 0b1111_1111_1111_0000_1111_1111_0000_0000 {
+                0xF810_FC00 => { let rn = ((word >> 16) & 0b1111) as u8; return Ok(Some(Self::Pld_Immediate_T1(g(rn), -((word & 0xFF) as i32)))); },
+                0xF910_FC00 => { let rn = ((word >> 16) & 0b1111) as u8; return Ok(Some(Self::Pli_Immediate_T1(g(rn), -((word & 0xFF) as i32)))); },
+                _ => (),
+            }
+
+            // LDR.W / STR.W (immediate, T3)  mask: 0b1111_1111_1111_0000_0000_0000_0000_0000 (imm12)
+            match word & 0b1111_1111_1111_0000_0000_0000_0000_0000 {
+                op if op == ArmT32OpcodePattern_32Bit::Ldr_Immediate_T3 as u32 => {
+                    let (rn, rt, imm12) = decode_word_rn_rt_imm12(word);
+                    return Ok(Some(Self::Ldr_Immediate_T3(Arm32GeneralPurposeRegister::from_operand_bits(rt), Arm32GeneralPurposeRegister::from_operand_bits(rn), imm12)));
+                },
+                op if op == ArmT32OpcodePattern_32Bit::Str_Immediate_T3 as u32 => {
+                    let (rn, rt, imm12) = decode_word_rn_rt_imm12(word);
+                    return Ok(Some(Self::Str_Immediate_T3(Arm32GeneralPurposeRegister::from_operand_bits(rt), Arm32GeneralPurposeRegister::from_operand_bits(rn), imm12)));
+                },
+                // M7h byte/half immediate-offset (imm12) forms
+                0xF890_0000 => { let (rn, rt, i) = decode_word_rn_rt_imm12(word); return Ok(Some(Self::Ldrb_Immediate_T2(g(rt), g(rn), i))); },
+                0xF880_0000 => { let (rn, rt, i) = decode_word_rn_rt_imm12(word); return Ok(Some(Self::Strb_Immediate_T2(g(rt), g(rn), i))); },
+                0xF8B0_0000 => { let (rn, rt, i) = decode_word_rn_rt_imm12(word); return Ok(Some(Self::Ldrh_Immediate_T2(g(rt), g(rn), i))); },
+                0xF8A0_0000 => { let (rn, rt, i) = decode_word_rn_rt_imm12(word); return Ok(Some(Self::Strh_Immediate_T2(g(rt), g(rn), i))); },
+                0xF990_0000 => { let (rn, rt, i) = decode_word_rn_rt_imm12(word); return Ok(Some(Self::Ldrsb_Immediate_T1(g(rt), g(rn), i))); },
+                0xF9B0_0000 => { let (rn, rt, i) = decode_word_rn_rt_imm12(word); return Ok(Some(Self::Ldrsh_Immediate_T1(g(rt), g(rn), i))); },
+                _ => (),
+            }
+
+            // M7h register-offset load/store  mask: 0b1111_1111_1111_0000_0000_1111_1100_0000 ([11:6]=0)
+            match word & 0b1111_1111_1111_0000_0000_1111_1100_0000 {
+                0xF850_0000 => { let (rn, rt, l, rm) = decode_word_rn_rt_lsl_rm(word); return Ok(Some(Self::Ldr_Register_T2(g(rt), g(rn), g(rm), l))); },
+                0xF840_0000 => { let (rn, rt, l, rm) = decode_word_rn_rt_lsl_rm(word); return Ok(Some(Self::Str_Register_T2(g(rt), g(rn), g(rm), l))); },
+                0xF810_0000 => { let (rn, rt, l, rm) = decode_word_rn_rt_lsl_rm(word); return Ok(Some(Self::Ldrb_Register_T2(g(rt), g(rn), g(rm), l))); },
+                0xF800_0000 => { let (rn, rt, l, rm) = decode_word_rn_rt_lsl_rm(word); return Ok(Some(Self::Strb_Register_T2(g(rt), g(rn), g(rm), l))); },
+                0xF830_0000 => { let (rn, rt, l, rm) = decode_word_rn_rt_lsl_rm(word); return Ok(Some(Self::Ldrh_Register_T2(g(rt), g(rn), g(rm), l))); },
+                0xF820_0000 => { let (rn, rt, l, rm) = decode_word_rn_rt_lsl_rm(word); return Ok(Some(Self::Strh_Register_T2(g(rt), g(rn), g(rm), l))); },
+                0xF910_0000 => { let (rn, rt, l, rm) = decode_word_rn_rt_lsl_rm(word); return Ok(Some(Self::Ldrsb_Register_T2(g(rt), g(rn), g(rm), l))); },
+                0xF930_0000 => { let (rn, rt, l, rm) = decode_word_rn_rt_lsl_rm(word); return Ok(Some(Self::Ldrsh_Register_T2(g(rt), g(rn), g(rm), l))); },
+                _ => (),
+            }
+
+            // Unprivileged load/store (LDRT/STRT family): [31:25]=1111100, [24]=S (sign-extend), [23]=0,
+            // [22:21]=size (00 B / 01 H / 10 W), [20]=L, Rn[19:16]; hw2 Rt[15:12], [11:8]=1110 (the T marker),
+            // imm8[7:0]. The [11:8]=1110 marker keeps these distinct from the regular indexed T4/T3 forms below.
+            if word & 0xFE80_0F00 == 0xF800_0E00 {
+                let signed = (word >> 24) & 1 == 1;
+                let size = ((word >> 21) & 0b11) as u8;
+                let load = (word >> 20) & 1 == 1;
+                // valid combos only: 5 loads (signed only on byte/half) + 3 unsigned stores
+                if size <= 2 && (!signed || (load && size < 2)) {
+                    let rn = Arm32GeneralPurposeRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+                    let rt = Arm32GeneralPurposeRegister::from_operand_bits(((word >> 12) & 0xF) as u8);
+                    return Ok(Some(Self::UnprivLoadStore_T1(load, signed, size, rt, rn, (word & 0xFF) as u8)));
+                }
+            }
+
+            // M7i single-register indexed load/store (T4/T3/T2): `Rt, [Rn, #+/-imm8]{!}` / `[Rn], #+/-imm8`.
+            // Bit 11 is the marker that separates these from the register-offset forms above; the helper
+            // returns None for the unmodeled LDRT/STRT (P=0,W=0) and (P=1,U=1,W=0) cases (-> InvalidOpcode).
+            match word & 0b1111_1111_1111_0000_0000_1000_0000_0000 {
+                0xF850_0800 => { if let Some((rt, rn, off, mode)) = decode_word_load_store_indexed(word) { return Ok(Some(Self::Ldr_Immediate_T4(g(rt), g(rn), off, mode))); } },
+                0xF840_0800 => { if let Some((rt, rn, off, mode)) = decode_word_load_store_indexed(word) { return Ok(Some(Self::Str_Immediate_T4(g(rt), g(rn), off, mode))); } },
+                0xF810_0800 => { if let Some((rt, rn, off, mode)) = decode_word_load_store_indexed(word) { return Ok(Some(Self::Ldrb_Immediate_T3(g(rt), g(rn), off, mode))); } },
+                0xF800_0800 => { if let Some((rt, rn, off, mode)) = decode_word_load_store_indexed(word) { return Ok(Some(Self::Strb_Immediate_T3(g(rt), g(rn), off, mode))); } },
+                0xF830_0800 => { if let Some((rt, rn, off, mode)) = decode_word_load_store_indexed(word) { return Ok(Some(Self::Ldrh_Immediate_T3(g(rt), g(rn), off, mode))); } },
+                0xF820_0800 => { if let Some((rt, rn, off, mode)) = decode_word_load_store_indexed(word) { return Ok(Some(Self::Strh_Immediate_T3(g(rt), g(rn), off, mode))); } },
+                0xF910_0800 => { if let Some((rt, rn, off, mode)) = decode_word_load_store_indexed(word) { return Ok(Some(Self::Ldrsb_Immediate_T2(g(rt), g(rn), off, mode))); } },
+                0xF930_0800 => { if let Some((rt, rn, off, mode)) = decode_word_load_store_indexed(word) { return Ok(Some(Self::Ldrsh_Immediate_T2(g(rt), g(rn), off, mode))); } },
+                _ => (),
+            }
+
+            // LDREX  Rt,[Rn,#imm]  mask: 0b1111_1111_1111_0000_0000_1111_0000_0000 (imm8 = offset/4)
+            match word & 0b1111_1111_1111_0000_0000_1111_0000_0000 {
+                op if op == ArmT32OpcodePattern_32Bit::Ldrex_T1 as u32 => {
+                    let rn = ((word >> 16) & 0b1111) as u8;
+                    let rt = ((word >> 12) & 0b1111) as u8;
+                    let imm = ((word & 0b1111_1111) as u16) * 4;
+                    return Ok(Some(Self::Ldrex_T1(Arm32GeneralPurposeRegister::from_operand_bits(rt), Arm32GeneralPurposeRegister::from_operand_bits(rn), imm)));
+                },
+                _ => (),
+            }
+
+            // STREX  Rd,Rt,[Rn,#imm]  mask: 0b1111_1111_1111_0000_0000_0000_0000_0000 (imm8 = offset/4)
+            match word & 0b1111_1111_1111_0000_0000_0000_0000_0000 {
+                op if op == ArmT32OpcodePattern_32Bit::Strex_T1 as u32 => {
+                    let rn = ((word >> 16) & 0b1111) as u8;
+                    let rt = ((word >> 12) & 0b1111) as u8;
+                    let rd = ((word >> 8) & 0b1111) as u8;
+                    let imm = ((word & 0b1111_1111) as u16) * 4;
+                    return Ok(Some(Self::Strex_T1(Arm32GeneralPurposeRegister::from_operand_bits(rd), Arm32GeneralPurposeRegister::from_operand_bits(rt), Arm32GeneralPurposeRegister::from_operand_bits(rn), imm)));
+                },
+                _ => (),
+            }
+
+            // LDREXB / LDREXH  Rt,[Rn]  mask: 0b1111_1111_1111_0000_0000_1111_1111_1111 (Rt in 15:12 is variable)
+            match word & 0b1111_1111_1111_0000_0000_1111_1111_1111 {
+                op if op == ArmT32OpcodePattern_32Bit::Ldrexb_T1 as u32 => {
+                    let (rn, rt) = (((word >> 16) & 0b1111) as u8, ((word >> 12) & 0b1111) as u8);
+                    return Ok(Some(Self::Ldrexb_T1(Arm32GeneralPurposeRegister::from_operand_bits(rt), Arm32GeneralPurposeRegister::from_operand_bits(rn))));
+                },
+                op if op == ArmT32OpcodePattern_32Bit::Ldrexh_T1 as u32 => {
+                    let (rn, rt) = (((word >> 16) & 0b1111) as u8, ((word >> 12) & 0b1111) as u8);
+                    return Ok(Some(Self::Ldrexh_T1(Arm32GeneralPurposeRegister::from_operand_bits(rt), Arm32GeneralPurposeRegister::from_operand_bits(rn))));
+                },
+                _ => (),
+            }
+
+            // STREXB / STREXH  Rd,Rt,[Rn]  mask: 0b1111_1111_1111_0000_0000_1111_1111_0000 (Rt in 15:12 is variable)
+            match word & 0b1111_1111_1111_0000_0000_1111_1111_0000 {
+                op if op == ArmT32OpcodePattern_32Bit::Strexb_T1 as u32 => {
+                    let rn = ((word >> 16) & 0b1111) as u8;
+                    let rt = ((word >> 12) & 0b1111) as u8;
+                    let rd = (word & 0b1111) as u8;
+                    return Ok(Some(Self::Strexb_T1(Arm32GeneralPurposeRegister::from_operand_bits(rd), Arm32GeneralPurposeRegister::from_operand_bits(rt), Arm32GeneralPurposeRegister::from_operand_bits(rn))));
+                },
+                op if op == ArmT32OpcodePattern_32Bit::Strexh_T1 as u32 => {
+                    let rn = ((word >> 16) & 0b1111) as u8;
+                    let rt = ((word >> 12) & 0b1111) as u8;
+                    let rd = (word & 0b1111) as u8;
+                    return Ok(Some(Self::Strexh_T1(Arm32GeneralPurposeRegister::from_operand_bits(rd), Arm32GeneralPurposeRegister::from_operand_bits(rt), Arm32GeneralPurposeRegister::from_operand_bits(rn))));
+                },
+                _ => (),
+            }
+
+            // LDA/STL acquire-release family: [31:24]=0xE8, [23:21]=110, [20]=L, Rn[19:16]; hw2 Rt[15:12],
+            // [11:8]=1111, [7]=1, [6]=exclusive, [5:4]=size (00 B / 01 H / 10 W). [7]=1 separates these from
+            // LDREX/STREX ([7]=0). Store-exclusive (L=0, exclusive=1) takes Rd in [3:0]. size==0b11 is reserved.
+            if word & 0xFFE0_0F80 == 0xE8C0_0F80 && (word >> 4) & 0b11 != 0b11 {
+                let g = Arm32GeneralPurposeRegister::from_operand_bits;
+                let size = ((word >> 4) & 0b11) as u8;
+                let exclusive = (word >> 6) & 1 == 1;
+                let rn = g(((word >> 16) & 0xF) as u8);
+                let rt = g(((word >> 12) & 0xF) as u8);
+                if (word >> 20) & 1 == 1 {
+                    return Ok(Some(Self::LoadAcquire_T1(size, exclusive, rt, rn)));
+                } else if exclusive {
+                    return Ok(Some(Self::StoreReleaseExclusive_T1(size, g((word & 0xF) as u8), rt, rn)));
+                } else {
+                    return Ok(Some(Self::StoreRelease_T1(size, rt, rn)));
+                }
+            }
+
+            // TBB / TBH  [Rn,Rm]  mask: 0b1111_1111_1111_0000_1111_1111_1111_0000 (bits 15:12 fixed = 1111)
+            match word & 0b1111_1111_1111_0000_1111_1111_1111_0000 {
+                op if op == ArmT32OpcodePattern_32Bit::Tbb_T1 as u32 => {
+                    let (rn, rm) = (((word >> 16) & 0b1111) as u8, (word & 0b1111) as u8);
+                    return Ok(Some(Self::Tbb_T1(Arm32GeneralPurposeRegister::from_operand_bits(rn), Arm32GeneralPurposeRegister::from_operand_bits(rm))));
+                },
+                op if op == ArmT32OpcodePattern_32Bit::Tbh_T1 as u32 => {
+                    let (rn, rm) = (((word >> 16) & 0b1111) as u8, (word & 0b1111) as u8);
+                    return Ok(Some(Self::Tbh_T1(Arm32GeneralPurposeRegister::from_operand_bits(rn), Arm32GeneralPurposeRegister::from_operand_bits(rm))));
+                },
+                _ => (),
+            }
+
+            // MLA / MLS  (checked after MUL above, since MUL is MLA with Ra==0b1111)  mask: 0b1111_1111_1111_0000_0000_0000_1111_0000
+            match word & 0b1111_1111_1111_0000_0000_0000_1111_0000 {
+                op if op == ArmT32OpcodePattern_32Bit::Mla_T1 as u32 => {
+                    let (rn, ra, rd, rm) = decode_word_rn_ra_rd_rm(word);
+                    return Ok(Some(Self::Mla_T1(Arm32GeneralPurposeRegister::from_operand_bits(rd), Arm32GeneralPurposeRegister::from_operand_bits(rn), Arm32GeneralPurposeRegister::from_operand_bits(rm), Arm32GeneralPurposeRegister::from_operand_bits(ra))));
+                },
+                op if op == ArmT32OpcodePattern_32Bit::Mls_T1 as u32 => {
+                    let (rn, ra, rd, rm) = decode_word_rn_ra_rd_rm(word);
+                    return Ok(Some(Self::Mls_T1(Arm32GeneralPurposeRegister::from_operand_bits(rd), Arm32GeneralPurposeRegister::from_operand_bits(rn), Arm32GeneralPurposeRegister::from_operand_bits(rm), Arm32GeneralPurposeRegister::from_operand_bits(ra))));
+                },
+                // M8c DSP USAD8 / USADA8 (Ra==1111 -> USAD8): Rn 19:16, Ra 15:12, Rd 11:8, Rm 3:0
+                0xFB70_0000 => {
+                    let (rn, ra, rd, rm) = decode_word_rn_ra_rd_rm(word);
+                    return Ok(Some(if ra == 0b1111 { Self::Usad8_T1(g(rd), g(rn), g(rm)) } else { Self::Usada8_T1(g(rd), g(rn), g(rm), g(ra)) }));
+                },
+                _ => (),
+            }
+
+            // M8e DSP halfword multiply SMUL*/SMLA* (op2[7:6]=00, n=[5], m=[4]; Ra==1111 -> SMUL).
+            if word & 0b1111_1111_1111_0000_0000_0000_1100_0000 == 0xFB10_0000 {
+                let (rn, ra, rd, rm) = decode_word_rn_ra_rd_rm(word);
+                let (n, m) = ((word >> 5) & 1 == 1, (word >> 4) & 1 == 1);
+                return Ok(Some(if ra == 0b1111 { Self::Smul_T1(g(rd), g(rn), g(rm), n, m) } else { Self::Smla_T1(g(rd), g(rn), g(rm), g(ra), n, m) }));
+            }
+
+            // M8e DSP dual / word-by-halfword / most-significant-word multiplies (op2[7:5]=000, one bit at [4]).
+            match word & 0b1111_1111_1111_0000_0000_0000_1110_0000 {
+                0xFB20_0000 => { let (rn, ra, rd, rm) = decode_word_rn_ra_rd_rm(word); let x = (word >> 4) & 1 == 1;
+                    return Ok(Some(if ra == 0b1111 { Self::Smuad_T1(g(rd), g(rn), g(rm), x) } else { Self::Smlad_T1(g(rd), g(rn), g(rm), g(ra), x) })); },
+                0xFB30_0000 => { let (rn, ra, rd, rm) = decode_word_rn_ra_rd_rm(word); let m = (word >> 4) & 1 == 1;
+                    return Ok(Some(if ra == 0b1111 { Self::Smulw_T1(g(rd), g(rn), g(rm), m) } else { Self::Smlaw_T1(g(rd), g(rn), g(rm), g(ra), m) })); },
+                0xFB40_0000 => { let (rn, ra, rd, rm) = decode_word_rn_ra_rd_rm(word); let x = (word >> 4) & 1 == 1;
+                    return Ok(Some(if ra == 0b1111 { Self::Smusd_T1(g(rd), g(rn), g(rm), x) } else { Self::Smlsd_T1(g(rd), g(rn), g(rm), g(ra), x) })); },
+                0xFB50_0000 => { let (rn, ra, rd, rm) = decode_word_rn_ra_rd_rm(word); let round = (word >> 4) & 1 == 1;
+                    return Ok(Some(if ra == 0b1111 { Self::Smmul_T1(g(rd), g(rn), g(rm), round) } else { Self::Smmla_T1(g(rd), g(rn), g(rm), g(ra), round) })); },
+                0xFB60_0000 => { let (rn, ra, rd, rm) = decode_word_rn_ra_rd_rm(word); let round = (word >> 4) & 1 == 1;
+                    return Ok(Some(Self::Smmls_T1(g(rd), g(rn), g(rm), g(ra), round))); },
+                _ => (),
+            }
+
+            // M7k long multiply (RdLo 15:12, RdHi 11:8, Rn 19:16, Rm 3:0)  mask: 0b1111_1111_1111_0000_0000_0000_1111_0000
+            match word & 0b1111_1111_1111_0000_0000_0000_1111_0000 {
+                0xFB80_0000 => { let (rn, rl, rh, rm) = decode_word_long_multiply(word); return Ok(Some(Self::Smull_T1(g(rl), g(rh), g(rn), g(rm)))); },
+                0xFBA0_0000 => { let (rn, rl, rh, rm) = decode_word_long_multiply(word); return Ok(Some(Self::Umull_T1(g(rl), g(rh), g(rn), g(rm)))); },
+                0xFBC0_0000 => { let (rn, rl, rh, rm) = decode_word_long_multiply(word); return Ok(Some(Self::Smlal_T1(g(rl), g(rh), g(rn), g(rm)))); },
+                0xFBE0_0000 => { let (rn, rl, rh, rm) = decode_word_long_multiply(word); return Ok(Some(Self::Umlal_T1(g(rl), g(rh), g(rn), g(rm)))); },
+                0xFBE0_0060 => { let (rn, rl, rh, rm) = decode_word_long_multiply(word); return Ok(Some(Self::Umaal_T1(g(rl), g(rh), g(rn), g(rm)))); },
+                _ => (),
+            }
+
+            // M8e DSP long signed multiplies sharing the SMLAL opcode but with a nonzero op2 nibble:
+            // SMLAL<x><y> (op2=10NM), SMLALD (op2=110X), SMLSLD (0xFBD0, op2=110X).
+            match word & 0b1111_1111_1111_0000_0000_0000_1111_0000 {
+                0xFBC0_0080 | 0xFBC0_0090 | 0xFBC0_00A0 | 0xFBC0_00B0 => {
+                    let (rn, rl, rh, rm) = decode_word_long_multiply(word);
+                    let (n, m) = ((word >> 5) & 1 == 1, (word >> 4) & 1 == 1);
+                    return Ok(Some(Self::Smlal_Halfword_T1(g(rl), g(rh), g(rn), g(rm), n, m)));
+                },
+                0xFBC0_00C0 | 0xFBC0_00D0 => { let (rn, rl, rh, rm) = decode_word_long_multiply(word); return Ok(Some(Self::Smlald_T1(g(rl), g(rh), g(rn), g(rm), (word >> 4) & 1 == 1))); },
+                0xFBD0_00C0 | 0xFBD0_00D0 => { let (rn, rl, rh, rm) = decode_word_long_multiply(word); return Ok(Some(Self::Smlsld_T1(g(rl), g(rh), g(rn), g(rm), (word >> 4) & 1 == 1))); },
+                _ => (),
+            }
+
+            // M7l wide extend SXTB.W/UXTB.W/SXTH.W/UXTH.W (Rn==1111 -> no add).  Rd 11:8, rotate 5:4, Rm 3:0
+            // mask keeps op (incl. Rn==1111) and the fixed 1111 in 15:12 / bit7=1,bit6=0; lets Rd, rotate, Rm vary.
+            match word & 0b1111_1111_1111_1111_1111_0000_1100_0000 {
+                0xFA4F_F080 => { let (rd, rot, rm) = decode_word_extend(word); return Ok(Some(Self::Sxtb_T2(g(rd), g(rm), rot))); },
+                0xFA5F_F080 => { let (rd, rot, rm) = decode_word_extend(word); return Ok(Some(Self::Uxtb_T2(g(rd), g(rm), rot))); },
+                0xFA0F_F080 => { let (rd, rot, rm) = decode_word_extend(word); return Ok(Some(Self::Sxth_T2(g(rd), g(rm), rot))); },
+                0xFA1F_F080 => { let (rd, rot, rm) = decode_word_extend(word); return Ok(Some(Self::Uxth_T2(g(rd), g(rm), rot))); },
+                _ => (),
+            }
+
+            // M8b DSP extend-and-add: same opcodes as the M7l extends but with Rn != 1111 (the *16 forms
+            // are new; their Rn==1111 case is SXTB16/UXTB16).  mask lets Rn / Rd / rotate / Rm vary.
+            match word & 0b1111_1111_1111_0000_1111_0000_1100_0000 {
+                0xFA00_F080 => { let (rd, rn, rm, rot) = decode_word_extend_and_add(word); return Ok(Some(Self::Sxtah_T1(g(rd), g(rn), g(rm), rot))); },
+                0xFA10_F080 => { let (rd, rn, rm, rot) = decode_word_extend_and_add(word); return Ok(Some(Self::Uxtah_T1(g(rd), g(rn), g(rm), rot))); },
+                0xFA40_F080 => { let (rd, rn, rm, rot) = decode_word_extend_and_add(word); return Ok(Some(Self::Sxtab_T1(g(rd), g(rn), g(rm), rot))); },
+                0xFA50_F080 => { let (rd, rn, rm, rot) = decode_word_extend_and_add(word); return Ok(Some(Self::Uxtab_T1(g(rd), g(rn), g(rm), rot))); },
+                0xFA20_F080 => { let (rd, rn, rm, rot) = decode_word_extend_and_add(word);
+                    if rn == 0b1111 { return Ok(Some(Self::Sxtb16_T1(g(rd), g(rm), rot))); } else { return Ok(Some(Self::Sxtab16_T1(g(rd), g(rn), g(rm), rot))); } },
+                0xFA30_F080 => { let (rd, rn, rm, rot) = decode_word_extend_and_add(word);
+                    if rn == 0b1111 { return Ok(Some(Self::Uxtb16_T1(g(rd), g(rm), rot))); } else { return Ok(Some(Self::Uxtab16_T1(g(rd), g(rn), g(rm), rot))); } },
+                _ => (),
+            }
+
+            // M8c DSP SSAT16 / USAT16 (no shift): keyed on [15:12]=0000 and [7:4]=0000, which separates them
+            // from SSAT(ASR) -- that always has a nonzero shift (SSAT ASR has no #0 form). Decode BEFORE SSAT.
+            match word & 0b1111_1111_1111_0000_1111_0000_1111_0000 {
+                0xF320_0000 => { let rn = ((word >> 16) & 0b1111) as u8; let rd = ((word >> 8) & 0b1111) as u8; return Ok(Some(Self::Ssat16_T1(g(rd), ((word & 0b1111) as u8) + 1, g(rn)))); },
+                0xF3A0_0000 => { let rn = ((word >> 16) & 0b1111) as u8; let rd = ((word >> 8) & 0b1111) as u8; return Ok(Some(Self::Usat16_T1(g(rd), (word & 0b1111) as u8, g(rn)))); },
+                _ => (),
+            }
+
+            // M7l SSAT / USAT.  sh 21, Rn 19:16, imm3 14:12, Rd 11:8, imm2 7:6, sat 4:0
+            // mask keeps the op bits but lets sh (the LSL/ASR selector) and all operand fields vary.
+            match word & 0b1111_1111_1101_0000_1000_0000_0010_0000 {
+                0xF300_0000 => { let (rd, sat, rn, shift) = decode_word_saturate(word, false); return Ok(Some(Self::Ssat_T1(g(rd), sat, g(rn), shift))); },
+                0xF380_0000 => { let (rd, sat, rn, shift) = decode_word_saturate(word, true); return Ok(Some(Self::Usat_T1(g(rd), sat, g(rn), shift))); },
+                _ => (),
+            }
+
+            // ---- CDE (Custom Datapath Extension): CX1/CX2/CX3 (+A accumulate / +D dual) in coproc 0-7. The CDE
+            // coprocessor space overlaps the generic CDP/MCR space, so a coprocessor the `context` marks CDE is
+            // decoded here (before the generic coprocessor below). [27:25]=111, [23:22]=00/01/10 = CX1/CX2/CX3. ----
+            // CX1 = [23:22]=00, CX2 = [23:22]=01, CX3 = [23]=1 (its [22] carries imm[5], so test bit23 alone).
+            if (word >> 25) & 0b111 == 0b111 && context.is_cde_coprocessor(((word >> 8) & 0xF) as u8) && (word >> 24) & 1 == 0 {
+                let g = Arm32GeneralPurposeRegister::from_operand_bits;
+                let (acc, dual, cp) = ((word >> 28) & 1 == 1, (word >> 6) & 1 == 1, ((word >> 8) & 0xF) as u8);
+                if (word >> 23) & 1 == 1 {   // CX3
+                    let imm = (((word >> 4) & 0x3) | (((word >> 7) & 1) << 2) | (((word >> 20) & 0x7) << 3)) as u8;
+                    return Ok(Some(Self::Cde_Cx3_T1(acc, dual, cp, g((word & 0xF) as u8), g(((word >> 16) & 0xF) as u8), g(((word >> 12) & 0xF) as u8), imm)));
+                } else if (word >> 22) & 1 == 1 {   // CX2
+                    let imm = ((word & 0x3F) | (((word >> 7) & 1) << 6) | (((word >> 20) & 0x3) << 7)) as u16;
+                    return Ok(Some(Self::Cde_Cx2_T1(acc, dual, cp, g(((word >> 12) & 0xF) as u8), g(((word >> 16) & 0xF) as u8), imm)));
+                } else {   // CX1
+                    let imm = ((word & 0x3F) | (((word >> 7) & 1) << 6) | (((word >> 16) & 0x3F) << 7)) as u16;
+                    return Ok(Some(Self::Cde_Cx1_T1(acc, dual, cp, g(((word >> 12) & 0xF) as u8), imm)));
+                }
+            }
+
+            // ---- CDE VCX1/VCX2/VCX3 -- the FP/vector-register cousins of CX1/2/3 (coproc 0-7). These sit in
+            // the 111_0_110 (0xEC/0xED/0xFC/0xFD) generic-coprocessor space (bit25=0, vs CX's bit25=1), so like
+            // CX they are decoded before the generic coprocessor below. Arity key: bit23=1 -> VCX3; else
+            // bit20 selects VCX1 (0) / VCX2 (1). kind: bit6=1 -> vector (Q), else bit24=1 -> double (D), else
+            // single (S). acc = bit28, coproc = [10:8]. ----
+            if (word >> 29) == 0b111 && (word >> 25) & 0b111 == 0b110 && context.is_cde_coprocessor(((word >> 8) & 0xF) as u8) {
+                let acc = (word >> 28) & 1 == 1;
+                let kind = if (word >> 6) & 1 == 1 { 2 } else if (word >> 24) & 1 == 1 { 1 } else { 0 };
+                let cp = ((word >> 8) & 7) as u8;
+                if word & 0xEE80_0000 == 0xEC80_0000 {   // VCX3 (bit23=1)
+                    return Ok(Some(Self::Vcx3_T1(acc, kind, cp, vcx_dec_d(kind, word), vcx_dec_hi(kind, word), vcx_dec_lo(kind, word), vcx_dec_imm3(word))));
+                } else if word & 0xEEB0_0000 == 0xEC30_0000 {   // VCX2 (bit23=0, bit20=1)
+                    return Ok(Some(Self::Vcx2_T1(acc, kind, cp, vcx_dec_d(kind, word), vcx_dec_lo(kind, word), vcx_dec_imm2(word))));
+                } else if word & 0xEEB0_0000 == 0xEC20_0000 {   // VCX1 (bit23=0, bit20=0)
+                    return Ok(Some(Self::Vcx1_T1(acc, kind, cp, vcx_dec_d(kind, word), vcx_dec_imm1(word))));
+                }
+            }
+
+            // ---- Generic coprocessor (MCR/MRC/CDP/MCRR/MRRC/LDC/STC + 2/L). Decoded LAST so the FP (cp10/11)
+            // and MVE decoders claim their words first; this handles the remaining generic coprocessor space. ----
+            let top = word >> 24;
+            let cp = ((word >> 8) & 0xF) as u8;
+            // A coprocessor the context marks CDE was already handled as CX / VCX above; the GENERIC
+            // coprocessor handles every OTHER coprocessor (all of 8-15, plus any of 0-7 the context says is
+            // NOT CDE). Without this gate a generic LDC/STC/CDP/MCR/MCRR with a CDE coprocessor round-trip-
+            // aliases a CDE instruction (the cargo-fuzz `t32_instruction_stream` target found exactly this:
+            // LDC2 p0 and VCX3 both encode to 0xFD94_0000 -- see `ArmDecodeContext` / Rule R4).
+            if !context.is_cde_coprocessor(cp) {
+                if (top == 0xEC || top == 0xFC) && (word >> 21) & 0b111 == 0b010 {   // MCRR / MRRC
+                    return Ok(Some(Self::Coproc_Mcrr_T1(top == 0xFC, (word >> 20) & 1 == 1, cp,
+                        ((word >> 4) & 0xF) as u8, g(((word >> 12) & 0xF) as u8), g(((word >> 16) & 0xF) as u8), (word & 0xF) as u8)));
+                }
+                if (top == 0xED || top == 0xFD) && (word >> 21) & 1 == 0 {            // LDC / STC (offset form: P=1, W=0)
+                    let imm = ((word & 0xFF) as i32) * 4 * (if (word >> 23) & 1 == 1 { 1 } else { -1 });
+                    return Ok(Some(Self::Coproc_Ldc_T1(top == 0xFD, (word >> 22) & 1 == 1, (word >> 20) & 1 == 1, cp,
+                        ((word >> 12) & 0xF) as u8, g(((word >> 16) & 0xF) as u8), imm)));
+                }
+                if top == 0xEE || top == 0xFE {
+                    let two = top == 0xFE;
+                    if (word >> 4) & 1 == 1 {                                         // MCR / MRC
+                        return Ok(Some(Self::Coproc_Mcr_T1(two, (word >> 20) & 1 == 1, cp,
+                            ((word >> 21) & 0b111) as u8, g(((word >> 12) & 0xF) as u8), ((word >> 16) & 0xF) as u8, (word & 0xF) as u8, ((word >> 5) & 0b111) as u8)));
+                    } else {                                                          // CDP
+                        return Ok(Some(Self::Coproc_Cdp_T1(two, cp, ((word >> 20) & 0xF) as u8,
+                            ((word >> 12) & 0xF) as u8, ((word >> 16) & 0xF) as u8, (word & 0xF) as u8, ((word >> 5) & 0b111) as u8)));
+                    }
+                }
+            }
+        }
+
+        // if we could not match against any known opcode, return an invalid opcode error; the iter_offset value will indicate the new index in the iterator
+        Err(DecodeError::InvalidOpcode)
+    }
+}
+
 //
 
 // ---- operand validation helpers (return EncodeError instead of panicking) ----
