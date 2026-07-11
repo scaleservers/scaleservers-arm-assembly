@@ -32,3 +32,6 @@ pub use armt32_memory_barrier_option::ArmT32MemoryBarrierOption;
 
 mod armt32_parallel_arithmetic;
 pub use armt32_parallel_arithmetic::{ArmT32ParallelOperation, ArmT32ParallelPrefix};
+
+mod armt32_opcode_pattern_16bit;
+pub use armt32_opcode_pattern_16bit::ArmT32OpcodePattern_16Bit;
