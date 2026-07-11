@@ -96,3 +96,11 @@ mod errors;
 pub use errors::{
     DecodeError,
 };
+
+pub mod targets;
+pub use targets::{
+    ArmCpuFeature,
+    ArmInstructionRequirement,
+    ArmIsaVersion,
+    ArmTargetProfile,
+};
