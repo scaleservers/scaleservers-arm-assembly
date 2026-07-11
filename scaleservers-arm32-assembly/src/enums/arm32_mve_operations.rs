@@ -772,3 +772,147 @@ pub fn mve_dualmac_decode_size(subtract: bool, word: u32) -> Option<(bool, Arm32
         }
     }
 }
+
+// VMLALDAV / VMLSLDAV / VRMLALDAVH / VRMLSLDAVH -- LONG dual multiply-(add/subtract)-accumulate cross-lane
+// reductions into a GPR PAIR: `<op>{a}{x}.<s|u><16|32> RdaLo, RdaHi, Qn, Qm`. 0xEE8x/0xFE8x space.
+// Base **0xEE80_0E00**, mask **0xEF80_0ED0**. RdaLo[15:12] (EVEN) and RdaHi via [22:20]=RdaHi>>1 (ODD) are
+// INDEPENDENT (not consecutive). Qn[19:17], Qm[3:1], A(accumulate)=bit5, X(exchange)=bit12, subtract=bit0.
+// The op/size/signedness bits are NON-ORTHOGONAL (see mve_long_dualmac_bits):
+//   bit0 = subtract; bit16 = .32 selector for the PLAIN forms only;
+//   for ADD forms bit28=U and bit8=the rounding-high marker (VRMLALDAVH);
+//   for SUBTRACT forms (signed-only) bit8 stays 0 and bit28 itself is the rounding-high marker (VRMLSLDAVH).
+// Decoded AFTER the cross-lane reductions and VADDLV: those bit-patterns belong to them (GNU rejects the
+// long-MAC register pairs that would alias a reduction, e.g. rounding-high with RdaHi=13), so reduction-first
+// ordering is exact.
+pub const MVE_LONG_DUALMAC_BASE: u32 = 0xEE80_0E00;
+pub const MVE_LONG_DUALMAC_MASK: u32 = 0xEF80_0ED0;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32MveLongMacOp { Vmlaldav, Vmlsldav, Vrmlaldavh, Vrmlsldavh }
+impl Arm32MveLongMacOp {
+    pub fn subtract(self) -> bool { matches!(self, Self::Vmlsldav | Self::Vrmlsldavh) }
+    pub fn rounding_high(self) -> bool { matches!(self, Self::Vrmlaldavh | Self::Vrmlsldavh) }
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::Vmlaldav => "vmlaldav",
+            Self::Vmlsldav => "vmlsldav",
+            Self::Vrmlaldavh => "vrmlaldavh",
+            Self::Vrmlsldavh => "vrmlsldavh",
+        }
+    }
+    pub fn from_flags(subtract: bool, rounding_high: bool) -> Self {
+        match (subtract, rounding_high) {
+            (false, false) => Self::Vmlaldav,
+            (true,  false) => Self::Vmlsldav,
+            (false, true)  => Self::Vrmlaldavh,
+            (true,  true)  => Self::Vrmlsldavh,
+        }
+    }
+}
+/// The {bit28, bit16, bit8, bit0} opcode/size/signedness contribution for a long dual-MAC.
+pub fn mve_long_dualmac_bits(op: Arm32MveLongMacOp, unsigned: bool, size: Arm32MveSize) -> u32 {
+    let (subtract, rounding_high) = (op.subtract(), op.rounding_high());
+    let mut bits = subtract as u32; // bit0
+    bits |= if subtract { (rounding_high as u32) << 28 } else { (unsigned as u32) << 28 };
+    bits |= if subtract { 0 } else { (rounding_high as u32) << 8 };
+    if !rounding_high && size == Arm32MveSize::I32 { bits |= 1 << 16; }
+    bits
+}
+/// Recovers `(op, unsigned, size)` from a long dual-MAC word. Returns `None` for reserved bit combinations.
+pub fn mve_long_dualmac_decode(word: u32) -> Option<(Arm32MveLongMacOp, bool, Arm32MveSize)> {
+    let subtract = word & 1 == 1;
+    let bit28 = (word >> 28) & 1 == 1;
+    let bit16 = (word >> 16) & 1 == 1;
+    let bit8  = (word >> 8) & 1 == 1;
+    let (rounding_high, unsigned) = if subtract {
+        if bit8 { return None; } // the subtract form never sets bit8
+        (bit28, false)           // subtract is signed-only; bit28 is the rounding-high marker
+    } else {
+        (bit8, bit28)            // add form: bit8 = rounding-high marker, bit28 = U
+    };
+    let size = if rounding_high {
+        if bit16 { return None; } // rounding-high is 32-bit only and never sets the .32 size bit
+        Arm32MveSize::I32
+    } else if bit16 {
+        Arm32MveSize::I32
+    } else {
+        Arm32MveSize::I16
+    };
+    Some((Arm32MveLongMacOp::from_flags(subtract, rounding_high), unsigned, size))
+}
+
+// ---- MVE VRINT and VCVT (float<->int), both in the 0xFFBx 2-reg-misc space (`Qd, Qm`) ----
+// Float element size is bits[19:18] (.f16 = 01, .f32 = 10, via mve_misc2_float_size_*). They share the misc2
+// signature mask (clears size + regs). VRINT (hw0 = 0xFFB2) and VCVT (hw0 = 0xFFB3) differ in bit 16.
+
+// VRINT rounding mode lives in hw1 bits[9:7]; each mode is one base word (size + regs zeroed).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32MveVrintOp {
+    Vrintn, Vrinta, Vrintz, Vrintm, Vrintp, Vrintx,
+}
+impl Arm32MveVrintOp {
+    pub fn base_word(self) -> u32 {
+        match self {
+            Self::Vrintn => 0xFFB2_0440,
+            Self::Vrinta => 0xFFB2_0540,
+            Self::Vrintz => 0xFFB2_05C0,
+            Self::Vrintm => 0xFFB2_06C0,
+            Self::Vrintp => 0xFFB2_07C0,
+            Self::Vrintx => 0xFFB2_04C0,
+        }
+    }
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::Vrintn => "vrintn",
+            Self::Vrinta => "vrinta",
+            Self::Vrintz => "vrintz",
+            Self::Vrintm => "vrintm",
+            Self::Vrintp => "vrintp",
+            Self::Vrintx => "vrintx",
+        }
+    }
+    pub const ALL: [Self; 6] = [Self::Vrintn, Self::Vrinta, Self::Vrintz, Self::Vrintm, Self::Vrintp, Self::Vrintx];
+    pub fn from_signature(signature: u32) -> Option<Self> {
+        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+    }
+}
+
+// VCVT float<->int: base (to-float, signed, size zeroed) plus bit8 = to-integer, bit7 = unsigned. The int
+// width equals the float width (f16<->[su]16, f32<->[su]32), both selected by size[19:18].
+pub const MVE_VCVT_FI_BASE: u32 = 0xFFB3_0640;
+// the fixed-opcode mask/pattern for detecting a VCVT float<->int (clears size[19:18], regs, bit8, bit7)
+pub const MVE_VCVT_FI_FIXED_MASK: u32 = 0xFFF3_1E71;
+pub const MVE_VCVT_FI_FIXED_PATTERN: u32 = 0xFFB3_0640;
+
+// VCVTA/VCVTN/VCVTP/VCVTM (float -> int with an explicit rounding mode), also in the 0xFFBx space (`Qd, Qm`).
+// Rounding mode = bits[9:8] (a=00, n=01, p=10, m=11); signedness = bit7; size[19:18] (the float/int width,
+// .f16<->[su]16 / .f32<->[su]32, via mve_misc2_float_size_*).
+pub const MVE_VCVTR_BASE: u32 = 0xFFB3_0040;
+pub const MVE_VCVTR_MASK: u32 = 0xFFF3_1C71; // clears size[19:18], rounding[9:8], signedness bit7, Qd, Qm
+
+// Fixed-point VCVT (float <-> fixed-point with a fractional-bit count): `vcvt.<int>.f<w> Qd, Qm, #fbits` and
+// the reverse `vcvt.f<w>.<int> Qd, Qm, #fbits`, in the 0xEFAx-0xEFBx / 0xFFAx-0xFFBx space (bit23=1, bit22=0).
+// imm6[21:16] = 64 - fbits (so fbits in 1..=16 for .16 -> imm6 in 48..=63, and 1..=32 for .32 -> imm6 in
+// 32..=63). U(signedness of the fixed side) = bit28; element width = bit9 (.16 = 0, .32 = 1); direction =
+// bit8 (1 = float->fixed, 0 = fixed->float); Qd[15:13]; Qm[3:1]. The tight [11:10]=11 / [7:4]=0101 frame keeps
+// it disjoint from the shifts / modified-immediate / 2-reg-misc sharing this space. (Half-precision VCVTB/T
+// is NOT here -- GNU's encoding for that vector form is buggy, see the progress note.)
+pub const MVE_VCVT_FIXED_BASE: u32 = 0xEF80_0C50;
+pub const MVE_VCVT_FIXED_MASK: u32 = 0xEFC0_1CF1;
+
+// MVE VCVT between half- and single-precision (vector): `vcvtb/vcvtt.f16.f32 Qd, Qm` / `.f32.f16`. Encoding
+// from the Armv8-M ARM (DDI0553) -- GNU's encoding of this vector form is buggy (it scrambles Qd/Qm), so this
+// is implemented from the spec, NOT the GNU oracle. Spec: 111 op 111 0 0 D 1 1 1 1 1 1 Qd T 1 1 1 0 0 0 M 0 Qm 1.
+// op(bit28): 0 = F16.F32 (single->half), 1 = F32.F16 (half->single). T(bit12): 0 = B (bottom) / 1 = T (top).
+// Qd[15:13], Qm[3:1]; D=M=0 (UNDEFINED otherwise); bit0 = 1 fixed.
+pub const MVE_VCVT_HALF_BASE: u32 = 0xEE3F_0E01;
+pub const MVE_VCVT_HALF_MASK: u32 = 0xEFFF_0FF1;
+
+// MVE shift-right-and-narrow: VSHRN/VRSHRN (non-saturating), VQSHRN/VQRSHRN (signed-saturating), VQSHRUN/
+// VQRSHRUN (unsigned-result-saturating), each with a Bottom/Top variant. Spec (DDI0553); GNU is buggy for the
+// non-rounding saturating forms (it sets the rounding bit), so the saturating ones are implemented from spec.
+// Frame: 111 [bit28] 111 0 1 D(0) 0 sz imm Qd T 1 1 1 1 [7:6] M(0) 0 Qm [bit0]; imm5 = sz:imm at [20:16] =
+// (16 if src .16 / 32 if src .32) - shift. The ROUNDING bit is IRREGULAR: bit28 for the [7:6]=11 forms
+// (VSHRN/VRSHRN, VQSHRUN/VQRSHRUN), bit0 for the [7:6]=01 forms (VQSHRN/VQRSHRN, where bit28 = U/signedness).
+pub const MVE_SHIFT_NARROW_BASE: u32 = 0xEE80_0F00;
+pub const MVE_SHIFT_NARROW_MASK: u32 = 0xEFE0_0F30; // fixes [23:21]=100, [11:8]=1111, [5:4]=00; clears bit28/imm5/Qd/T/[7:6]/Qm/bit0

@@ -112,6 +112,12 @@ pub use arm32_mve_operations::{
     Arm32MveFloatReduceOp, MVE_FLOAT_REDUCE_SIGNATURE_MASK,
     MVE_VABAV_SIGNATURE_MASK, MVE_VABAV_BASE,
     MVE_DUALMAC_BASE, MVE_DUALMAC_MASK, mve_dualmac_size_bits, mve_dualmac_decode_size,
+    Arm32MveLongMacOp, MVE_LONG_DUALMAC_BASE, MVE_LONG_DUALMAC_MASK, mve_long_dualmac_bits, mve_long_dualmac_decode,
+    Arm32MveVrintOp, MVE_VCVT_FI_BASE,
+    MVE_VCVT_FI_FIXED_MASK, MVE_VCVT_FI_FIXED_PATTERN,
+    MVE_VCVTR_BASE, MVE_VCVTR_MASK,
+    MVE_VCVT_FIXED_BASE, MVE_VCVT_FIXED_MASK,
+    MVE_VCVT_HALF_BASE, MVE_VCVT_HALF_MASK, MVE_SHIFT_NARROW_BASE, MVE_SHIFT_NARROW_MASK,
 };
 
 // ---- neutral ARM-wide aliases ----
