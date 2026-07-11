@@ -22,4 +22,7 @@ mod enums;
 pub use enums::{
     Arm32GeneralPurposeRegister,
     Arm32LowGeneralPurposeRegister,
+    Arm32SinglePrecisionRegister,
+    Arm32DoublePrecisionRegister,
+    Arm32QuadwordRegister,
 };
