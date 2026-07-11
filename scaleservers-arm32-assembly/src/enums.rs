@@ -35,3 +35,6 @@ pub use armt32_parallel_arithmetic::{ArmT32ParallelOperation, ArmT32ParallelPref
 
 mod armt32_opcode_pattern_16bit;
 pub use armt32_opcode_pattern_16bit::ArmT32OpcodePattern_16Bit;
+
+mod armt32_opcode_pattern_32bit;
+pub use armt32_opcode_pattern_32bit::ArmT32OpcodePattern_32Bit;
