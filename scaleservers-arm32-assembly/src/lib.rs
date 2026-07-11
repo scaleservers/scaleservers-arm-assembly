@@ -54,4 +54,7 @@ pub use enums::{
     Arm32VrintMode,
     Arm32NeonSize,
     Arm32NeonIntegerOp,
+    Arm32NeonFloatOp,
+    Arm32NeonBitwiseOp,
+    Arm32NeonMisc2SizedOp,
 };
