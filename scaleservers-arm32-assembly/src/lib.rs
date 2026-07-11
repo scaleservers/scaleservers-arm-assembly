@@ -34,4 +34,5 @@ pub use enums::{
     ArmT32ParallelOperation,
     ArmT32ParallelPrefix,
     ArmT32RegisterShift,
+    ArmT32SpecialRegister,
 };
