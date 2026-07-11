@@ -26,3 +26,6 @@ pub use armt32_index_mode::ArmT32IndexMode;
 
 mod armt32_instruction_condition;
 pub use armt32_instruction_condition::ArmT32InstructionCondition;
+
+mod armt32_memory_barrier_option;
+pub use armt32_memory_barrier_option::ArmT32MemoryBarrierOption;

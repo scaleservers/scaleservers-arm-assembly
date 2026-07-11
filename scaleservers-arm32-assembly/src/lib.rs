@@ -30,4 +30,5 @@ pub use enums::{
     ArmT32FpDataOperation2,
     ArmT32IndexMode,
     ArmT32InstructionCondition,
+    ArmT32MemoryBarrierOption,
 };
