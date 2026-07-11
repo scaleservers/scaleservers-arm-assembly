@@ -38,3 +38,6 @@ pub use armt32_opcode_pattern_16bit::ArmT32OpcodePattern_16Bit;
 
 mod armt32_opcode_pattern_32bit;
 pub use armt32_opcode_pattern_32bit::ArmT32OpcodePattern_32Bit;
+
+mod armt32_register_shift;
+pub use armt32_register_shift::ArmT32RegisterShift;

@@ -33,4 +33,5 @@ pub use enums::{
     ArmT32MemoryBarrierOption,
     ArmT32ParallelOperation,
     ArmT32ParallelPrefix,
+    ArmT32RegisterShift,
 };
