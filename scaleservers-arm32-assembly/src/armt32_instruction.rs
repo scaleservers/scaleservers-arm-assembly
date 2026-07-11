@@ -902,3 +902,138 @@ fn movw_immediate_field_bits(imm16: u16) -> u32 {
     let imm8 = (imm16 & 0b1111_1111) as u32;
     (imm4 << 16) | (i << 26) | (imm3 << 12) | imm8
 }
+fn decode_word_imm16_movw(word: u32) -> u16 {
+    let imm4 = (word >> 16) & 0b1111;
+    let i = (word >> 26) & 0b1;
+    let imm3 = (word >> 12) & 0b111;
+    let imm8 = word & 0b1111_1111;
+    ((imm4 << 12) | (i << 11) | (imm3 << 8) | imm8) as u16
+}
+
+// ---- ThumbExpandImm (data-processing "modified immediate") codec ----
+//
+// A 12-bit field `i:imm3:imm8` expands to a 32-bit constant (ARMv7-M ARM, ThumbExpandImm):
+//   * top two bits 00 -> one of four byte forms keyed by bits 9:8 (zero-extend / 0x00XY00XY /
+//     0xXY00XY00 / 0xXYXYXYXY);
+//   * otherwise -> the 8-bit value (1:imm8<6:0>) rotated right by the 5-bit rotation imm12<11:7>.
+
+pub(crate) fn decode_thumb_expand_imm(imm12: u16) -> u32 {
+    let imm12 = (imm12 & 0x0FFF) as u32;
+    if (imm12 >> 10) & 0b11 == 0b00 {
+        let imm8 = imm12 & 0xFF;
+        match (imm12 >> 8) & 0b11 {
+            0b00 => imm8,
+            0b01 => (imm8 << 16) | imm8,
+            0b10 => (imm8 << 24) | (imm8 << 8),
+            _ /* 0b11 */ => (imm8 << 24) | (imm8 << 16) | (imm8 << 8) | imm8,
+        }
+    } else {
+        let unrotated = 0x80u32 | (imm12 & 0x7F);
+        let rotation = (imm12 >> 7) & 0b1_1111;
+        unrotated.rotate_right(rotation)
+    }
+}
+
+// Inverse: the canonical 12-bit field for a constant, or None if it is not encodable. Mirrors the order
+// GNU/LLVM assemblers pick (byte forms first, then the smallest rotation), so encode==their bytes.
+pub(crate) fn encode_thumb_expand_imm(value: u32) -> Option<u16> {
+    if value <= 0xFF {
+        return Some(value as u16); // byte form 00 (top bits 0)
+    }
+    let byte0 = value & 0xFF;
+    let byte1 = (value >> 8) & 0xFF;
+    if byte0 != 0 && value == (byte0 | (byte0 << 16)) {
+        return Some(0x100 | byte0 as u16); // 0x00XY00XY
+    }
+    if byte1 != 0 && value == ((byte1 << 8) | (byte1 << 24)) {
+        return Some(0x200 | byte1 as u16); // 0xXY00XY00
+    }
+    if byte0 != 0 && value == (byte0 | (byte0 << 8) | (byte0 << 16) | (byte0 << 24)) {
+        return Some(0x300 | byte0 as u16); // 0xXYXYXYXY
+    }
+    // rotation form: smallest rotation in 8..=31 whose left-rotate yields an 8-bit value with bit 7 set
+    for rotation in 8..=31u32 {
+        let candidate = value.rotate_left(rotation);
+        if (0x80..=0xFF).contains(&candidate) {
+            return Some(((rotation as u16) << 7) | ((candidate as u16) & 0x7F));
+        }
+    }
+    None
+}
+
+// Place the 12-bit modified-immediate field into a data-processing word (i @ bit 26, imm3 @ 14:12,
+// imm8 @ 7:0).
+fn modified_immediate_field_bits(imm12: u16) -> u32 {
+    let i = ((imm12 >> 11) & 0b1) as u32;
+    let imm3 = ((imm12 >> 8) & 0b111) as u32;
+    let imm8 = (imm12 & 0xFF) as u32;
+    (i << 26) | (imm3 << 12) | imm8
+}
+fn decode_word_modified_immediate(word: u32) -> u32 {
+    let i = (word >> 26) & 0b1;
+    let imm3 = (word >> 12) & 0b111;
+    let imm8 = word & 0xFF;
+    decode_thumb_expand_imm(((i << 11) | (imm3 << 8) | imm8) as u16)
+}
+
+// Build a "data processing (modified immediate)" word (T1 family): `11110 i 0 op4 S Rn 0 imm3 Rd imm8`.
+fn encode_data_processing_modified_immediate(op4: u32, set_flags: bool, rn: u8, rd: u8, value: u32) -> Result<u32, EncodeError> {
+    let imm12 = encode_thumb_expand_imm(value).ok_or(EncodeError::ModifiedImmediateNotEncodable { field: "const", value })?;
+    let word = 0b11110_0_0_0000_0_0000_0_000_0000_00000000u32
+        | (op4 << 21)
+        | ((set_flags as u32) << 20)
+        | ((rn as u32) << 16)
+        | ((rd as u32) << 8)
+        | modified_immediate_field_bits(imm12);
+    Ok(word)
+}
+
+// ---- data-processing (shifted register) shift codec ----
+
+// Validate the shift and place it: the 2-bit `type` at bits 5:4 and the 5-bit amount as imm3:imm2 at
+// bits 14:12 / 7:6. Amounts are the decoded UAL values (LSL 0..=31, LSR/ASR 1..=32 with 32 encoded as 0,
+// ROR 1..=31).
+fn encode_register_shift_field(shift: &ArmT32RegisterShift) -> Result<u32, EncodeError> {
+    let field: u32 = match shift {
+        ArmT32RegisterShift::Lsl(amount) => {
+            if *amount > 31 { return Err(EncodeError::ImmediateOutOfRange { field: "shift", value: *amount as i64, minimum: 0, maximum: 31 }); }
+            *amount as u32
+        },
+        ArmT32RegisterShift::Lsr(amount) | ArmT32RegisterShift::Asr(amount) => {
+            if *amount < 1 || *amount > 32 { return Err(EncodeError::ImmediateOutOfRange { field: "shift", value: *amount as i64, minimum: 1, maximum: 32 }); }
+            if *amount == 32 { 0 } else { *amount as u32 }
+        },
+        ArmT32RegisterShift::Ror(amount) => {
+            if *amount < 1 || *amount > 31 { return Err(EncodeError::ImmediateOutOfRange { field: "shift", value: *amount as i64, minimum: 1, maximum: 31 }); }
+            *amount as u32
+        },
+        ArmT32RegisterShift::Rrx => 0, // ROR type with a zero amount
+    };
+    let imm3 = (field >> 2) & 0b111;
+    let imm2 = field & 0b11;
+    Ok((imm3 << 12) | (imm2 << 6) | ((shift.type_bits() as u32) << 4))
+}
+
+fn decode_register_shift(word: u32) -> ArmT32RegisterShift {
+    let imm3 = (word >> 12) & 0b111;
+    let imm2 = (word >> 6) & 0b11;
+    let field = ((imm3 << 2) | imm2) as u8;
+    match (word >> 4) & 0b11 {
+        0b00 => ArmT32RegisterShift::Lsl(field),
+        0b01 => ArmT32RegisterShift::Lsr(if field == 0 { 32 } else { field }),
+        0b10 => ArmT32RegisterShift::Asr(if field == 0 { 32 } else { field }),
+        _ /* 0b11 */ => if field == 0 { ArmT32RegisterShift::Rrx } else { ArmT32RegisterShift::Ror(field) },
+    }
+}
+
+// Build a "data processing (shifted register)" word: `11101 01 op4 S Rn (0) imm3 Rd imm2 type Rm`.
+fn encode_data_processing_shifted_register(op4: u32, set_flags: bool, rn: u8, rd: u8, rm: u8, shift: &ArmT32RegisterShift) -> Result<u32, EncodeError> {
+    let word = 0b11101_01_0000_0_0000_0_000_0000_00_00_0000u32
+        | (op4 << 21)
+        | ((set_flags as u32) << 20)
+        | ((rn as u32) << 16)
+        | ((rd as u32) << 8)
+        | (rm as u32)
+        | encode_register_shift_field(shift)?;
+    Ok(word)
+}
