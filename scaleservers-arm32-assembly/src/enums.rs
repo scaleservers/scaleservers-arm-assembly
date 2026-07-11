@@ -79,6 +79,9 @@ pub use arm32_neon_operations::{
     Arm32NeonAesOp, Arm32NeonSha3Op, Arm32NeonSha2Op,
 };
 
+mod arm32_neon_load_store_address;
+pub use arm32_neon_load_store_address::Arm32NeonLoadStoreAddress;
+
 // ---- neutral ARM-wide aliases ----
 // The 4-bit condition code and the barrel-shift operand are identical in the A32 and T32 instruction sets,
 // so they are also exposed under neutral `Arm32*` names for use by `ArmA32Instruction`. The historical
