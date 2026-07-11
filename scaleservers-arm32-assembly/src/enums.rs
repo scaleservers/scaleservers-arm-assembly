@@ -44,3 +44,6 @@ pub use armt32_register_shift::ArmT32RegisterShift;
 
 mod armt32_special_register;
 pub use armt32_special_register::ArmT32SpecialRegister;
+
+mod arm32_shift_type;
+pub use arm32_shift_type::Arm32ShiftType;
