@@ -17,3 +17,6 @@ pub use floating_point_registers::{Arm32SinglePrecisionRegister, Arm32DoublePrec
 
 mod floating_point_data_operations;
 pub use floating_point_data_operations::{ArmT32FpDataOperation3, ArmT32FpDataOperation2};
+
+mod armt32_cps_primask_effect;
+pub use armt32_cps_primask_effect::ArmT32CpsPrimaskEffect;
