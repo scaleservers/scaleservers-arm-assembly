@@ -23,3 +23,6 @@ pub use armt32_cps_primask_effect::ArmT32CpsPrimaskEffect;
 
 mod armt32_index_mode;
 pub use armt32_index_mode::ArmT32IndexMode;
+
+mod armt32_instruction_condition;
+pub use armt32_instruction_condition::ArmT32InstructionCondition;
