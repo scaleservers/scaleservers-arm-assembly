@@ -450,3 +450,183 @@ pub fn mve_vdup_size_from_bits(b: u32, e: u32) -> Option<Arm32MveSize> {
         _ => None, // {1,1} is not a valid size
     }
 }
+
+// ---- MVE shift by immediate: `Qd, Qm, #imm` ----
+// These live in the 0xEF8x / 0xFF8x space (top byte 1110_1111/1111_1111, bit23=1), sharing it with the
+// one-register modified-immediate (VMOV/VMVN #imm). The two are told apart by imm6 = bits[21:16]: a shift
+// always has imm6 >= 8 (a size bit set), while the modified-immediate always has imm6[21:19]=000 (imm6 < 8).
+//
+// imm6 encodes BOTH the element size and the shift amount (exactly as NEON): the element size is the highest
+// set bit of imm6 (0b001xxx -> 8, 0b01xxxx -> 16, 0b1xxxxx -> 32). For a RIGHT shift by N: imm6 = 2*esize-N
+// (N in 1..=esize). For a LEFT shift by N: imm6 = esize+N (N in 0..=esize-1). So the op stores only its base
+// word (with imm6 / Qd / Qm zeroed) plus its direction; the codec derives imm6 from (size, amount).
+pub const MVE_SHIFT_SIGNATURE_MASK: u32 = 0xFFC0_1FF1; // clears imm6[21:16], Qd[15:13], Qm[3:1]
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32MveShiftImmOp {
+    VshrS, VshrU, VrshrS, VrshrU, Vsri, // right shifts
+    VshlI, Vsli, VqshlS, VqshlU, VqshluS, // left shifts
+}
+impl Arm32MveShiftImmOp {
+    // base word with imm6 / Qd / Qm zeroed
+    pub fn base_word(self) -> u32 {
+        match self {
+            Self::VshrS   => 0xEF80_0050,
+            Self::VshrU   => 0xFF80_0050,
+            Self::VrshrS  => 0xEF80_0250,
+            Self::VrshrU  => 0xFF80_0250,
+            Self::Vsri    => 0xFF80_0450,
+            Self::VshlI   => 0xEF80_0550,
+            Self::Vsli    => 0xFF80_0550,
+            Self::VqshlS  => 0xEF80_0750,
+            Self::VqshlU  => 0xFF80_0750,
+            Self::VqshluS => 0xFF80_0650,
+        }
+    }
+    // true for the left shifts (imm6 = esize + amount); false for the right shifts (imm6 = 2*esize - amount)
+    pub fn is_left_shift(self) -> bool {
+        matches!(self, Self::VshlI | Self::Vsli | Self::VqshlS | Self::VqshlU | Self::VqshluS)
+    }
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::VshrS | Self::VshrU => "vshr",
+            Self::VrshrS | Self::VrshrU => "vrshr",
+            Self::Vsri => "vsri",
+            Self::VshlI => "vshl",
+            Self::Vsli => "vsli",
+            Self::VqshlS | Self::VqshlU => "vqshl",
+            Self::VqshluS => "vqshlu",
+        }
+    }
+    // the UAL type letter, or None for the bit-insert ops (VSLI/VSRI, which carry only the element width)
+    pub fn type_prefix(self) -> Option<char> {
+        match self {
+            Self::VshrS | Self::VrshrS | Self::VqshlS | Self::VqshluS => Some('s'),
+            Self::VshrU | Self::VrshrU | Self::VqshlU => Some('u'),
+            Self::VshlI => Some('i'),
+            Self::Vsri | Self::Vsli => None,
+        }
+    }
+    pub const ALL: [Self; 10] = [
+        Self::VshrS, Self::VshrU, Self::VrshrS, Self::VrshrU, Self::Vsri,
+        Self::VshlI, Self::Vsli, Self::VqshlS, Self::VqshlU, Self::VqshluS,
+    ];
+    pub fn from_signature(signature: u32) -> Option<Self> {
+        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+    }
+}
+
+// the element width in bits for a shift element size
+pub fn mve_shift_esize(size: Arm32MveSize) -> u32 {
+    match size {
+        Arm32MveSize::I8 => 8,
+        Arm32MveSize::I16 => 16,
+        Arm32MveSize::I32 => 32,
+    }
+}
+// recover the element size from a shift's imm6 (the highest set bit selects the width); None if imm6 < 8
+pub fn mve_shift_size_from_imm6(imm6: u32) -> Option<Arm32MveSize> {
+    if imm6 & 0b100000 != 0 { Some(Arm32MveSize::I32) }
+    else if imm6 & 0b010000 != 0 { Some(Arm32MveSize::I16) }
+    else if imm6 & 0b001000 != 0 { Some(Arm32MveSize::I8) }
+    else { None }
+}
+
+// ---- MVE two-register miscellaneous: `Qd, Qm` ----
+// These live in the 0xFFBx space (bits[31:20] = 0xFFB), the NEON 2-reg-misc format. The element size is
+// bits[19:18]; each op's remaining signature is in hw1 bits[10:6] and hw0 bit16 (the int/float marker).
+pub const MVE_MISC2_SIGNATURE_MASK: u32 = 0xFFF3_1FF1; // clears size[19:18], Qd[15:13], Qm[3:1]
+
+// the [19:18] field value for a 2-reg-misc float element size (.f16 = 01, .f32 = 10)
+pub fn mve_misc2_float_size_bits(size: Arm32MveFloatSize) -> u32 {
+    match size {
+        Arm32MveFloatSize::F16 => 0b01,
+        Arm32MveFloatSize::F32 => 0b10,
+    }
+}
+pub fn mve_misc2_float_size_from_bits(bits: u32) -> Option<Arm32MveFloatSize> {
+    match bits & 0b11 {
+        0b01 => Some(Arm32MveFloatSize::F16),
+        0b10 => Some(Arm32MveFloatSize::F32),
+        _ => None,
+    }
+}
+
+// Sized integer 2-reg-misc operations. Element size is bits[19:18] (with per-op constraints, e.g. VREV32
+// only allows .8/.16). `type_prefix` is the UAL type letter, or None for VREV (which carries only the
+// element width, e.g. `vrev64.8`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32MveMisc2Op {
+    Vrev64, Vrev32, Vrev16, Vcls, Vclz, Vabs, Vneg, Vqabs, Vqneg,
+}
+impl Arm32MveMisc2Op {
+    pub fn base_word(self) -> u32 {
+        match self {
+            Self::Vrev64 => 0xFFB0_0040,
+            Self::Vrev32 => 0xFFB0_00C0,
+            Self::Vrev16 => 0xFFB0_0140,
+            Self::Vcls   => 0xFFB0_0440,
+            Self::Vclz   => 0xFFB0_04C0,
+            Self::Vabs   => 0xFFB1_0340,
+            Self::Vneg   => 0xFFB1_03C0,
+            Self::Vqabs  => 0xFFB0_0740,
+            Self::Vqneg  => 0xFFB0_07C0,
+        }
+    }
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::Vrev64 => "vrev64",
+            Self::Vrev32 => "vrev32",
+            Self::Vrev16 => "vrev16",
+            Self::Vcls => "vcls",
+            Self::Vclz => "vclz",
+            Self::Vabs => "vabs",
+            Self::Vneg => "vneg",
+            Self::Vqabs => "vqabs",
+            Self::Vqneg => "vqneg",
+        }
+    }
+    pub fn type_prefix(self) -> Option<char> {
+        match self {
+            Self::Vrev64 | Self::Vrev32 | Self::Vrev16 => None, // carries only the element width
+            Self::Vclz => Some('i'),
+            Self::Vcls | Self::Vabs | Self::Vneg | Self::Vqabs | Self::Vqneg => Some('s'),
+        }
+    }
+    pub const ALL: [Self; 9] = [
+        Self::Vrev64, Self::Vrev32, Self::Vrev16, Self::Vcls, Self::Vclz,
+        Self::Vabs, Self::Vneg, Self::Vqabs, Self::Vqneg,
+    ];
+    pub fn from_signature(signature: u32) -> Option<Self> {
+        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+    }
+}
+
+// Floating-point 2-reg-misc operations (VABS/VNEG .f16/.f32). The int/float marker is hw0 bit16 (set here),
+// which keeps these disjoint from the saturating-integer VQABS/VQNEG that share the same hw1 signature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32MveMisc2FloatOp {
+    Vabs, Vneg,
+}
+impl Arm32MveMisc2FloatOp {
+    pub fn base_word(self) -> u32 {
+        match self {
+            Self::Vabs => 0xFFB1_0740,
+            Self::Vneg => 0xFFB1_07C0,
+        }
+    }
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::Vabs => "vabs",
+            Self::Vneg => "vneg",
+        }
+    }
+    pub const ALL: [Self; 2] = [Self::Vabs, Self::Vneg];
+    pub fn from_signature(signature: u32) -> Option<Self> {
+        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+    }
+}
+
+// VMVN (register): bitwise-NOT a whole vector. No element size; renders as `vmvn Qd, Qm`.
+pub const MVE_VMVN_REG_MASK: u32 = 0xFFFF_1FF1; // the fixed opcode bits (clears only Qd / Qm)
+pub const MVE_VMVN_REG_BASE: u32 = 0xFFB0_05C0;

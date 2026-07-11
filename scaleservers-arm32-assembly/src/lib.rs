@@ -79,4 +79,7 @@ pub use enums::{
     Arm32MveFloatArithOp,
     Arm32MveVecScalarIntOp,
     Arm32MveVecScalarFloatOp,
+    Arm32MveShiftImmOp,
+    Arm32MveMisc2Op,
+    Arm32MveMisc2FloatOp,
 };
