@@ -95,6 +95,7 @@ pub use enums::{
 mod errors;
 pub use errors::{
     DecodeError,
+    EncodeError,
 };
 
 pub mod targets;
