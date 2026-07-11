@@ -1,4 +1,4 @@
-# scaleservers-arm32-assembly-lib-rs
+# scaleservers-arm-assembly
 
 
 ## License
