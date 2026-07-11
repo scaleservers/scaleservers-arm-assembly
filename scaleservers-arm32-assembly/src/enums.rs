@@ -91,8 +91,10 @@ pub use arm32_vmov_lane_size::Arm32VmovLaneSize;
 mod arm32_mve_operations;
 pub use arm32_mve_operations::{
     Arm32MveSize, Arm32MveFloatSize,
-    Arm32MveIntArithOp,
+    Arm32MveIntArithOp, Arm32MveBitwiseOp, Arm32MveFloatArithOp,
     MVE_INT_SIGNATURE_MASK, MVE_BITWISE_SIGNATURE_MASK, MVE_FLOAT_SIGNATURE_MASK,
+    Arm32MveVecScalarIntOp,
+    MVE_VBS_INT_SIGNATURE_MASK, MVE_VBS_FLOAT_SIGNATURE_MASK,
 };
 
 // ---- neutral ARM-wide aliases ----

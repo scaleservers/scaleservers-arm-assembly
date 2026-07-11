@@ -165,3 +165,161 @@ impl Arm32MveIntArithOp {
         Self::ALL.iter().copied().find(|op| op.base_word() == signature)
     }
 }
+
+// Bitwise 3-reg-same operations. Not size-parametric: bits[21:20] (and the U bit for VEOR) select the
+// boolean function, so they are baked into each base word.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32MveBitwiseOp {
+    Vand, Vbic, Vorr, Vorn, Veor,
+}
+impl Arm32MveBitwiseOp {
+    pub fn base_word(self) -> u32 {
+        match self {
+            Self::Vand => 0xEF00_0150,
+            Self::Vbic => 0xEF10_0150,
+            Self::Vorr => 0xEF20_0150,
+            Self::Vorn => 0xEF30_0150,
+            Self::Veor => 0xFF00_0150,
+        }
+    }
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::Vand => "vand",
+            Self::Vbic => "vbic",
+            Self::Vorr => "vorr",
+            Self::Vorn => "vorn",
+            Self::Veor => "veor",
+        }
+    }
+    pub const ALL: [Self; 5] = [Self::Vand, Self::Vbic, Self::Vorr, Self::Vorn, Self::Veor];
+    pub fn from_signature(signature: u32) -> Option<Self> {
+        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+    }
+}
+
+// Floating-point 3-reg-same vector-vector operations. Element size is the single bit 20 (.f32 / .f16).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32MveFloatArithOp {
+    Vadd, Vsub, Vmul, Vabd, Vmaxnm, Vminnm, Vfma, Vfms,
+}
+impl Arm32MveFloatArithOp {
+    // base word with Qd / Qn / Qm and the size bit (20) zeroed (i.e. the .f32 form)
+    pub fn base_word(self) -> u32 {
+        match self {
+            Self::Vadd   => 0xEF00_0D40,
+            Self::Vsub   => 0xEF20_0D40,
+            Self::Vmul   => 0xFF00_0D50,
+            Self::Vabd   => 0xFF20_0D40,
+            Self::Vmaxnm => 0xFF00_0F50,
+            Self::Vminnm => 0xFF20_0F50,
+            Self::Vfma   => 0xEF00_0C50,
+            Self::Vfms   => 0xEF20_0C50,
+        }
+    }
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::Vadd => "vadd",
+            Self::Vsub => "vsub",
+            Self::Vmul => "vmul",
+            Self::Vabd => "vabd",
+            Self::Vmaxnm => "vmaxnm",
+            Self::Vminnm => "vminnm",
+            Self::Vfma => "vfma",
+            Self::Vfms => "vfms",
+        }
+    }
+    pub const ALL: [Self; 8] = [
+        Self::Vadd, Self::Vsub, Self::Vmul, Self::Vabd,
+        Self::Vmaxnm, Self::Vminnm, Self::Vfma, Self::Vfms,
+    ];
+    pub fn from_signature(signature: u32) -> Option<Self> {
+        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+    }
+}
+
+// ---- MVE "vector by scalar" forms: `Qd, Qn, Rm` (a vector operand and a GPR scalar) ----
+// These live in the 0xEE.. / 0xFE.. space (top byte 1110_1110 / 1111_1110), shared with the scalar FPU, but
+// are disjoint from it: the scalar-FP coprocessor field bits[11:8] are 0b1010/0b1011 (A/B), while the MVE
+// vector-by-scalar ops use 0b1110/0b1111 (E/F). Register fields: Qd[15:13], Qn[19:17], and the GPR Rm[3:0].
+
+pub const MVE_VBS_INT_SIGNATURE_MASK: u32 = 0xFFC1_1FF0; // clears Qd/Qn, size[21:20], and Rm[3:0]
+pub const MVE_VBS_FLOAT_SIGNATURE_MASK: u32 = 0xEFF1_1FF0; // clears Qd/Qn, Rm, and the size bit 28 (keeps [21:20]=11)
+
+// Integer vector-by-scalar operations. Element size is bits[21:20] (I8/I16/I32; 0b11 is the float marker,
+// so it is reserved here). Signedness, where it applies, sets the U bit (28) and is part of the mnemonic.
+// EXCEPTION: VMLA/VMLAS (vector by scalar) are signedness-agnostic -- DDI0553 C2.4.380/C2.4.384 fix bit 28
+// to (0) and give <dt> = I8/I16/I32 only (no S/U). GNU wrongly models a U bit here; see mve_tests.rs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32MveVecScalarIntOp {
+    Vadd, Vsub, Vmul,
+    VhaddS, VhaddU, VhsubS, VhsubU,
+    VqaddS, VqaddU, VqsubS, VqsubU,
+    VqdmulhS, VqrdmulhS,
+    // multiply-accumulate forms (the destination Qda is also an accumulator source); Vmla/Vmlas are I-typed
+    Vmla, Vmlas,
+    VqdmlahS, VqrdmlahS, VqdmlashS, VqrdmlashS,
+}
+impl Arm32MveVecScalarIntOp {
+    // base word with Qd / Qn / Rm and size[21:20] zeroed
+    pub fn base_word(self) -> u32 {
+        match self {
+            Self::Vadd      => 0xEE01_0F40,
+            Self::Vsub      => 0xEE01_1F40,
+            Self::Vmul      => 0xEE01_1E60,
+            Self::VhaddS    => 0xEE00_0F40,
+            Self::VhaddU    => 0xFE00_0F40,
+            Self::VhsubS    => 0xEE00_1F40,
+            Self::VhsubU    => 0xFE00_1F40,
+            Self::VqaddS    => 0xEE00_0F60,
+            Self::VqaddU    => 0xFE00_0F60,
+            Self::VqsubS    => 0xEE00_1F60,
+            Self::VqsubU    => 0xFE00_1F60,
+            Self::VqdmulhS  => 0xEE01_0E60,
+            Self::VqrdmulhS => 0xFE01_0E60,
+            Self::Vmla      => 0xEE01_0E40, // bit 28 = (0) fixed per DDI0553 C2.4.380 (NOT a U bit)
+            Self::Vmlas     => 0xEE01_1E40, //  "      "     "       "     C2.4.384
+            Self::VqdmlahS  => 0xEE00_0E60,
+            Self::VqrdmlahS => 0xEE00_0E40,
+            Self::VqdmlashS => 0xEE00_1E60,
+            Self::VqrdmlashS => 0xEE00_1E40,
+        }
+    }
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::Vadd => "vadd",
+            Self::Vsub => "vsub",
+            Self::Vmul => "vmul",
+            Self::VhaddS | Self::VhaddU => "vhadd",
+            Self::VhsubS | Self::VhsubU => "vhsub",
+            Self::VqaddS | Self::VqaddU => "vqadd",
+            Self::VqsubS | Self::VqsubU => "vqsub",
+            Self::VqdmulhS => "vqdmulh",
+            Self::VqrdmulhS => "vqrdmulh",
+            Self::Vmla => "vmla",
+            Self::Vmlas => "vmlas",
+            Self::VqdmlahS => "vqdmlah",
+            Self::VqrdmlahS => "vqrdmlah",
+            Self::VqdmlashS => "vqdmlash",
+            Self::VqrdmlashS => "vqrdmlash",
+        }
+    }
+    pub fn type_prefix(self) -> char {
+        match self {
+            Self::Vadd | Self::Vsub | Self::Vmul | Self::Vmla | Self::Vmlas => 'i',
+            Self::VhaddS | Self::VhsubS | Self::VqaddS | Self::VqsubS | Self::VqdmulhS | Self::VqrdmulhS
+            | Self::VqdmlahS | Self::VqrdmlahS | Self::VqdmlashS | Self::VqrdmlashS => 's',
+            Self::VhaddU | Self::VhsubU | Self::VqaddU | Self::VqsubU => 'u',
+        }
+    }
+    pub const ALL: [Self; 19] = [
+        Self::Vadd, Self::Vsub, Self::Vmul,
+        Self::VhaddS, Self::VhaddU, Self::VhsubS, Self::VhsubU,
+        Self::VqaddS, Self::VqaddU, Self::VqsubS, Self::VqsubU,
+        Self::VqdmulhS, Self::VqrdmulhS,
+        Self::Vmla, Self::Vmlas,
+        Self::VqdmlahS, Self::VqrdmlahS, Self::VqdmlashS, Self::VqrdmlashS,
+    ];
+    pub fn from_signature(signature: u32) -> Option<Self> {
+        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+    }
+}
