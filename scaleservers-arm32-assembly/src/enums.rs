@@ -108,6 +108,10 @@ pub use arm32_mve_operations::{
     Arm32MveMisc2Op, Arm32MveMisc2FloatOp,
     MVE_MISC2_SIGNATURE_MASK, MVE_VMVN_REG_MASK, MVE_VMVN_REG_BASE,
     mve_misc2_float_size_bits, mve_misc2_float_size_from_bits,
+    Arm32MveReduceOp, MVE_REDUCE_SIGNATURE_MASK,
+    Arm32MveFloatReduceOp, MVE_FLOAT_REDUCE_SIGNATURE_MASK,
+    MVE_VABAV_SIGNATURE_MASK, MVE_VABAV_BASE,
+    MVE_DUALMAC_BASE, MVE_DUALMAC_MASK, mve_dualmac_size_bits, mve_dualmac_decode_size,
 };
 
 // ---- neutral ARM-wide aliases ----

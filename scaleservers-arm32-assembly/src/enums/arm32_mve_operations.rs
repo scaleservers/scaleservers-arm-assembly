@@ -630,3 +630,145 @@ impl Arm32MveMisc2FloatOp {
 // VMVN (register): bitwise-NOT a whole vector. No element size; renders as `vmvn Qd, Qm`.
 pub const MVE_VMVN_REG_MASK: u32 = 0xFFFF_1FF1; // the fixed opcode bits (clears only Qd / Qm)
 pub const MVE_VMVN_REG_BASE: u32 = 0xFFB0_05C0;
+
+// ---- MVE cross-lane reductions to a GPR ----
+// VADDV/VADDVA/VMINV/VMAXV/VMINAV/VMAXAV (`Rd, Qm`) live in the 0xEE../0xFE.. space: Rd[15:12], Qm[3:1],
+// element size[19:18], U(signedness)=bit28. VABAV (`Rd, Qn, Qm`) is separate -- see below.
+pub const MVE_REDUCE_SIGNATURE_MASK: u32 = 0xFFF3_0FF1; // clears size[19:18], Rd[15:12], Qm[3:1]
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32MveReduceOp {
+    VaddvS, VaddvU, VaddvaS, VaddvaU,
+    VminvS, VminvU, VmaxvS, VmaxvU,
+    Vminav, Vmaxav, // absolute min/max are signed-only
+}
+impl Arm32MveReduceOp {
+    pub fn base_word(self) -> u32 {
+        match self {
+            Self::VaddvS  => 0xEEF1_0F00,
+            Self::VaddvU  => 0xFEF1_0F00,
+            Self::VaddvaS => 0xEEF1_0F20,
+            Self::VaddvaU => 0xFEF1_0F20,
+            Self::VminvS  => 0xEEE2_0F80,
+            Self::VminvU  => 0xFEE2_0F80,
+            Self::VmaxvS  => 0xEEE2_0F00,
+            Self::VmaxvU  => 0xFEE2_0F00,
+            Self::Vminav  => 0xEEE0_0F80,
+            Self::Vmaxav  => 0xEEE0_0F00,
+        }
+    }
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::VaddvS | Self::VaddvU => "vaddv",
+            Self::VaddvaS | Self::VaddvaU => "vaddva",
+            Self::VminvS | Self::VminvU => "vminv",
+            Self::VmaxvS | Self::VmaxvU => "vmaxv",
+            Self::Vminav => "vminav",
+            Self::Vmaxav => "vmaxav",
+        }
+    }
+    pub fn type_prefix(self) -> char {
+        match self {
+            Self::VaddvU | Self::VaddvaU | Self::VminvU | Self::VmaxvU => 'u',
+            _ => 's',
+        }
+    }
+    pub const ALL: [Self; 10] = [
+        Self::VaddvS, Self::VaddvU, Self::VaddvaS, Self::VaddvaU,
+        Self::VminvS, Self::VminvU, Self::VmaxvS, Self::VmaxvU,
+        Self::Vminav, Self::Vmaxav,
+    ];
+    pub fn from_signature(signature: u32) -> Option<Self> {
+        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+    }
+}
+
+// MVE floating-point min/max reductions to a GPR: VMAXNMV/VMINNMV/VMAXNMAV/VMINNMAV (`Rd, Qm`). Rd[15:12],
+// Qm[3:1], element size = bit28 (.f32 = 0, .f16 = 1). They sit at [19:18] = 11 (the size value the integer
+// reductions reject), which keeps them disjoint from the integer reductions.
+pub const MVE_FLOAT_REDUCE_SIGNATURE_MASK: u32 = 0xEFFF_0FF1; // clears size(bit28), Rd[15:12], Qm[3:1]
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32MveFloatReduceOp {
+    Vmaxnmv, Vminnmv, Vmaxnmav, Vminnmav,
+}
+impl Arm32MveFloatReduceOp {
+    pub fn base_word(self) -> u32 {
+        match self {
+            Self::Vmaxnmv  => 0xEEEE_0F00,
+            Self::Vminnmv  => 0xEEEE_0F80,
+            Self::Vmaxnmav => 0xEEEC_0F00,
+            Self::Vminnmav => 0xEEEC_0F80,
+        }
+    }
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::Vmaxnmv => "vmaxnmv",
+            Self::Vminnmv => "vminnmv",
+            Self::Vmaxnmav => "vmaxnmav",
+            Self::Vminnmav => "vminnmav",
+        }
+    }
+    pub const ALL: [Self; 4] = [Self::Vmaxnmv, Self::Vminnmv, Self::Vmaxnmav, Self::Vminnmav];
+    pub fn from_signature(signature: u32) -> Option<Self> {
+        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+    }
+}
+
+// VABAV (`Rd, Qn, Qm`): sum of absolute differences across lanes into a GPR. Rd[15:12], Qn[19:17], Qm[3:1],
+// element size[21:20] (Qn occupies the [19:18] the other reductions use for size), U=bit28. Base (s8) below.
+pub const MVE_VABAV_SIGNATURE_MASK: u32 = 0xEFC1_0FF1; // clears U(bit28), size[21:20], Qn[19:17], Rd[15:12], Qm[3:1]
+pub const MVE_VABAV_BASE: u32 = 0xEE80_0F01;
+
+// VMLADAV / VMLSDAV -- non-long dual multiply-(add/subtract)-accumulate cross-lane reductions into a single
+// EVEN GPR: `<op>{a}{x}.<s|u><8|16|32> Rda, Qn, Qm`. All in the 0xEEFx/0xFEFx space. Fields: Rda[15:12] (even,
+// so bit12 is free for X), Qn[19:17], Qm[3:1], A(accumulate)=bit5, X(exchange)=bit12, subtract(VMLSDAV)=bit0.
+// The element-size encoding is IRREGULAR between the two operations (bit16 is always the .32 selector, but the
+// .8 selector moves): for the ADD form bit28 is the U(signedness) flag and size uses {bit16=.32, bit8=.8};
+// for the SUBTRACT form (signed-only, so bit28 is free) bit28 itself becomes the .8 selector and bit8 stays 0.
+// The mask keeps the fixed [23:20]=1111 / [11:9]=111 / [7:6]=00 / bit4=0 frame, which (combined with decoding
+// AFTER the 2-operand reductions) keeps VADDV/VADDVA -- the only other [23:20]=1111 words -- from being mistaken
+// for a dual-MAC. X and subtract are signed-only.
+pub const MVE_DUALMAC_BASE: u32 = 0xEEF0_0E00;
+pub const MVE_DUALMAC_MASK: u32 = 0xEEF0_0ED0;
+/// Encodes the {bit28, bit16, bit8} size/signedness contribution. `unsigned` is honoured only for the add form
+/// (the subtract form is signed-only and repurposes bit28 as its .8 selector).
+pub fn mve_dualmac_size_bits(subtract: bool, unsigned: bool, size: Arm32MveSize) -> u32 {
+    if subtract {
+        match size {
+            Arm32MveSize::I8  => 1 << 28,
+            Arm32MveSize::I16 => 0,
+            Arm32MveSize::I32 => 1 << 16,
+        }
+    } else {
+        let u = (unsigned as u32) << 28;
+        match size {
+            Arm32MveSize::I8  => u | (1 << 8),
+            Arm32MveSize::I16 => u,
+            Arm32MveSize::I32 => u | (1 << 16),
+        }
+    }
+}
+/// Recovers `(unsigned, size)` from a dual-MAC word given whether it is the subtract form. Returns `None` for
+/// reserved bit combinations (subtract with bit8 set, or both the .8 and .32 selectors set).
+pub fn mve_dualmac_decode_size(subtract: bool, word: u32) -> Option<(bool, Arm32MveSize)> {
+    let bit28 = (word >> 28) & 1 == 1;
+    let bit16 = (word >> 16) & 1 == 1;
+    let bit8  = (word >> 8) & 1 == 1;
+    if subtract {
+        if bit8 { return None; } // the subtract form never sets bit8
+        match (bit28, bit16) {
+            (true,  false) => Some((false, Arm32MveSize::I8)),
+            (false, false) => Some((false, Arm32MveSize::I16)),
+            (false, true)  => Some((false, Arm32MveSize::I32)),
+            _ => None,
+        }
+    } else {
+        match (bit16, bit8) {
+            (false, true)  => Some((bit28, Arm32MveSize::I8)),
+            (false, false) => Some((bit28, Arm32MveSize::I16)),
+            (true,  false) => Some((bit28, Arm32MveSize::I32)),
+            _ => None,
+        }
+    }
+}
