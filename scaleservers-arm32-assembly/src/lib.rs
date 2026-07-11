@@ -70,4 +70,5 @@ pub use enums::{
     Arm32NeonAesOp,
     Arm32NeonSha3Op,
     Arm32NeonSha2Op,
+    Arm32MveVectorRegister,
 };
