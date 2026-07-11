@@ -93,8 +93,16 @@ pub use arm32_mve_operations::{
     Arm32MveSize, Arm32MveFloatSize,
     Arm32MveIntArithOp, Arm32MveBitwiseOp, Arm32MveFloatArithOp,
     MVE_INT_SIGNATURE_MASK, MVE_BITWISE_SIGNATURE_MASK, MVE_FLOAT_SIGNATURE_MASK,
-    Arm32MveVecScalarIntOp,
+    Arm32MveVecScalarIntOp, Arm32MveVecScalarFloatOp,
     MVE_VBS_INT_SIGNATURE_MASK, MVE_VBS_FLOAT_SIGNATURE_MASK,
+    MVE_VDUP_MASK, MVE_VDUP_BASE, mve_vdup_size_bits, mve_vdup_size_from_bits,
+    MVE_VIDDUP_BASE, MVE_VIDDUP_MASK,
+    MVE_VBRSR_BASE, MVE_VBRSR_MASK,
+    MVE_GATHER_SCATTER_BASE, MVE_GATHER_SCATTER_MASK, mve_mem_size_log, mve_mem_size_from_log,
+    MVE_GATHER_VBASE_BASE, MVE_GATHER_VBASE_MASK,
+    MVE_INTERLEAVE_BASE, MVE_INTERLEAVE_MASK,
+    MVE_LCTP_WORD, MVE_VCTP_BASE, MVE_VCTP_MASK, MVE_LOB_DLS_BASE, MVE_LOB_DLS_MASK,
+    lob_size_field, lob_size_from_field, lob_branch_hw1, lob_branch_offset,
 };
 
 // ---- neutral ARM-wide aliases ----

@@ -323,3 +323,130 @@ impl Arm32MveVecScalarIntOp {
         Self::ALL.iter().copied().find(|op| op.base_word() == signature)
     }
 }
+
+// Floating-point vector-by-scalar operations. These sit at bits[21:20] = 0b11 (the size value reserved by
+// the integer forms), with the element size carried in the single bit 28 (.f32 = 0, .f16 = 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32MveVecScalarFloatOp {
+    Vadd, Vsub, Vmul, Vfma, Vfmas,
+}
+impl Arm32MveVecScalarFloatOp {
+    // base word with Qd / Qn / Rm and the size bit (28) zeroed (i.e. the .f32 form)
+    pub fn base_word(self) -> u32 {
+        match self {
+            Self::Vadd => 0xEE30_0F40,
+            Self::Vsub => 0xEE30_1F40,
+            Self::Vmul => 0xEE31_0E60,
+            Self::Vfma => 0xEE31_0E40,
+            Self::Vfmas => 0xEE31_1E40,
+        }
+    }
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::Vadd => "vadd",
+            Self::Vsub => "vsub",
+            Self::Vmul => "vmul",
+            Self::Vfma => "vfma",
+            Self::Vfmas => "vfmas",
+        }
+    }
+    pub const ALL: [Self; 5] = [Self::Vadd, Self::Vsub, Self::Vmul, Self::Vfma, Self::Vfmas];
+    pub fn from_signature(signature: u32) -> Option<Self> {
+        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+    }
+}
+
+// VDUP (`Qd, Rt`): broadcast a GPR into every lane. The element size is encoded as the scattered pair
+// {B = bit 22, E = bit 5}: .32 = {0,0}, .16 = {0,1}, .8 = {1,0}. Qd sits at bits[19:17], Rt at bits[15:12].
+pub const MVE_VDUP_MASK: u32 = 0xFFB1_0FDF; // the fixed opcode bits (clears Qd, Rt, B and E)
+pub const MVE_VDUP_BASE: u32 = 0xEEA0_0B10; // size .32, Qd0, Rt0
+
+// VIDUP/VDDUP/VIWDUP/VDWDUP -- increment/decrement-and-duplicate index generators (`Qd, Rn, #imm` and, for the
+// wrapping forms, `Qd, Rn, Rm, #imm`). 0xEE0x-0xEE2x space (unsigned, bit28=0). size[21:20]; Rn[19:17]=Rn>>1
+// (Rn EVEN); Qd[15:13]; decrement(VDDUP/VDWDUP)=bit12; the step in {1,2,4,8} is log2 split across {bit7,bit0};
+// the wrap register Rm[3:1]=Rm>>1 (Rm ODD) -- and Rm = PC ([3:1]=111) marks the NON-wrapping forms (VIDUP/VDDUP).
+pub const MVE_VIDDUP_BASE: u32 = 0xEE01_0F60;
+pub const MVE_VIDDUP_MASK: u32 = 0xFFC1_0F70;
+
+// VBRSR -- Vector Bit Reverse and Shift Right by a GPR amount broadcast to all lanes (`Qd, Qn, Rm`). It is a
+// vector-by-scalar shape: Qd[15:13], Qn[19:17], Rm[3:0], element size[21:20] (8/16/32; sign-agnostic, so the
+// suffix is plain .8/.16/.32). bit16=1 and bit12=1 are fixed opcode (distinguishing it from the arithmetic
+// vector-by-scalar ops, which have bit12=0). base 0xFE01_1E60.
+pub const MVE_VBRSR_BASE: u32 = 0xFE01_1E60;
+pub const MVE_VBRSR_MASK: u32 = 0xFFC1_1FF0;
+
+// MVE gather/scatter, scalar base + VECTOR offset: VLDR{B,H,W,D} / VSTR{B,H,W,D} `Qd, [Rn, Qm]{, uxtw #n}`.
+// base 0xEC80_0E00, gate `word & 0xEFE0_1E20 == 0xEC80_0E00` (top byte 0xEC/0xFC; the fixed bit12=0 and
+// [11:9]=111 keep it disjoint from the contiguous vector load/store (bit12=1) and the scalar VFP ([11:9]=101)).
+// L(load)=bit20; U(signedness of a widening load)=bit28; Rn[19:16]; Qd[15:13]; destination element size
+// esize[8:7]; memory access size msize = {bit6,bit4}; Qm[3:1]; scaled(uxtw: offset << log2(msize/8))=bit0.
+// esize and msize are each a 2-bit log: 00/01/10/11 = 8/16/32/64.
+pub const MVE_GATHER_SCATTER_BASE: u32 = 0xEC80_0E00;
+pub const MVE_GATHER_SCATTER_MASK: u32 = 0xEFE0_1E20;
+pub fn mve_mem_size_log(size_bits: u8) -> u32 { (size_bits as u32 / 8).trailing_zeros() }
+pub fn mve_mem_size_from_log(log: u32) -> u8 { (8u32 << (log & 0b11)) as u8 }
+
+// MVE gather/scatter, VECTOR base + immediate: VLDRW/VLDRD/VSTRW/VSTRD `Qd, [Qn{, #imm}]{!}` (word/dword only).
+// base 0xFD00_1E00, gate `word & 0xFF41_1E80 == 0xFD00_1E00` (top byte 0xFD; disjoint from Group 1 (0xEC/0xFC)
+// and the complex ops by the tight [11:9]=111 frame). L(load)=bit20, W(writeback)=bit21, U(offset sign:1=add)=
+// bit23, size=bit8 (.32=0/.64=1), Qn(base)[19:17], Qd[15:13], imm7[6:0] = |offset| / (4 word | 8 dword),
+// magnitude range +/-508 (word) / +/-1016 (dword). Always pre-indexed (P=1 is baked into [27:24]=1101).
+pub const MVE_GATHER_VBASE_BASE: u32 = 0xFD00_1E00;
+pub const MVE_GATHER_VBASE_MASK: u32 = 0xFF41_1E80;
+
+// MVE de-interleaving/interleaving load/store: VLD2x/VLD4x/VST2x/VST4x `{Qd..}, [Rn]{!}`. base 0xFC80_1E00,
+// gate `word & 0xFFC0_1E1E == 0xFC80_1E00` (top byte 0xFC; bit12=1 + [11:9]=111 keep it disjoint from the
+// gather/scatter (bit12=0) and complex ops). L(load)=bit20, W(writeback)=bit21, Rn[19:16], Qd(first of the
+// list)[15:13], element size[8:7] (8/16/32), pass[6:5] (VLD2x: 0..1 via bit5; VLD4x: 0..3), is-VLD4=bit0.
+pub const MVE_INTERLEAVE_BASE: u32 = 0xFC80_1E00;
+pub const MVE_INTERLEAVE_MASK: u32 = 0xFFC0_1E1E;
+
+// ---- Low-overhead loops (Armv8.1-M): DLS/WLS/LE/LCTP (+ tail-predicated DLSTP/WLSTP/LETP and VCTP, which
+// need MVE). All in the 0xF0xx control space. DLS/DLSTP/LCTP have hw1 = 0xE001; VCTP has hw1 = 0xE801; the
+// WLS/WLSTP/LE/LETP branches have hw1[15:12] = 1100 (bit12 = 0, which keeps them disjoint from B.W/BL whose
+// hw1 bit12 = 1). The loop-start size field [22:20] is 0b100 for the plain (non-predicated) DLS/WLS, else the
+// tail-predicate element size (000/001/010/011 = 8/16/32/64). For the branch forms Rn[19:16] = PC (15) marks
+// the LE/LETP loop-end (size-field 000 = LE, 001 = LETP) versus the WLS/WLSTP loop-start (real Rn).
+pub const MVE_LCTP_WORD: u32 = 0xF00F_E001;
+pub const MVE_VCTP_BASE: u32 = 0xF000_E801;
+pub const MVE_VCTP_MASK: u32 = 0xFFC0_FFFF;
+pub const MVE_LOB_DLS_BASE: u32 = 0xF000_E001;
+pub const MVE_LOB_DLS_MASK: u32 = 0xFF80_FFFF;
+/// The [22:20] loop size field: `None` (plain) = 0b100, else the tail-predicate element size.
+pub fn lob_size_field(tp_size: Option<u8>) -> u32 {
+    match tp_size { None => 0b100, Some(8) => 0b000, Some(16) => 0b001, Some(32) => 0b010, Some(64) => 0b011, _ => 0b100 }
+}
+pub fn lob_size_from_field(field: u32) -> Option<Option<u8>> {
+    match field & 0b111 {
+        0b100 => Some(None), 0b000 => Some(Some(8)), 0b001 => Some(Some(16)), 0b010 => Some(Some(32)), 0b011 => Some(Some(64)), _ => None,
+    }
+}
+/// The branch half-word (hw1) for a low-overhead-loop branch: imm = |offset|/2, with imm[0] at bit11 and
+/// imm[10:1] at bits[10:1]; bit0 and [15:12]=1100 are fixed.
+pub fn lob_branch_hw1(offset: i32) -> u32 {
+    let imm = offset.unsigned_abs() / 2;
+    0xC000 | ((imm & 1) << 11) | (((imm >> 1) & 0x3FF) << 1) | 1
+}
+/// Recover the signed PC-relative offset (target - (instr+4)) from hw1; `backward` (LE/LETP) negates it.
+pub fn lob_branch_offset(hw1: u32, backward: bool) -> i32 {
+    let imm = ((hw1 >> 11) & 1) | (((hw1 >> 1) & 0x3FF) << 1);
+    let magnitude = (2 * imm) as i32;
+    if backward { -magnitude } else { magnitude }
+}
+
+// the {B, E} size-bit pair for a VDUP element width
+pub fn mve_vdup_size_bits(size: Arm32MveSize) -> (u32 /*b @22*/, u32 /*e @5*/) {
+    match size {
+        Arm32MveSize::I8 => (1, 0),
+        Arm32MveSize::I16 => (0, 1),
+        Arm32MveSize::I32 => (0, 0),
+    }
+}
+pub fn mve_vdup_size_from_bits(b: u32, e: u32) -> Option<Arm32MveSize> {
+    match (b & 1, e & 1) {
+        (1, 0) => Some(Arm32MveSize::I8),
+        (0, 1) => Some(Arm32MveSize::I16),
+        (0, 0) => Some(Arm32MveSize::I32),
+        _ => None, // {1,1} is not a valid size
+    }
+}
