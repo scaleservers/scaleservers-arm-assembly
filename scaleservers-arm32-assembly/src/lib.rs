@@ -51,4 +51,7 @@ pub use enums::{
     Arm32FpDataOperation2,
     Arm32VselCondition,
     Arm32DirectedRound,
+    Arm32VrintMode,
+    Arm32NeonSize,
+    Arm32NeonIntegerOp,
 };

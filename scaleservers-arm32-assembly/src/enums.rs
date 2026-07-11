@@ -66,6 +66,14 @@ pub use arm32_vsel_condition::Arm32VselCondition;
 mod arm32_directed_round;
 pub use arm32_directed_round::Arm32DirectedRound;
 
+mod arm32_vrint_mode;
+pub use arm32_vrint_mode::Arm32VrintMode;
+
+mod arm32_neon_operations;
+pub use arm32_neon_operations::{
+    Arm32NeonSize, Arm32NeonIntegerOp,
+};
+
 // ---- neutral ARM-wide aliases ----
 // The 4-bit condition code and the barrel-shift operand are identical in the A32 and T32 instruction sets,
 // so they are also exposed under neutral `Arm32*` names for use by `ArmA32Instruction`. The historical
