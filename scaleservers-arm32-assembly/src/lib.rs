@@ -91,3 +91,8 @@ pub use enums::{
     Arm32MveVcmpCondition,
     mve_predicate_mask_from_suffix,
 };
+
+mod errors;
+pub use errors::{
+    DecodeError,
+};
