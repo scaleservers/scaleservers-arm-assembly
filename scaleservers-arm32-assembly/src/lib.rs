@@ -25,4 +25,6 @@ pub use enums::{
     Arm32SinglePrecisionRegister,
     Arm32DoublePrecisionRegister,
     Arm32QuadwordRegister,
+    ArmT32FpDataOperation3,
+    ArmT32FpDataOperation2,
 };

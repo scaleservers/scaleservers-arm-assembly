@@ -14,3 +14,6 @@ pub use general_purpose_registers::{
 
 mod floating_point_registers;
 pub use floating_point_registers::{Arm32SinglePrecisionRegister, Arm32DoublePrecisionRegister, Arm32QuadwordRegister};
+
+mod floating_point_data_operations;
+pub use floating_point_data_operations::{ArmT32FpDataOperation3, ArmT32FpDataOperation2};
