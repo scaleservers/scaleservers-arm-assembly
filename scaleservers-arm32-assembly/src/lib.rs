@@ -46,4 +46,7 @@ pub use enums::{
     Arm32MemoryOffset,
     Arm32MemoryOffset8,
     Arm32BlockAddressMode,
+    Arm32CpsMode,
+    Arm32FpDataOperation3,
+    Arm32FpDataOperation2,
 };
