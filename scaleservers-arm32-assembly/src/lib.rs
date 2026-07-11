@@ -50,4 +50,5 @@ pub use enums::{
     Arm32FpDataOperation3,
     Arm32FpDataOperation2,
     Arm32VselCondition,
+    Arm32DirectedRound,
 };
