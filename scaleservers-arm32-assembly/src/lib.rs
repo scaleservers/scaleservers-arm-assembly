@@ -115,3 +115,5 @@ pub use arm32_decode_context::ArmDecodeContext;
 // The VFP modified-immediate codec for VMOV (immediate).
 pub mod floating_point_immediate;
 pub use floating_point_immediate::{vfp_expand_imm8_to_f32, vfp_expand_imm8_to_f64, vfp_encode_f64_to_imm8};
+
+mod utils;
