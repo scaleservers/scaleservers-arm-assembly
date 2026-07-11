@@ -1037,3 +1037,698 @@ fn encode_data_processing_shifted_register(op4: u32, set_flags: bool, rn: u8, rd
         | encode_register_shift_field(shift)?;
     Ok(word)
 }
+
+// Guard the three registers and emit the halfwords for a shifted-register data-processing form.
+fn encode_dp_shifted_register(op4: u32, set_flags: bool, rd: &Arm32GeneralPurposeRegister, rn: &Arm32GeneralPurposeRegister, rm: &Arm32GeneralPurposeRegister, shift: &ArmT32RegisterShift) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rd", rd)?;
+    check_general_register_is_encodable("rn", rn)?;
+    check_general_register_is_encodable("rm", rm)?;
+    let word = encode_data_processing_shifted_register(op4, set_flags, rn.as_operand_bits(), rd.as_operand_bits(), rm.as_operand_bits(), shift)?;
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+// MOV/MVN (shifted register): the Rn field is the fixed PC marker; only rd and rm are user registers.
+fn encode_mov_mvn_register(op4: u32, set_flags: bool, rd: &Arm32GeneralPurposeRegister, rm: &Arm32GeneralPurposeRegister, shift: &ArmT32RegisterShift) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rd", rd)?;
+    check_general_register_is_encodable("rm", rm)?;
+    let word = encode_data_processing_shifted_register(op4, set_flags, 0b1111, rd.as_operand_bits(), rm.as_operand_bits(), shift)?;
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+// TST/TEQ/CMN/CMP (shifted register): the Rd field is the fixed PC marker, S is always set; rn and rm
+// are user registers.
+fn encode_compare_register(op4: u32, rn: &Arm32GeneralPurposeRegister, rm: &Arm32GeneralPurposeRegister, shift: &ArmT32RegisterShift) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rn", rn)?;
+    check_general_register_is_encodable("rm", rm)?;
+    let word = encode_data_processing_shifted_register(op4, true, rn.as_operand_bits(), 0b1111, rm.as_operand_bits(), shift)?;
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+fn decode_word_rd_11_08(word: u32) -> u8 {
+    ((word >> 8) & 0b1111) as u8
+}
+fn decode_word_rn_rd_rm(word: u32) -> (/*rn*/u8, /*rd*/u8, /*rm*/u8) {
+    let rn = ((word >> 16) & 0b1111) as u8;
+    let rd = ((word >> 8) & 0b1111) as u8;
+    let rm = (word & 0b1111) as u8;
+    (rn, rd, rm)
+}
+fn decode_word_rn_ra_rd_rm(word: u32) -> (/*rn*/u8, /*ra*/u8, /*rd*/u8, /*rm*/u8) {
+    let rn = ((word >> 16) & 0b1111) as u8;
+    let ra = ((word >> 12) & 0b1111) as u8;
+    let rd = ((word >> 8) & 0b1111) as u8;
+    let rm = (word & 0b1111) as u8;
+    (rn, ra, rd, rm)
+}
+
+// Bitfield (UBFX/SBFX/BFI/BFC) field layout: lsb = imm3(14:12):imm2(7:6); the 5-bit field in bits 4:0 is
+// widthm1 for UBFX/SBFX and msb for BFI/BFC.
+fn decode_word_bitfield(word: u32) -> (/*rn*/u8, /*rd*/u8, /*lsb*/u8, /*widthm1 or msb*/u8) {
+    let rn = ((word >> 16) & 0b1111) as u8;
+    let rd = ((word >> 8) & 0b1111) as u8;
+    let imm3 = ((word >> 12) & 0b111) as u8;
+    let imm2 = ((word >> 6) & 0b11) as u8;
+    let lsb = (imm3 << 2) | imm2;
+    let low_five = (word & 0b1_1111) as u8;
+    (rn, rd, lsb, low_five)
+}
+
+// Wide load/store (T3) immediate layout: Rn in 19:16, Rt in 15:12, imm12 in 11:0.
+fn decode_word_rn_rt_imm12(word: u32) -> (/*rn*/u8, /*rt*/u8, /*imm12*/u16) {
+    let rn = ((word >> 16) & 0b1111) as u8;
+    let rt = ((word >> 12) & 0b1111) as u8;
+    let imm12 = (word & 0b1111_1111_1111) as u16;
+    (rn, rt, imm12)
+}
+
+// Shorthand for from_operand_bits, used by the dense load/store decode arms.
+fn g(bits: u8) -> Arm32GeneralPurposeRegister {
+    Arm32GeneralPurposeRegister::from_operand_bits(bits)
+}
+
+// Long-multiply layout: Rn 19:16, RdLo 15:12, RdHi 11:8, Rm 3:0.
+fn decode_word_long_multiply(word: u32) -> (/*rn*/u8, /*rdlo*/u8, /*rdhi*/u8, /*rm*/u8) {
+    let rn = ((word >> 16) & 0b1111) as u8;
+    let rdlo = ((word >> 12) & 0b1111) as u8;
+    let rdhi = ((word >> 8) & 0b1111) as u8;
+    let rm = (word & 0b1111) as u8;
+    (rn, rdlo, rdhi, rm)
+}
+
+// Register-offset load/store layout: Rn 19:16, Rt 15:12, LSL amount 5:4, Rm 3:0.
+fn decode_word_rn_rt_lsl_rm(word: u32) -> (/*rn*/u8, /*rt*/u8, /*lsl*/u8, /*rm*/u8) {
+    let rn = ((word >> 16) & 0b1111) as u8;
+    let rt = ((word >> 12) & 0b1111) as u8;
+    let lsl = ((word >> 4) & 0b11) as u8;
+    let rm = (word & 0b1111) as u8;
+    (rn, rt, lsl, rm)
+}
+
+// Wide load/store with a 12-bit immediate offset (`Rt, [Rn, #imm12]`): base | Rn<<16 | Rt<<12 | imm12.
+fn encode_load_store_immediate12(base: u32, rt: &Arm32GeneralPurposeRegister, rn: &Arm32GeneralPurposeRegister, imm12: u16) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rt", rt)?;
+    check_register_is_not_pc("rn", rn)?;
+    check_unsigned_maximum("imm12", imm12 as u32, 4095)?;
+    let word = base | ((rn.as_operand_bits() as u32) << 16) | ((rt.as_operand_bits() as u32) << 12) | (imm12 as u32);
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+// Long multiply (`RdLo, RdHi, Rn, Rm`): base | Rn<<16 | RdLo<<12 | RdHi<<8 | Rm.
+fn encode_long_multiply(base: u32, rdlo: &Arm32GeneralPurposeRegister, rdhi: &Arm32GeneralPurposeRegister, rn: &Arm32GeneralPurposeRegister, rm: &Arm32GeneralPurposeRegister) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rdlo", rdlo)?;
+    check_general_register_is_encodable("rdhi", rdhi)?;
+    check_general_register_is_encodable("rn", rn)?;
+    check_general_register_is_encodable("rm", rm)?;
+    let word = base | ((rn.as_operand_bits() as u32) << 16) | ((rdlo.as_operand_bits() as u32) << 12) | ((rdhi.as_operand_bits() as u32) << 8) | (rm.as_operand_bits() as u32);
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+// ---- M7l: wide extend, wide byte-reverse, saturate ----
+
+// Wide extend SXTB.W/UXTB.W/SXTH.W/UXTH.W (`Rd, Rm{, ROR #rotation}`): base | Rd<<8 | (rotation/8)<<4 | Rm.
+// `rotation` is the decoded amount (0/8/16/24); only those four rotates have an encoding.
+fn encode_extend(base: u32, rd: &Arm32GeneralPurposeRegister, rm: &Arm32GeneralPurposeRegister, rotation: u8) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rd", rd)?;
+    check_general_register_is_encodable("rm", rm)?;
+    if !rotation.is_multiple_of(8) {
+        return Err(EncodeError::ImmediateNotAligned { field: "rotation", value: rotation as i64, required_multiple: 8 });
+    }
+    if rotation > 24 {
+        return Err(EncodeError::ImmediateOutOfRange { field: "rotation", value: rotation as i64, minimum: 0, maximum: 24 });
+    }
+    let rotate = (rotation / 8) as u32;
+    let word = base | ((rd.as_operand_bits() as u32) << 8) | (rotate << 4) | (rm.as_operand_bits() as u32);
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+fn decode_word_extend(word: u32) -> (/*rd*/u8, /*rotation*/u8, /*rm*/u8) {
+    let rd = ((word >> 8) & 0b1111) as u8;
+    let rotation = (((word >> 4) & 0b11) as u8) * 8;
+    let rm = (word & 0b1111) as u8;
+    (rd, rotation, rm)
+}
+
+// Wide byte-reverse REV.W/REV16.W/REVSH.W (`Rd, Rm`): like CLZ/RBIT, Rm occupies BOTH bits 19:16 and 3:0.
+fn encode_byte_reverse(base: u32, rd: &Arm32GeneralPurposeRegister, rm: &Arm32GeneralPurposeRegister) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rd", rd)?;
+    check_general_register_is_encodable("rm", rm)?;
+    let word = base | ((rm.as_operand_bits() as u32) << 16) | ((rd.as_operand_bits() as u32) << 8) | (rm.as_operand_bits() as u32);
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+// SSAT/USAT (`Rd, #sat, Rn{, shift}`): base | sh<<21 | Rn<<16 | imm3<<12 | Rd<<8 | imm2<<6 | sat_field.
+// sat_field is (sat_imm-1) for SSAT (saturates to sat_imm bits, 1..=32) and sat_imm for USAT (0..=31).
+// The shift on Rn is LSL #0..=31 (sh=0) or ASR #1..=31 (sh=1); its amount fills imm3:imm2.
+fn encode_saturate(base: u32, is_usat: bool, rd: &Arm32GeneralPurposeRegister, sat_imm: u8, rn: &Arm32GeneralPurposeRegister, shift: ArmT32RegisterShift) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rd", rd)?;
+    check_general_register_is_encodable("rn", rn)?;
+    let sat_field = if is_usat {
+        if sat_imm > 31 {
+            return Err(EncodeError::ImmediateOutOfRange { field: "sat_imm", value: sat_imm as i64, minimum: 0, maximum: 31 });
+        }
+        sat_imm as u32
+    } else {
+        if !(1..=32).contains(&sat_imm) {
+            return Err(EncodeError::ImmediateOutOfRange { field: "sat_imm", value: sat_imm as i64, minimum: 1, maximum: 32 });
+        }
+        (sat_imm - 1) as u32
+    };
+    let (sh, amount) = match shift {
+        ArmT32RegisterShift::Lsl(a) => {
+            if a > 31 {
+                return Err(EncodeError::ImmediateOutOfRange { field: "shift", value: a as i64, minimum: 0, maximum: 31 });
+            }
+            (0u32, a as u32)
+        },
+        ArmT32RegisterShift::Asr(a) => {
+            if !(1..=31).contains(&a) {
+                return Err(EncodeError::ImmediateOutOfRange { field: "shift", value: a as i64, minimum: 1, maximum: 31 });
+            }
+            (1u32, a as u32)
+        },
+        _ => return Err(EncodeError::ShiftNotEncodable { field: "shift", detail: "SSAT/USAT allow only LSL or ASR" }),
+    };
+    let imm3 = (amount >> 2) & 0b111;
+    let imm2 = amount & 0b11;
+    let word = base | (sh << 21) | ((rn.as_operand_bits() as u32) << 16) | (imm3 << 12) | ((rd.as_operand_bits() as u32) << 8) | (imm2 << 6) | sat_field;
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+fn decode_word_saturate(word: u32, is_usat: bool) -> (/*rd*/u8, /*sat_imm*/u8, /*rn*/u8, /*shift*/ArmT32RegisterShift) {
+    let sh = (word >> 21) & 0b1;
+    let rn = ((word >> 16) & 0b1111) as u8;
+    let imm3 = (word >> 12) & 0b111;
+    let rd = ((word >> 8) & 0b1111) as u8;
+    let imm2 = (word >> 6) & 0b11;
+    let sat = (word & 0b11111) as u8;
+    let sat_imm = if is_usat { sat } else { sat + 1 };
+    let amount = ((imm3 << 2) | imm2) as u8;
+    // sh selects LSL (#0..=31) vs ASR (#1..=31); LSL #0 renders as "no shift".
+    let shift = if sh == 0 { ArmT32RegisterShift::Lsl(amount) } else { ArmT32RegisterShift::Asr(amount) };
+    (rd, sat_imm, rn, shift)
+}
+
+// ---- M7i: indexed load/store, dual load/store, literal loads, preload ----
+
+// Single-register indexed load/store (`Rt, [Rn, #+/-imm8]{!}` / `[Rn], #+/-imm8`). `base` already has the
+// T4/T3/T2 marker (bit 11) set. Layout: base | Rn<<16 | Rt<<12 | P<<10 | U<<9 | W<<8 | imm8. In `Offset`
+// mode the offset must be negative -- a non-negative offset uses the imm12 form instead, and its T4 bit
+// pattern (P=1,U=1,W=0) is the unprivileged LDRT/STRT encoding, not an `[Rn, #+imm]` access.
+fn encode_load_store_indexed(base: u32, rt: &Arm32GeneralPurposeRegister, rn: &Arm32GeneralPurposeRegister, offset: i16, mode: ArmT32IndexMode) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rt", rt)?;
+    check_register_is_not_pc("rn", rn)?;
+    if !(-255..=255).contains(&offset) {
+        return Err(EncodeError::ImmediateOutOfRange { field: "offset", value: offset as i64, minimum: -255, maximum: 255 });
+    }
+    if matches!(mode, ArmT32IndexMode::Offset) && offset >= 0 {
+        return Err(EncodeError::ImmediateOutOfRange { field: "offset", value: offset as i64, minimum: -255, maximum: -1 });
+    }
+    let (p, w) = mode.p_w_bits();
+    let u = if offset >= 0 { 1 } else { 0 };
+    let imm8 = offset.unsigned_abs() as u32;
+    let word = base | ((rn.as_operand_bits() as u32) << 16) | ((rt.as_operand_bits() as u32) << 12) | (p << 10) | (u << 9) | (w << 8) | imm8;
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+// `None` when the (P,W) bits are the unmodeled LDRT/STRT case (P=0,W=0), or the (P=1,U=1,W=0) pattern that
+// is LDRT/STRT rather than an `[Rn, #+imm]` offset access.
+fn decode_word_load_store_indexed(word: u32) -> Option<(/*rt*/u8, /*rn*/u8, /*offset*/i16, ArmT32IndexMode)> {
+    let rn = ((word >> 16) & 0b1111) as u8;
+    let rt = ((word >> 12) & 0b1111) as u8;
+    let p = (word >> 10) & 1;
+    let u = (word >> 9) & 1;
+    let w = (word >> 8) & 1;
+    let mode = ArmT32IndexMode::from_p_w_bits(p, w)?;
+    if matches!(mode, ArmT32IndexMode::Offset) && u == 1 {
+        return None;
+    }
+    let imm8 = (word & 0xFF) as i16;
+    let offset = if u == 1 { imm8 } else { -imm8 };
+    Some((rt, rn, offset, mode))
+}
+
+// Dual-register load/store (`Rt, Rt2, [Rn, #+/-(imm8*4)]{!}` / `[Rn], #+/-(imm8*4)`).
+// Layout: 0xE8400000 | P<<24 | U<<23 | W<<21 | L<<20 | Rn<<16 | Rt<<12 | Rt2<<8 | (offset/4).
+fn encode_load_store_dual(is_load: bool, rt: &Arm32GeneralPurposeRegister, rt2: &Arm32GeneralPurposeRegister, rn: &Arm32GeneralPurposeRegister, offset: i16, mode: ArmT32IndexMode) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rt", rt)?;
+    check_general_register_is_encodable("rt2", rt2)?;
+    check_register_is_not_pc("rn", rn)?;
+    if offset % 4 != 0 {
+        return Err(EncodeError::ImmediateNotAligned { field: "offset", value: offset as i64, required_multiple: 4 });
+    }
+    if !(-1020..=1020).contains(&offset) {
+        return Err(EncodeError::ImmediateOutOfRange { field: "offset", value: offset as i64, minimum: -1020, maximum: 1020 });
+    }
+    let (p, w) = mode.p_w_bits();
+    let u = if offset >= 0 { 1 } else { 0 };
+    let imm8 = (offset.unsigned_abs() / 4) as u32;
+    let l = if is_load { 1 } else { 0 };
+    let word = 0xE840_0000 | (p << 24) | (u << 23) | (w << 21) | (l << 20) | ((rn.as_operand_bits() as u32) << 16) | ((rt.as_operand_bits() as u32) << 12) | ((rt2.as_operand_bits() as u32) << 8) | imm8;
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+fn decode_word_load_store_dual(word: u32) -> Option<(/*rt*/u8, /*rt2*/u8, /*rn*/u8, /*offset*/i16, ArmT32IndexMode)> {
+    let p = (word >> 24) & 1;
+    let u = (word >> 23) & 1;
+    let w = (word >> 21) & 1;
+    let mode = ArmT32IndexMode::from_p_w_bits(p, w)?;
+    let rn = ((word >> 16) & 0b1111) as u8;
+    let rt = ((word >> 12) & 0b1111) as u8;
+    let rt2 = ((word >> 8) & 0b1111) as u8;
+    let magnitude = ((word & 0xFF) as i16) * 4;
+    let offset = if u == 1 { magnitude } else { -magnitude };
+    Some((rt, rt2, rn, offset, mode))
+}
+
+// PC-relative literal load (`Rt, [pc, #+/-imm12]`). `base` is the U=0 form; the U bit (bit 23) carries the
+// sign. Layout: base | U<<23 | Rt<<12 | imm12.
+fn encode_load_literal(base: u32, rt: &Arm32GeneralPurposeRegister, offset: i32) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rt", rt)?;
+    if !(-4095..=4095).contains(&offset) {
+        return Err(EncodeError::ImmediateOutOfRange { field: "offset", value: offset as i64, minimum: -4095, maximum: 4095 });
+    }
+    let u = if offset >= 0 { 1u32 } else { 0 };
+    let imm12 = offset.unsigned_abs();
+    let word = base | (u << 23) | ((rt.as_operand_bits() as u32) << 12) | imm12;
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+fn decode_word_load_literal(word: u32) -> (/*rt*/u8, /*offset*/i32) {
+    let u = (word >> 23) & 1;
+    let rt = ((word >> 12) & 0b1111) as u8;
+    let imm12 = (word & 0xFFF) as i32;
+    let offset = if u == 1 { imm12 } else { -imm12 };
+    (rt, offset)
+}
+
+// Preload hint (`PLD/PLI [Rn, #+/-imm]`). A non-negative offset uses the imm12 form (`pos_base | Rn<<16 |
+// imm12`, with the Rt field fixed at 1111); a negative offset uses the imm8 form (`neg_base | Rn<<16 |
+// imm8`, with Rt=1111 and P=1/U=0/W=0 baked into `neg_base`).
+fn encode_preload(pos_base: u32, neg_base: u32, rn: &Arm32GeneralPurposeRegister, offset: i32) -> Result<Vec<u16>, EncodeError> {
+    check_register_is_not_pc("rn", rn)?;
+    if !(-255..=4095).contains(&offset) {
+        return Err(EncodeError::ImmediateOutOfRange { field: "offset", value: offset as i64, minimum: -255, maximum: 4095 });
+    }
+    let word = if offset >= 0 {
+        pos_base | ((rn.as_operand_bits() as u32) << 16) | (offset as u32)
+    } else {
+        neg_base | ((rn.as_operand_bits() as u32) << 16) | ((-offset) as u32)
+    };
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+// Wide load/store multiple (LDM.W/STM.W/LDMDB/STMDB): base | W<<21 | Rn<<16 | register_list16. SP is never
+// permitted in the list; PC is permitted only for loads (it makes LDM an interworking return / POP {..,pc}).
+fn encode_load_store_multiple(base: u32, is_load: bool, rn: &Arm32GeneralPurposeRegister, writeback: bool, registers: &[Arm32GeneralPurposeRegister]) -> Result<Vec<u16>, EncodeError> {
+    check_register_is_not_pc("rn", rn)?;
+    if registers.is_empty() {
+        return Err(EncodeError::RegisterNotEncodable { field: "registers", detail: "the register list must not be empty" });
+    }
+    let list = gpr_coding_utils::convert_registers_slice_to_gpr_register_list_u16(registers)?;
+    if list & (1 << 13) != 0 {
+        return Err(EncodeError::RegisterNotEncodable { field: "registers", detail: "SP (R13) is not permitted in a load/store-multiple register list" });
+    }
+    if !is_load && (list & (1 << 15) != 0) {
+        return Err(EncodeError::RegisterNotEncodable { field: "registers", detail: "PC (R15) is not permitted in a store-multiple register list" });
+    }
+    let w = if writeback { 1u32 } else { 0 };
+    let word = base | (w << 21) | ((rn.as_operand_bits() as u32) << 16) | (list as u32);
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+fn decode_word_load_store_multiple(word: u32) -> (/*rn*/u8, /*writeback*/bool, /*registers*/Vec<Arm32GeneralPurposeRegister>) {
+    let writeback = (word >> 21) & 1 == 1;
+    let rn = ((word >> 16) & 0b1111) as u8;
+    let registers = gpr_coding_utils::convert_gpr_register_list_u16_to_registers_vector((word & 0xFFFF) as u16);
+    (rn, writeback, registers)
+}
+
+// ---- M7m: wide branches (B.W / B<c>.W) and compare-and-branch (CBZ / CBNZ) ----
+
+// B.W (T4): unconditional, +/-16MB. Same S/I1/I2 byte-offset scrambling as BL (PC = address + 4); only the
+// opcode differs (bit14 of the second halfword is 0 for B.W vs 1 for BL).
+fn encode_branch_wide_unconditional(offset: i32) -> Result<Vec<u16>, EncodeError> {
+    check_multiple_of("offset", offset as i64, 2)?;
+    check_signed_range("offset", offset, -16_777_216, 16_777_214)?;
+    let imm24 = (offset / 2) as u32;
+    let s = (imm24 >> 23) & 1;
+    let i1 = (imm24 >> 22) & 1;
+    let i2 = (imm24 >> 21) & 1;
+    let imm10 = (imm24 >> 11) & 0x3FF;
+    let imm11 = imm24 & 0x7FF;
+    let j1 = ((!i1) ^ s) & 1;
+    let j2 = ((!i2) ^ s) & 1;
+    let word = 0xF000_9000 | (s << 26) | (imm10 << 16) | (j1 << 13) | (j2 << 11) | imm11;
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+fn decode_word_branch_wide_unconditional(word: u32) -> i32 {
+    let s = (word >> 26) & 1;
+    let imm10 = (word >> 16) & 0x3FF;
+    let j1 = (word >> 13) & 1;
+    let j2 = (word >> 11) & 1;
+    let imm11 = word & 0x7FF;
+    let i1 = (!(j1 ^ s)) & 1;
+    let i2 = (!(j2 ^ s)) & 1;
+    let imm24 = (s << 23) | (i1 << 22) | (i2 << 21) | (imm10 << 11) | imm11;
+    sign_extension_utils::sign_extend_int_to_i32(imm24 as i32, 24) * 2
+}
+
+// B<c>.W (T3): conditional, +/-1MB. imm21 = SignExtend(S:J2:J1:imm6:imm11:'0'); J1/J2 are direct here (no
+// XOR with S, unlike T4). The AL / 0b1111 conditions are not encodable (those slots are B.W / other ops).
+fn encode_branch_wide_conditional(cond: &ArmT32InstructionCondition, offset: i32) -> Result<Vec<u16>, EncodeError> {
+    if *cond == ArmT32InstructionCondition::AlwaysUnconditional {
+        return Err(EncodeError::ConditionNotEncodable { field: "cond", detail: "the AL condition is not encodable in B<c>.W T3; use B.W instead" });
+    }
+    if *cond == ArmT32InstructionCondition::Undefined(0b1111) {
+        return Err(EncodeError::ConditionNotEncodable { field: "cond", detail: "the 0b1111 condition is not encodable in B<c>.W T3" });
+    }
+    check_multiple_of("offset", offset as i64, 2)?;
+    check_signed_range("offset", offset, -1_048_576, 1_048_574)?;
+    let imm20 = (offset / 2) as u32;
+    let s = (imm20 >> 19) & 1;
+    let j2 = (imm20 >> 18) & 1;
+    let j1 = (imm20 >> 17) & 1;
+    let imm6 = (imm20 >> 11) & 0x3F;
+    let imm11 = imm20 & 0x7FF;
+    let word = 0xF000_8000 | (s << 26) | ((cond.as_operand_bits() as u32) << 22) | (imm6 << 16) | (j1 << 13) | (j2 << 11) | imm11;
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+fn decode_word_branch_wide_conditional(word: u32) -> (/*cond*/u8, /*offset*/i32) {
+    let s = (word >> 26) & 1;
+    let cond = ((word >> 22) & 0b1111) as u8;
+    let imm6 = (word >> 16) & 0x3F;
+    let j1 = (word >> 13) & 1;
+    let j2 = (word >> 11) & 1;
+    let imm11 = word & 0x7FF;
+    let imm20 = (s << 19) | (j2 << 18) | (j1 << 17) | (imm6 << 11) | imm11;
+    let offset = sign_extension_utils::sign_extend_int_to_i32(imm20 as i32, 20) * 2;
+    (cond, offset)
+}
+
+// CBZ / CBNZ (T1, 16-bit): forward branch only, 0..=126, even. imm32 = ZeroExtend(i:imm5:'0'); Rn is low.
+fn encode_compare_branch(base: u32, rn: &Arm32LowGeneralPurposeRegister, offset: u8) -> Result<Vec<u16>, EncodeError> {
+    if !offset.is_multiple_of(2) {
+        return Err(EncodeError::ImmediateNotAligned { field: "offset", value: offset as i64, required_multiple: 2 });
+    }
+    if offset > 126 {
+        return Err(EncodeError::ImmediateOutOfRange { field: "offset", value: offset as i64, minimum: 0, maximum: 126 });
+    }
+    let i = ((offset >> 6) & 1) as u32;
+    let imm5 = ((offset >> 1) & 0x1F) as u32;
+    let halfword = (base | (i << 9) | (imm5 << 3) | (rn.as_operand_bits() as u32)) as u16;
+    Ok(vec![halfword])
+}
+
+fn decode_halfword_compare_branch(halfword: u16) -> (/*rn*/u8, /*offset*/u8) {
+    let i = ((halfword >> 9) & 1) as u8;
+    let imm5 = ((halfword >> 3) & 0x1F) as u8;
+    let rn = (halfword & 0b111) as u8;
+    let offset = (i << 6) | (imm5 << 1);
+    (rn, offset)
+}
+
+// ---- ARMv7E-M DSP M8a: saturating arithmetic (`Rd, Rm, Rn`): base | Rn<<16 | Rd<<8 | Rm. ----
+fn encode_saturating_arithmetic(base: u32, rd: &Arm32GeneralPurposeRegister, rm: &Arm32GeneralPurposeRegister, rn: &Arm32GeneralPurposeRegister) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rd", rd)?;
+    check_general_register_is_encodable("rm", rm)?;
+    check_general_register_is_encodable("rn", rn)?;
+    let word = base | ((rn.as_operand_bits() as u32) << 16) | ((rd.as_operand_bits() as u32) << 8) | (rm.as_operand_bits() as u32);
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+// ---- ARMv7E-M DSP M8b: extend-and-add (`Rd, Rn, Rm{, ROR #r}`): base | Rn<<16 | Rd<<8 | (rotation/8)<<4 | Rm. ----
+fn encode_extend_and_add(base: u32, rd: &Arm32GeneralPurposeRegister, rn: &Arm32GeneralPurposeRegister, rm: &Arm32GeneralPurposeRegister, rotation: u8) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rd", rd)?;
+    check_register_is_not_pc("rn", rn)?;
+    check_general_register_is_encodable("rm", rm)?;
+    if !rotation.is_multiple_of(8) {
+        return Err(EncodeError::ImmediateNotAligned { field: "rotation", value: rotation as i64, required_multiple: 8 });
+    }
+    if rotation > 24 {
+        return Err(EncodeError::ImmediateOutOfRange { field: "rotation", value: rotation as i64, minimum: 0, maximum: 24 });
+    }
+    let rotate = (rotation / 8) as u32;
+    let word = base | ((rn.as_operand_bits() as u32) << 16) | ((rd.as_operand_bits() as u32) << 8) | (rotate << 4) | (rm.as_operand_bits() as u32);
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+fn decode_word_extend_and_add(word: u32) -> (/*rd*/u8, /*rn*/u8, /*rm*/u8, /*rotation*/u8) {
+    let rn = ((word >> 16) & 0b1111) as u8;
+    let rd = ((word >> 8) & 0b1111) as u8;
+    let rotation = (((word >> 4) & 0b11) as u8) * 8;
+    let rm = (word & 0b1111) as u8;
+    (rd, rn, rm, rotation)
+}
+
+// ---- ARMv7E-M DSP M8c ----
+
+// PKHBT/PKHTB (`Rd, Rn, Rm{, LSL/ASR #amount}`): 0xEAC00000 | Rn<<16 | imm3<<12 | Rd<<8 | imm2<<6 | tb<<5 | Rm.
+// `tb` selects PKHTB (ASR, tb=1) vs PKHBT (LSL, tb=0); the amount fills imm3:imm2.
+fn encode_pack_halfword(rd: &Arm32GeneralPurposeRegister, rn: &Arm32GeneralPurposeRegister, rm: &Arm32GeneralPurposeRegister, amount: u8, tb: bool) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rd", rd)?;
+    check_general_register_is_encodable("rn", rn)?;
+    check_general_register_is_encodable("rm", rm)?;
+    if amount > 31 {
+        return Err(EncodeError::ImmediateOutOfRange { field: "shift", value: amount as i64, minimum: 0, maximum: 31 });
+    }
+    let imm3 = ((amount >> 2) & 0b111) as u32;
+    let imm2 = (amount & 0b11) as u32;
+    let word = 0xEAC0_0000 | ((rn.as_operand_bits() as u32) << 16) | (imm3 << 12) | ((rd.as_operand_bits() as u32) << 8) | (imm2 << 6) | ((tb as u32) << 5) | (rm.as_operand_bits() as u32);
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+fn decode_word_pack_halfword(word: u32) -> (/*rd*/u8, /*rn*/u8, /*rm*/u8, /*amount*/u8, /*tb*/bool) {
+    let rn = ((word >> 16) & 0b1111) as u8;
+    let rd = ((word >> 8) & 0b1111) as u8;
+    let rm = (word & 0b1111) as u8;
+    let imm3 = (word >> 12) & 0b111;
+    let imm2 = (word >> 6) & 0b11;
+    let amount = ((imm3 << 2) | imm2) as u8;
+    let tb = (word >> 5) & 1 == 1;
+    (rd, rn, rm, amount, tb)
+}
+
+// SSAT16 / USAT16 (`Rd, #sat, Rn`, no shift): base | Rn<<16 | Rd<<8 | sat_field.
+fn encode_saturate16(base: u32, is_usat: bool, rd: &Arm32GeneralPurposeRegister, sat_imm: u8, rn: &Arm32GeneralPurposeRegister) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rd", rd)?;
+    check_general_register_is_encodable("rn", rn)?;
+    let sat_field = if is_usat {
+        if sat_imm > 15 {
+            return Err(EncodeError::ImmediateOutOfRange { field: "sat_imm", value: sat_imm as i64, minimum: 0, maximum: 15 });
+        }
+        sat_imm as u32
+    } else {
+        if !(1..=16).contains(&sat_imm) {
+            return Err(EncodeError::ImmediateOutOfRange { field: "sat_imm", value: sat_imm as i64, minimum: 1, maximum: 16 });
+        }
+        (sat_imm - 1) as u32
+    };
+    let word = base | ((rn.as_operand_bits() as u32) << 16) | ((rd.as_operand_bits() as u32) << 8) | sat_field;
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+// ---- ARMv7E-M DSP M8e: signed multiplies. The op2 [7:4] nibble selects the BB/BT/TB/TT half (n:m), the
+// cross (x), or the round (r) bit; helpers below splice it with the register fields. ----
+fn nm_nibble(n: bool, m: bool) -> u32 {
+    ((n as u32) << 1) | (m as u32)
+}
+
+// `Rd, Rn, Rm` with the Ra field SBO=1111 (SMUL*/SMULW/SMUAD/SMUSD/SMMUL): base | Rn<<16 | Rd<<8 | nibble<<4 | Rm.
+fn encode_signed_multiply(base: u32, rd: &Arm32GeneralPurposeRegister, rn: &Arm32GeneralPurposeRegister, rm: &Arm32GeneralPurposeRegister, nibble: u32) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rd", rd)?;
+    check_general_register_is_encodable("rn", rn)?;
+    check_general_register_is_encodable("rm", rm)?;
+    let word = base | ((rn.as_operand_bits() as u32) << 16) | ((rd.as_operand_bits() as u32) << 8) | (nibble << 4) | (rm.as_operand_bits() as u32);
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+// `Rd, Rn, Rm, Ra` (SMLA*/SMLAW/SMLAD/SMLSD/SMMLA/SMMLS): base | Rn<<16 | Ra<<12 | Rd<<8 | nibble<<4 | Rm.
+fn encode_signed_multiply_accumulate(base: u32, rd: &Arm32GeneralPurposeRegister, rn: &Arm32GeneralPurposeRegister, rm: &Arm32GeneralPurposeRegister, ra: &Arm32GeneralPurposeRegister, nibble: u32) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rd", rd)?;
+    check_general_register_is_encodable("rn", rn)?;
+    check_general_register_is_encodable("rm", rm)?;
+    check_general_register_is_encodable("ra", ra)?;
+    let word = base | ((rn.as_operand_bits() as u32) << 16) | ((ra.as_operand_bits() as u32) << 12) | ((rd.as_operand_bits() as u32) << 8) | (nibble << 4) | (rm.as_operand_bits() as u32);
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+// `RdLo, RdHi, Rn, Rm` (SMLAL<x><y>/SMLALD/SMLSLD): base | Rn<<16 | RdLo<<12 | RdHi<<8 | nibble<<4 | Rm.
+fn encode_signed_multiply_long(base: u32, rdlo: &Arm32GeneralPurposeRegister, rdhi: &Arm32GeneralPurposeRegister, rn: &Arm32GeneralPurposeRegister, rm: &Arm32GeneralPurposeRegister, nibble: u32) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rdlo", rdlo)?;
+    check_general_register_is_encodable("rdhi", rdhi)?;
+    check_general_register_is_encodable("rn", rn)?;
+    check_general_register_is_encodable("rm", rm)?;
+    let word = base | ((rn.as_operand_bits() as u32) << 16) | ((rdlo.as_operand_bits() as u32) << 12) | ((rdhi.as_operand_bits() as u32) << 8) | (nibble << 4) | (rm.as_operand_bits() as u32);
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+// ---- ARMv7E-M FP M8f: load/store (`Vd, [Rn, #+/-(imm8*4)]`): base | U<<23 | D<<22 | Rn<<16 | Vd<<12 | imm8. ----
+fn encode_fp_load_store(base: u32, vd_field: u32, d_bit: u32, rn: &Arm32GeneralPurposeRegister, offset: i32) -> Result<Vec<u16>, EncodeError> {
+    check_register_is_not_pc("rn", rn)?;
+    if offset % 4 != 0 {
+        return Err(EncodeError::ImmediateNotAligned { field: "offset", value: offset as i64, required_multiple: 4 });
+    }
+    if !(-1020..=1020).contains(&offset) {
+        return Err(EncodeError::ImmediateOutOfRange { field: "offset", value: offset as i64, minimum: -1020, maximum: 1020 });
+    }
+    let u = if offset >= 0 { 1u32 } else { 0 };
+    let imm8 = offset.unsigned_abs() / 4;
+    let word = base | (u << 23) | (d_bit << 22) | ((rn.as_operand_bits() as u32) << 16) | (vd_field << 12) | imm8;
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+fn decode_word_fp_load_store(word: u32) -> (/*vd_field*/u32, /*d_bit*/u32, /*rn*/u8, /*offset*/i32) {
+    let u = (word >> 23) & 1;
+    let d_bit = (word >> 22) & 1;
+    let rn = ((word >> 16) & 0b1111) as u8;
+    let vd_field = (word >> 12) & 0b1111;
+    let imm8 = (word & 0xFF) as i32;
+    let offset = if u == 1 { imm8 * 4 } else { -imm8 * 4 };
+    (vd_field, d_bit, rn, offset)
+}
+
+// FP load/store multiple (`Rn{!}, {first..first+count-1}`): 0xEC000000 | size | P<<24 | U<<23 | D<<22 |
+// W<<21 | L<<20 | Rn<<16 | Vd<<12 | imm8 (count for single, 2*count for double). IA is P=0,U=1; DB is P=1,U=0.
+#[allow(clippy::too_many_arguments)]
+fn encode_fp_load_store_multiple(size_low: u32, is_load: bool, rn: &Arm32GeneralPurposeRegister, writeback: bool, decrement_before: bool, vd_field: u32, d_bit: u32, count: u8, first_number: u8, max_register: u8, is_double: bool) -> Result<Vec<u16>, EncodeError> {
+    check_register_is_not_pc("rn", rn)?;
+    if count == 0 || (first_number as u32) + (count as u32) - 1 > max_register as u32 {
+        return Err(EncodeError::ImmediateOutOfRange { field: "count", value: count as i64, minimum: 1, maximum: (max_register as i64) - (first_number as i64) + 1 });
+    }
+    if decrement_before && !writeback {
+        return Err(EncodeError::RegisterNotEncodable { field: "rn", detail: "the decrement-before (DB) form requires writeback (!)" });
+    }
+    let p = if decrement_before { 1u32 } else { 0 };
+    let u = if decrement_before { 0u32 } else { 1 };
+    let imm8 = if is_double { (count as u32) * 2 } else { count as u32 };
+    let word = 0xEC00_0000 | size_low | (p << 24) | (u << 23) | (d_bit << 22) | ((writeback as u32) << 21) | ((is_load as u32) << 20) | ((rn.as_operand_bits() as u32) << 16) | (vd_field << 12) | imm8;
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+fn decode_word_fp_load_store_multiple(word: u32) -> (/*rn*/u8, /*writeback*/bool, /*decrement_before*/bool, /*vd_field*/u32, /*d_bit*/u32, /*imm8*/u8) {
+    let decrement_before = (word >> 24) & 1 == 1;
+    let writeback = (word >> 21) & 1 == 1;
+    let rn = ((word >> 16) & 0b1111) as u8;
+    let d_bit = (word >> 22) & 1;
+    let vd_field = (word >> 12) & 0b1111;
+    let imm8 = (word & 0xFF) as u8;
+    (rn, writeback, decrement_before, vd_field, d_bit, imm8)
+}
+
+// VMOV between a core register pair and a double / two consecutive singles: base | op<<20 | Rt2<<16 |
+// Rt<<12 | M<<5 | Vm. `fp_to_core` is the op bit (1 = FP -> core).
+fn encode_vmov_core_pair(base: u32, fp_to_core: bool, rt: &Arm32GeneralPurposeRegister, rt2: &Arm32GeneralPurposeRegister, vm_field: u32, m_bit: u32) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rt", rt)?;
+    check_general_register_is_encodable("rt2", rt2)?;
+    let word = base | ((fp_to_core as u32) << 20) | ((rt2.as_operand_bits() as u32) << 16) | ((rt.as_operand_bits() as u32) << 12) | (m_bit << 5) | vm_field;
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+// Fixed-point VCVT (Vd is also the source): 0xEEBA0A40 | op<<18 | U<<16 | D<<22 | Vd<<12 | sf<<8 | sx<<7 |
+// i<<5 | imm4, where the imm5 field (imm4:i) = size - frac_bits (size = 32 if `bits32` else 16).
+fn encode_vcvt_fixed(vd_field: u32, d_bit: u32, sf: u32, to_fixed: bool, signed: bool, bits32: bool, frac_bits: u8) -> Result<Vec<u16>, EncodeError> {
+    let size: u32 = if bits32 { 32 } else { 16 };
+    if frac_bits < 1 || frac_bits as u32 > size {
+        return Err(EncodeError::ImmediateOutOfRange { field: "frac_bits", value: frac_bits as i64, minimum: 1, maximum: size as i64 });
+    }
+    let imm5 = size - frac_bits as u32;
+    let imm4 = (imm5 >> 1) & 0xF;
+    let i = imm5 & 1;
+    let op = if to_fixed { 1u32 } else { 0 };
+    let u = if signed { 0u32 } else { 1 };
+    let word = 0xEEBA_0A40 | (op << 18) | (u << 16) | (d_bit << 22) | (vd_field << 12) | (sf << 8) | ((bits32 as u32) << 7) | (i << 5) | imm4;
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+fn decode_word_vcvt_fixed(word: u32) -> Option<(/*signed*/bool, /*bits32*/bool, /*frac_bits*/u8)> {
+    let signed = (word >> 16) & 1 == 0;
+    let bits32 = (word >> 7) & 1 == 1;
+    let size: u32 = if bits32 { 32 } else { 16 };
+    let imm5 = ((word & 0xF) << 1) | ((word >> 5) & 1);
+    // frac_bits = size - imm5 must be in 1..=size; imm5 >= size is an invalid (non-positive fraction) encoding.
+    if imm5 >= size { return None; }
+    Some((signed, bits32, (size - imm5) as u8))
+}
+
+// USADA8 (`Rd, Rn, Rm, Ra`): 0xFB700000 | Rn<<16 | Ra<<12 | Rd<<8 | Rm. (USAD8 is the Ra==1111 case.)
+fn encode_usada8(rd: &Arm32GeneralPurposeRegister, rn: &Arm32GeneralPurposeRegister, rm: &Arm32GeneralPurposeRegister, ra: &Arm32GeneralPurposeRegister) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rd", rd)?;
+    check_general_register_is_encodable("rn", rn)?;
+    check_general_register_is_encodable("rm", rm)?;
+    check_general_register_is_encodable("ra", ra)?;
+    let word = 0xFB70_0000 | ((rn.as_operand_bits() as u32) << 16) | ((ra.as_operand_bits() as u32) << 12) | ((rd.as_operand_bits() as u32) << 8) | (rm.as_operand_bits() as u32);
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+// Wide load/store with a register offset (`Rt, [Rn, Rm, LSL #lsl]`): base | Rn<<16 | Rt<<12 | lsl<<4 | Rm.
+fn encode_load_store_register(base: u32, rt: &Arm32GeneralPurposeRegister, rn: &Arm32GeneralPurposeRegister, rm: &Arm32GeneralPurposeRegister, lsl: u8) -> Result<Vec<u16>, EncodeError> {
+    check_general_register_is_encodable("rt", rt)?;
+    check_register_is_not_pc("rn", rn)?;
+    check_general_register_is_encodable("rm", rm)?;
+    if lsl > 3 {
+        return Err(EncodeError::ImmediateOutOfRange { field: "shift", value: lsl as i64, minimum: 0, maximum: 3 });
+    }
+    let word = base | ((rn.as_operand_bits() as u32) << 16) | ((rt.as_operand_bits() as u32) << 12) | ((lsl as u32) << 4) | (rm.as_operand_bits() as u32);
+    Ok(split_instruction_word_into_halfwords(word).to_vec())
+}
+
+// Pack lsb (5 bits) into the imm3:imm2 field positions (bits 14:12 and 7:6).
+fn bitfield_lsb_field_bits(lsb: u8) -> u32 {
+    let imm3 = ((lsb >> 2) & 0b111) as u32;
+    let imm2 = (lsb & 0b11) as u32;
+    (imm3 << 12) | (imm2 << 6)
+}
+
+fn split_instruction_word_into_halfwords(word: u32) -> [u16; 2] {
+    let halfword0 = ((word >> 16) & 0xFFFF) as u16;
+    let halfword1 = (word & 0xFFFF) as u16;
+
+    [halfword0, halfword1]
+}
+
+// ---- VCX (CDE FP/vector custom-datapath) register + immediate field helpers ----
+// `kind`: 0 = single (Sx, num = Vx:X), 1 = double (Dx, num = X:Vx), 2 = vector (Qx, a 3-bit Q). The three
+// placement helpers put a register number into: `d` = destination ([15:12]+D[22] or Qd[15:13]); `lo` = the
+// low source ([3:0]+[5] or Q[3:1], used by VCX2's Rn and VCX3's Rm); `hi` = the high source ([19:16]+[7]
+// or Q[19:17], used by VCX3's Rn). The `enc`/`dec` pairs are exact inverses.
+fn vcx_enc_d(kind: u8, num: u8) -> u32 {
+    let n = num as u32;
+    match kind { 2 => (n & 7) << 13, 0 => ((n >> 1) << 12) | ((n & 1) << 22), _ => ((n & 0xF) << 12) | (((n >> 4) & 1) << 22) }
+}
+fn vcx_dec_d(kind: u8, w: u32) -> u8 {
+    (match kind { 2 => (w >> 13) & 7, 0 => (((w >> 12) & 0xF) << 1) | ((w >> 22) & 1), _ => ((w >> 12) & 0xF) | (((w >> 22) & 1) << 4) }) as u8
+}
+fn vcx_enc_lo(kind: u8, num: u8) -> u32 {
+    let n = num as u32;
+    match kind { 2 => (n & 7) << 1, 0 => (n >> 1) | ((n & 1) << 5), _ => (n & 0xF) | (((n >> 4) & 1) << 5) }
+}
+fn vcx_dec_lo(kind: u8, w: u32) -> u8 {
+    (match kind { 2 => (w >> 1) & 7, 0 => ((w & 0xF) << 1) | ((w >> 5) & 1), _ => (w & 0xF) | (((w >> 5) & 1) << 4) }) as u8
+}
+fn vcx_enc_hi(kind: u8, num: u8) -> u32 {
+    let n = num as u32;
+    match kind { 2 => (n & 7) << 17, 0 => ((n >> 1) << 16) | ((n & 1) << 7), _ => ((n & 0xF) << 16) | (((n >> 4) & 1) << 7) }
+}
+fn vcx_dec_hi(kind: u8, w: u32) -> u8 {
+    (match kind { 2 => (w >> 17) & 7, 0 => (((w >> 16) & 0xF) << 1) | ((w >> 7) & 1), _ => ((w >> 16) & 0xF) | (((w >> 7) & 1) << 4) }) as u8
+}
+// VCX immediate scatter (arity-specific, identical for scalar and vector).
+fn vcx_enc_imm1(imm: u16) -> u32 { let i = imm as u32; (i & 0x3F) | (((i >> 6) & 1) << 7) | (((i >> 7) & 0xF) << 16) }
+fn vcx_dec_imm1(w: u32) -> u16 { ((w & 0x3F) | (((w >> 7) & 1) << 6) | (((w >> 16) & 0xF) << 7)) as u16 }
+fn vcx_enc_imm2(imm: u8) -> u32 { let i = imm as u32; ((i & 1) << 4) | (((i >> 1) & 1) << 7) | (((i >> 2) & 0xF) << 16) }
+fn vcx_dec_imm2(w: u32) -> u8 { (((w >> 4) & 1) | (((w >> 7) & 1) << 1) | (((w >> 16) & 0xF) << 2)) as u8 }
+fn vcx_enc_imm3(imm: u8) -> u32 { let i = imm as u32; ((i & 1) << 4) | (((i >> 1) & 1) << 20) | (((i >> 2) & 1) << 21) }
+fn vcx_dec_imm3(w: u32) -> u8 { (((w >> 4) & 1) | (((w >> 20) & 1) << 1) | (((w >> 21) & 1) << 2)) as u8 }
+
+// MVE one-register modified immediate: `1110 1111 1 i 0 D 000 imm3 Qd cmode 0 0 op 1 imm4`. The imm8 seed
+// is scattered as i=imm8[7] (bit28), imm3=imm8[6:4] (bits[18:16]), imm4=imm8[3:0] (bits[3:0]); the Q bit
+// (6) is fixed 1 for these 128-bit forms. Base (cmode=op=imm8=0, Qd=0) is 0xEF80_0050.
+fn encode_mve_modified_imm(cmode: u8, op: bool, imm8: u8, qd_field: u32) -> u32 {
+    let i = ((imm8 as u32) >> 7) & 1;
+    let imm3 = ((imm8 as u32) >> 4) & 0b111;
+    let imm4 = (imm8 as u32) & 0xF;
+    0xEF80_0050 | (i << 28) | (imm3 << 16) | (qd_field << 13) | ((cmode as u32 & 0xF) << 8) | ((op as u32) << 5) | imm4
+}
+
