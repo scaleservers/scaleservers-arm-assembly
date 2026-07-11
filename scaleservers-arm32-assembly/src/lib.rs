@@ -64,4 +64,6 @@ pub use enums::{
     Arm32NeonDiffNarrowOp,
     Arm32NeonScalarOp,
     Arm32NeonScalarLongOp,
+    Arm32NeonShiftOp,
+    Arm32NeonShiftNarrowOp,
 };

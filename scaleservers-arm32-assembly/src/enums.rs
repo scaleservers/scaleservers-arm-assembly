@@ -75,6 +75,8 @@ pub use arm32_neon_operations::{
     Arm32NeonMisc2SizedOp, Arm32NeonMisc2FixedOp, Arm32NeonNarrowOp,
     Arm32NeonDiffLongOp, Arm32NeonDiffWideOp, Arm32NeonDiffNarrowOp,
     Arm32NeonScalarOp, Arm32NeonScalarLongOp,
+    Arm32NeonShiftOp, Arm32NeonShiftNarrowOp,
+    Arm32NeonAesOp, Arm32NeonSha3Op, Arm32NeonSha2Op,
 };
 
 // ---- neutral ARM-wide aliases ----

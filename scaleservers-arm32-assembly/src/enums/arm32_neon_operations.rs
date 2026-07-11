@@ -611,3 +611,175 @@ impl Arm32NeonScalarLongOp {
         })
     }
 }
+
+// ---- NEON "two registers and a shift amount" format: 1111 001 U 1 D imm6 Vd opc L Q M 1 Vm ----
+// The element size and shift amount are jointly encoded in L:imm6. opc=[11:8] selects the op and shape:
+// same-width (opc 0000..0111, bit6 = Q), narrowing Dd<-Qm (opc 1000/1001, bit6 = rounding), or widening
+// Qd<-Dm (opc 1010, VSHLL/VMOVL).
+
+// Same-width shift-by-immediate ops. is_left() picks the L:imm6 = esize+shift (left) vs 2*esize-shift
+// (right) encoding. Signedness (where it matters) is folded into the op (it sets U).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32NeonShiftOp {
+    VshrS, VshrU, VsraS, VsraU, VrshrS, VrshrU, VrsraS, VrsraU, Vsri, // right shifts
+    Vshl, Vsli, Vqshlu, VqshlS, VqshlU,                              // left shifts
+}
+impl Arm32NeonShiftOp {
+    // (U, opc, is_left)
+    pub fn fields(self) -> (u32, u32, bool) {
+        match self {
+            Self::VshrS => (0, 0b0000, false),
+            Self::VshrU => (1, 0b0000, false),
+            Self::VsraS => (0, 0b0001, false),
+            Self::VsraU => (1, 0b0001, false),
+            Self::VrshrS => (0, 0b0010, false),
+            Self::VrshrU => (1, 0b0010, false),
+            Self::VrsraS => (0, 0b0011, false),
+            Self::VrsraU => (1, 0b0011, false),
+            Self::Vsri => (1, 0b0100, false),
+            Self::Vshl => (0, 0b0101, true),
+            Self::Vsli => (1, 0b0101, true),
+            Self::Vqshlu => (1, 0b0110, true),
+            Self::VqshlS => (0, 0b0111, true),
+            Self::VqshlU => (1, 0b0111, true),
+        }
+    }
+    pub fn from_fields(u: u32, opc: u32) -> Option<Self> {
+        Some(match (opc, u) {
+            (0b0000, 0) => Self::VshrS,
+            (0b0000, 1) => Self::VshrU,
+            (0b0001, 0) => Self::VsraS,
+            (0b0001, 1) => Self::VsraU,
+            (0b0010, 0) => Self::VrshrS,
+            (0b0010, 1) => Self::VrshrU,
+            (0b0011, 0) => Self::VrsraS,
+            (0b0011, 1) => Self::VrsraU,
+            (0b0100, 1) => Self::Vsri,
+            (0b0101, 0) => Self::Vshl,
+            (0b0101, 1) => Self::Vsli,
+            (0b0110, 1) => Self::Vqshlu,
+            (0b0111, 0) => Self::VqshlS,
+            (0b0111, 1) => Self::VqshlU,
+            _ => return None,
+        })
+    }
+    pub fn is_left(self) -> bool {
+        self.fields().2
+    }
+}
+
+// Narrowing shift-by-immediate ops (Dd <- Qm, always a right shift). (U, opc, R=rounding) select the op.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32NeonShiftNarrowOp {
+    Vshrn, Vrshrn, Vqshrun, Vqrshrun, VqshrnS, VqrshrnS, VqshrnU, VqrshrnU,
+}
+impl Arm32NeonShiftNarrowOp {
+    // (U, opc, R)
+    pub fn fields(self) -> (u32, u32, u32) {
+        match self {
+            Self::Vshrn => (0, 0b1000, 0),
+            Self::Vrshrn => (0, 0b1000, 1),
+            Self::Vqshrun => (1, 0b1000, 0),
+            Self::Vqrshrun => (1, 0b1000, 1),
+            Self::VqshrnS => (0, 0b1001, 0),
+            Self::VqrshrnS => (0, 0b1001, 1),
+            Self::VqshrnU => (1, 0b1001, 0),
+            Self::VqrshrnU => (1, 0b1001, 1),
+        }
+    }
+    pub fn from_fields(u: u32, opc: u32, r: u32) -> Option<Self> {
+        Some(match (opc, u, r) {
+            (0b1000, 0, 0) => Self::Vshrn,
+            (0b1000, 0, 1) => Self::Vrshrn,
+            (0b1000, 1, 0) => Self::Vqshrun,
+            (0b1000, 1, 1) => Self::Vqrshrun,
+            (0b1001, 0, 0) => Self::VqshrnS,
+            (0b1001, 0, 1) => Self::VqrshrnS,
+            (0b1001, 1, 0) => Self::VqshrnU,
+            (0b1001, 1, 1) => Self::VqrshrnU,
+            _ => return None,
+        })
+    }
+}
+
+// ---- ARMv8 cryptography extension (operates on Q registers) ----
+
+// AES single-round operations (2-reg, in the 2-reg-misc opcode space). bits[7:6] select the operation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32NeonAesOp {
+    Aese, Aesd, Aesmc, Aesimc,
+}
+impl Arm32NeonAesOp {
+    pub fn op_bits(self) -> u32 {
+        match self {
+            Self::Aese => 0b00,
+            Self::Aesd => 0b01,
+            Self::Aesmc => 0b10,
+            Self::Aesimc => 0b11,
+        }
+    }
+    pub fn from_op_bits(bits: u32) -> Self {
+        match bits & 0b11 {
+            0b00 => Self::Aese,
+            0b01 => Self::Aesd,
+            0b10 => Self::Aesmc,
+            _ => Self::Aesimc,
+        }
+    }
+}
+
+// SHA1 / SHA256 three-register operations (in the 3-reg-same opcode space, opc=1100 op=0). (U, size) select.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32NeonSha3Op {
+    Sha1c, Sha1p, Sha1m, Sha1su0, Sha256h, Sha256h2, Sha256su1,
+}
+impl Arm32NeonSha3Op {
+    // (U, size)
+    pub fn fields(self) -> (u32, u32) {
+        match self {
+            Self::Sha1c => (0, 0b00),
+            Self::Sha1p => (0, 0b01),
+            Self::Sha1m => (0, 0b10),
+            Self::Sha1su0 => (0, 0b11),
+            Self::Sha256h => (1, 0b00),
+            Self::Sha256h2 => (1, 0b01),
+            Self::Sha256su1 => (1, 0b10),
+        }
+    }
+    pub fn from_fields(u: u32, size: u32) -> Option<Self> {
+        Some(match (u, size) {
+            (0, 0b00) => Self::Sha1c,
+            (0, 0b01) => Self::Sha1p,
+            (0, 0b10) => Self::Sha1m,
+            (0, 0b11) => Self::Sha1su0,
+            (1, 0b00) => Self::Sha256h,
+            (1, 0b01) => Self::Sha256h2,
+            (1, 0b10) => Self::Sha256su1,
+            _ => return None,
+        })
+    }
+}
+
+// SHA1 / SHA256 two-register operations. Each is a single fixed encoding (base word, with Vd/Vm/D/M overlaid).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32NeonSha2Op {
+    Sha1h, Sha1su1, Sha256su0,
+}
+impl Arm32NeonSha2Op {
+    // the fixed base word (Vd=Vm=0, D=M=0)
+    pub fn base(self) -> u32 {
+        match self {
+            Self::Sha1h => 0xF3B9_02C0,
+            Self::Sha1su1 => 0xF3BA_0380,
+            Self::Sha256su0 => 0xF3BA_03C0,
+        }
+    }
+    pub fn from_base(base: u32) -> Option<Self> {
+        match base {
+            0xF3B9_02C0 => Some(Self::Sha1h),
+            0xF3BA_0380 => Some(Self::Sha1su1),
+            0xF3BA_03C0 => Some(Self::Sha256su0),
+            _ => None,
+        }
+    }
+}
