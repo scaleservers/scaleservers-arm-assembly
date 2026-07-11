@@ -105,3 +105,9 @@ pub use targets::{
     ArmIsaVersion,
     ArmTargetProfile,
 };
+
+// Decode-time context for the family-wide Rule R4 ("same bytes, different meaning" -> disambiguate by an
+// explicit decode context). Used by `ArmT32Instruction::decode_with` to choose between a CDE custom-datapath
+// instruction and a generic coprocessor instruction on coprocessors 0-7.
+mod arm32_decode_context;
+pub use arm32_decode_context::ArmDecodeContext;
