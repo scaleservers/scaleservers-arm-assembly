@@ -1,7 +1,7 @@
 // Copyright (c) Scaleservers LLC
 
 // The VFP data-processing operations, factored out of `ArmT32Instruction` so that each comes in a single
-// pair of variants (single / double precision) rather than one per operation × precision. The opcode of a
+// pair of variants (single / double precision) rather than one per operation x precision. The opcode of a
 // 3-operand FP instruction lives in bits [23], [21:20] and the op bit [6]; the 2-operand "other" group is
 // selected by [19:16] and bit [7]. See the encode/decode in armt32_instruction.rs.
 

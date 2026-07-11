@@ -1,7 +1,7 @@
 // Copyright (c) Scaleservers LLC
 
 // The ARMv7E-M "parallel addition and subtraction" (packed SIMD) instructions are a regular family of 36:
-// six operations × six signed/unsigned prefixes, all `Rd, Rn, Rm`. Rather than 36 near-identical model
+// six operations x six signed/unsigned prefixes, all `Rd, Rn, Rm`. Rather than 36 near-identical model
 // variants, `ArmT32Instruction::ParallelAddSub_T1` carries the operation and prefix as these two enums.
 // Encoding: `operation.base() | Rn<<16 | Rd<<8 | (prefix.bits() << 4) | Rm`.
 

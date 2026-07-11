@@ -88,6 +88,13 @@ pub use arm32_mve_registers::Arm32MveVectorRegister;
 mod arm32_vmov_lane_size;
 pub use arm32_vmov_lane_size::Arm32VmovLaneSize;
 
+mod arm32_mve_operations;
+pub use arm32_mve_operations::{
+    Arm32MveSize, Arm32MveFloatSize,
+    Arm32MveIntArithOp,
+    MVE_INT_SIGNATURE_MASK, MVE_BITWISE_SIGNATURE_MASK, MVE_FLOAT_SIGNATURE_MASK,
+};
+
 // ---- neutral ARM-wide aliases ----
 // The 4-bit condition code and the barrel-shift operand are identical in the A32 and T32 instruction sets,
 // so they are also exposed under neutral `Arm32*` names for use by `ArmA32Instruction`. The historical

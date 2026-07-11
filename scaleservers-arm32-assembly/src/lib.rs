@@ -72,4 +72,7 @@ pub use enums::{
     Arm32NeonSha2Op,
     Arm32MveVectorRegister,
     Arm32VmovLaneSize,
+    Arm32MveSize,
+    Arm32MveFloatSize,
+    Arm32MveIntArithOp,
 };
