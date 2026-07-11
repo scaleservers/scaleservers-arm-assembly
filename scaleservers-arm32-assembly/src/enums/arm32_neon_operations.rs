@@ -425,3 +425,189 @@ impl Arm32NeonNarrowOp {
         })
     }
 }
+
+// ---- NEON "three registers of different lengths" format: 1111 001 U 1 D size Vn Vd opc N 0 M 0 Vm ----
+// opc=[11:8] selects the op and implies the register shape: Long (Qd = Dn op Dm), Wide (Qd = Qn op Dm), or
+// Narrow (Dd = high-half(Qn op Qm)). `size` is the source element size; for Long/Wide it is .s8/.u16/.s32 =
+// 00/01/10, for Narrow it names the wider source as .i16/.i32/.i64 = 00/01/10 (one less than the size bits).
+
+// Long ops (Qd <- Dn, Dm). Signedness / polynomial is folded into the op (it sets U).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32NeonDiffLongOp {
+    VaddlS, VaddlU, VsublS, VsublU, VabalS, VabalU, VabdlS, VabdlU,
+    VmlalS, VmlalU, VmlslS, VmlslU, VmullS, VmullU, VmullP,
+    Vqdmlal, Vqdmlsl, Vqdmull,
+}
+impl Arm32NeonDiffLongOp {
+    // (U, opc)
+    pub fn fields(self) -> (u32, u32) {
+        match self {
+            Self::VaddlS => (0, 0b0000),
+            Self::VaddlU => (1, 0b0000),
+            Self::VsublS => (0, 0b0010),
+            Self::VsublU => (1, 0b0010),
+            Self::VabalS => (0, 0b0101),
+            Self::VabalU => (1, 0b0101),
+            Self::VabdlS => (0, 0b0111),
+            Self::VabdlU => (1, 0b0111),
+            Self::VmlalS => (0, 0b1000),
+            Self::VmlalU => (1, 0b1000),
+            Self::VmlslS => (0, 0b1010),
+            Self::VmlslU => (1, 0b1010),
+            Self::VmullS => (0, 0b1100),
+            Self::VmullU => (1, 0b1100),
+            Self::VmullP => (0, 0b1110),
+            Self::Vqdmlal => (0, 0b1001),
+            Self::Vqdmlsl => (0, 0b1011),
+            Self::Vqdmull => (0, 0b1101),
+        }
+    }
+    pub fn from_fields(u: u32, opc: u32) -> Option<Self> {
+        Some(match (opc, u) {
+            (0b0000, 0) => Self::VaddlS,
+            (0b0000, 1) => Self::VaddlU,
+            (0b0010, 0) => Self::VsublS,
+            (0b0010, 1) => Self::VsublU,
+            (0b0101, 0) => Self::VabalS,
+            (0b0101, 1) => Self::VabalU,
+            (0b0111, 0) => Self::VabdlS,
+            (0b0111, 1) => Self::VabdlU,
+            (0b1000, 0) => Self::VmlalS,
+            (0b1000, 1) => Self::VmlalU,
+            (0b1010, 0) => Self::VmlslS,
+            (0b1010, 1) => Self::VmlslU,
+            (0b1100, 0) => Self::VmullS,
+            (0b1100, 1) => Self::VmullU,
+            (0b1110, 0) => Self::VmullP,
+            (0b1001, 0) => Self::Vqdmlal,
+            (0b1011, 0) => Self::Vqdmlsl,
+            (0b1101, 0) => Self::Vqdmull,
+            _ => return None,
+        })
+    }
+}
+
+// Wide ops (Qd <- Qn, Dm).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32NeonDiffWideOp {
+    VaddwS, VaddwU, VsubwS, VsubwU,
+}
+impl Arm32NeonDiffWideOp {
+    pub fn fields(self) -> (u32, u32) {
+        match self {
+            Self::VaddwS => (0, 0b0001),
+            Self::VaddwU => (1, 0b0001),
+            Self::VsubwS => (0, 0b0011),
+            Self::VsubwU => (1, 0b0011),
+        }
+    }
+    pub fn from_fields(u: u32, opc: u32) -> Option<Self> {
+        Some(match (opc, u) {
+            (0b0001, 0) => Self::VaddwS,
+            (0b0001, 1) => Self::VaddwU,
+            (0b0011, 0) => Self::VsubwS,
+            (0b0011, 1) => Self::VsubwU,
+            _ => return None,
+        })
+    }
+}
+
+// Narrowing high-half ops (Dd <- Qn, Qm). U=1 selects the rounding variant (VRADDHN / VRSUBHN).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32NeonDiffNarrowOp {
+    Vaddhn, Vraddhn, Vsubhn, Vrsubhn,
+}
+impl Arm32NeonDiffNarrowOp {
+    pub fn fields(self) -> (u32, u32) {
+        match self {
+            Self::Vaddhn => (0, 0b0100),
+            Self::Vraddhn => (1, 0b0100),
+            Self::Vsubhn => (0, 0b0110),
+            Self::Vrsubhn => (1, 0b0110),
+        }
+    }
+    pub fn from_fields(u: u32, opc: u32) -> Option<Self> {
+        Some(match (opc, u) {
+            (0b0100, 0) => Self::Vaddhn,
+            (0b0100, 1) => Self::Vraddhn,
+            (0b0110, 0) => Self::Vsubhn,
+            (0b0110, 1) => Self::Vrsubhn,
+            _ => return None,
+        })
+    }
+}
+
+// ---- NEON "two registers and a scalar" format: 1111 001 Q/U 1 D size Vn Vd opc N 1 M 0 Vm ----
+// The second multiplicand is a scalar Dm[index]. opc=[11:8]; opc[1] (bit 9) selects the shape: 0 = same
+// length (bit24 = Q, the 64-/128-bit operation bit), 1 = long (Qd <- Dn, bit24 = U for signedness).
+
+// Same-length multiply-by-scalar ops. The float members fix the element size to f32 (size field = 10).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32NeonScalarOp {
+    Vmla, VmlaF, Vmls, VmlsF, Vmul, VmulF, Vqdmulh, Vqrdmulh,
+}
+impl Arm32NeonScalarOp {
+    pub fn opc(self) -> u32 {
+        match self {
+            Self::Vmla => 0b0000,
+            Self::VmlaF => 0b0001,
+            Self::Vmls => 0b0100,
+            Self::VmlsF => 0b0101,
+            Self::Vmul => 0b1000,
+            Self::VmulF => 0b1001,
+            Self::Vqdmulh => 0b1100,
+            Self::Vqrdmulh => 0b1101,
+        }
+    }
+    pub fn from_opc(opc: u32) -> Option<Self> {
+        // opc is a 4-bit field; mask so stray high bits are ignored and the fallback catches only the
+        // in-field invalid opcodes (the bit1=1 values), not out-of-range garbage.
+        Some(match opc & 0b1111 {
+            0b0000 => Self::Vmla,
+            0b0001 => Self::VmlaF,
+            0b0100 => Self::Vmls,
+            0b0101 => Self::VmlsF,
+            0b1000 => Self::Vmul,
+            0b1001 => Self::VmulF,
+            0b1100 => Self::Vqdmulh,
+            0b1101 => Self::Vqrdmulh,
+            _ => return None,
+        })
+    }
+}
+
+// Long multiply-by-scalar ops (Qd <- Dn, scalar). bit24 = U (signedness) where it applies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32NeonScalarLongOp {
+    VmlalS, VmlalU, VmlslS, VmlslU, VmullS, VmullU, Vqdmlal, Vqdmlsl, Vqdmull,
+}
+impl Arm32NeonScalarLongOp {
+    // (U, opc)
+    pub fn fields(self) -> (u32, u32) {
+        match self {
+            Self::VmlalS => (0, 0b0010),
+            Self::VmlalU => (1, 0b0010),
+            Self::VmlslS => (0, 0b0110),
+            Self::VmlslU => (1, 0b0110),
+            Self::VmullS => (0, 0b1010),
+            Self::VmullU => (1, 0b1010),
+            Self::Vqdmlal => (0, 0b0011),
+            Self::Vqdmlsl => (0, 0b0111),
+            Self::Vqdmull => (0, 0b1011),
+        }
+    }
+    pub fn from_fields(u: u32, opc: u32) -> Option<Self> {
+        Some(match (opc, u) {
+            (0b0010, 0) => Self::VmlalS,
+            (0b0010, 1) => Self::VmlalU,
+            (0b0110, 0) => Self::VmlslS,
+            (0b0110, 1) => Self::VmlslU,
+            (0b1010, 0) => Self::VmullS,
+            (0b1010, 1) => Self::VmullU,
+            (0b0011, 0) => Self::Vqdmlal,
+            (0b0111, 0) => Self::Vqdmlsl,
+            (0b1011, 0) => Self::Vqdmull,
+            _ => return None,
+        })
+    }
+}
