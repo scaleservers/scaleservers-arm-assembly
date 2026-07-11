@@ -1039,3 +1039,123 @@ pub const MVE_VCMUL_PATTERN: u32 = 0xEE30_0E00;
 // VCMLA (float): element size = bit20 (.f32 = 1), rotation 0/90/180/270 = {bit24, bit23}.
 pub const MVE_VCMLA_MASK: u32 = 0xFE61_1FF1;
 pub const MVE_VCMLA_PATTERN: u32 = 0xFC20_0840;
+
+// ---- MVE predication primitives (standalone; the VPT/VPST predicate-block machinery is separate) ----
+// VPSEL (`Qd, Qn, Qm`): per-lane select from Qn/Qm by the vector predicate register (VPR). Qd[15:13],
+// Qn[19:17], Qm[3:1]. VPNOT: invert the VPR (no operands), a fixed word.
+pub const MVE_VPSEL_BASE: u32 = 0xFE31_0F01;
+pub const MVE_VPSEL_MASK: u32 = 0xFFF1_1FF1; // clears Qd / Qn / Qm
+pub const MVE_VPNOT_WORD: u32 = 0xFE31_0F4D;
+
+// VADC/VADCI/VSBC/VSBCI -- 32-bit vector add/subtract with carry through FPSCR (`Qd, Qn, Qm`). subtract(VSBC)
+// = bit28; init-carry(the I forms, which seed the carry rather than reading FPSCR.C) = bit12; Qd[15:13],
+// Qn[19:17], Qm[3:1]. .i32 only. Sits in VCADD's reserved size=0b11 slot ([23:20]=0011), so decode it before
+// (or independently of) VCADD-int -- VCADD rejects size 0b11 anyway.
+pub const MVE_VADC_BASE: u32 = 0xEE30_0F00;
+pub const MVE_VADC_MASK: u32 = 0xEFF1_0FF1;
+
+// VSHLC -- whole-vector left shift, the bits shifted out the top of the vector spilling into / the new low bits
+// coming from a GPR carry (`Qda, Rdm, #imm`). imm5[20:16] = shift in 1..=32 (32 encoded as 0); Qda[15:13];
+// Rdm[3:0]. base 0xEEA0_0FC0.
+pub const MVE_VSHLC_BASE: u32 = 0xEEA0_0FC0;
+pub const MVE_VSHLC_MASK: u32 = 0xFFE0_1FF0; // imm5[20:16] and Rdm[3:0] vary; bit12 (and Qd[15:13]) are checked via [15:12]=0001
+
+// VPST sets up a 1-4 instruction predicate block (the following instructions are predicated by the VPR).
+// It shares VPNOT's opcode (0xFE31_0F4D) plus a 4-bit IT-style `mask` (mask 0 = VPNOT). The mask is scattered:
+// mask[3] = hw0 bit22, mask[2:0] = hw1[15:13]. The block length is 4 - trailing_zeros(mask).
+pub const MVE_VPST_NOT_BASE: u32 = 0xFE31_0F4D;
+pub const MVE_VPST_NOT_MASK: u32 = 0xFFBF_1FFF; // the fixed opcode (clears the scattered predicate mask bits)
+pub fn mve_predicate_mask_bits(mask: u8) -> u32 {
+    let m = mask as u32;
+    (((m >> 3) & 1) << 22) | (((m >> 2) & 1) << 15) | (((m >> 1) & 1) << 14) | ((m & 1) << 13)
+}
+pub fn mve_predicate_mask_from_word(word: u32) -> u8 {
+    ((((word >> 22) & 1) << 3) | ((word >> 13) & 0b111)) as u8
+}
+// the t/e letters following the `vps`/`vp` stem for a predicate mask (GNU's running-predicate convention,
+// transcribed from `arm-none-eabi-as`). The block length is 4 - mask.trailing_zeros().
+pub fn mve_predicate_mask_suffix(mask: u8) -> &'static str {
+    match mask {
+        0b1000 => "t",    0b0100 => "tt",   0b1100 => "te",
+        0b0010 => "ttt",  0b0110 => "tte",  0b1110 => "tet",  0b1010 => "tee",
+        0b0001 => "tttt", 0b0011 => "ttte", 0b0111 => "ttet", 0b0101 => "ttee",
+        0b1101 => "tett", 0b1111 => "tete", 0b1011 => "teet", 0b1001 => "teee",
+        _ => "t",
+    }
+}
+pub fn mve_predicate_mask_from_suffix(suffix: &str) -> Option<u8> {
+    Some(match suffix {
+        "t" => 0b1000,    "tt" => 0b0100,   "te" => 0b1100,
+        "ttt" => 0b0010,  "tte" => 0b0110,  "tet" => 0b1110,  "tee" => 0b1010,
+        "tttt" => 0b0001, "ttte" => 0b0011, "ttet" => 0b0111, "ttee" => 0b0101,
+        "tett" => 0b1101, "tete" => 0b1111, "teet" => 0b1011, "teee" => 0b1001,
+        _ => return None,
+    })
+}
+
+// ---- MVE VCMP (vector compare, writing the VPR) ----
+// `<cond>, Qn, Qm` (register) or `<cond>, Qn, Rm` (scalar, bit6=1). Integer: base 0xFE01_0F00, element
+// size[21:20] (so int is [21:20] in {00,01,10}); float: base 0xEE31_0F00 (.f32; bit28 = 1 for .f16, so float
+// has [21:20]=11). The condition's fc field (0..7) sits at {bit12, bit7, X}, where X is bit0 for the register
+// form and bit5 for the scalar form (bit0 is taken by Rm there). Qn[19:17]; Qm[3:1] or Rm[3:0].
+// The gate masks ALSO clear the predicate-mask bits (hw0 bit22, hw1[15:13]) so they match both VCMP (mask 0)
+// and VPT (mask != 0); the decode reads the mask and dispatches. (VPST/VPSEL, which also fall in this space,
+// are decoded earlier, so the looser gate is safe.)
+pub const MVE_VCMP_INT_BASE: u32 = 0xFE01_0F00;
+pub const MVE_VCMP_INT_MASK: u32 = 0xFF81_0F10; // clears size, fc, scalar bit, Qn, Qm/Rm, AND the predicate mask
+pub const MVE_VCMP_FLOAT_BASE: u32 = 0xEE31_0F00;
+pub const MVE_VCMP_FLOAT_MASK: u32 = 0xEFB1_0F10;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32MveVcmpCondition {
+    Eq, Ne, Cs, Hi, Ge, Lt, Gt, Le,
+}
+impl Arm32MveVcmpCondition {
+    // the 3-bit fc code (fc2 fc1 fc0)
+    pub fn fc(self) -> u32 {
+        match self {
+            Self::Eq => 0b000, Self::Ne => 0b010, Self::Cs => 0b001, Self::Hi => 0b011,
+            Self::Ge => 0b100, Self::Lt => 0b110, Self::Gt => 0b101, Self::Le => 0b111,
+        }
+    }
+    pub fn from_fc(fc: u32) -> Self {
+        match fc & 0b111 {
+            0b000 => Self::Eq, 0b010 => Self::Ne, 0b001 => Self::Cs, 0b011 => Self::Hi,
+            0b100 => Self::Ge, 0b110 => Self::Lt, 0b101 => Self::Gt, _ => Self::Le,
+        }
+    }
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::Eq => "eq", Self::Ne => "ne", Self::Cs => "cs", Self::Hi => "hi",
+            Self::Ge => "ge", Self::Lt => "lt", Self::Gt => "gt", Self::Le => "le",
+        }
+    }
+    // the integer UAL type letter implied by the condition: eq/ne -> 'i', ge/lt/gt/le -> 's', cs/hi -> 'u'
+    pub fn type_prefix(self) -> char {
+        match self {
+            Self::Eq | Self::Ne => 'i',
+            Self::Ge | Self::Lt | Self::Gt | Self::Le => 's',
+            Self::Cs | Self::Hi => 'u',
+        }
+    }
+    pub fn from_mnemonic(text: &str) -> Option<Self> {
+        Some(match text {
+            "eq" => Self::Eq, "ne" => Self::Ne, "cs" | "hs" => Self::Cs, "hi" => Self::Hi,
+            "ge" => Self::Ge, "lt" => Self::Lt, "gt" => Self::Gt, "le" => Self::Le,
+            _ => return None,
+        })
+    }
+    pub const ALL: [Self; 8] = [
+        Self::Eq, Self::Ne, Self::Cs, Self::Hi, Self::Ge, Self::Lt, Self::Gt, Self::Le,
+    ];
+}
+
+// the encoded fc bits for a VCMP: fc2->bit12, fc1->bit7, fc0->bit0 (register) or bit5 (scalar)
+pub fn mve_vcmp_fc_bits(condition: Arm32MveVcmpCondition, scalar: bool) -> u32 {
+    let fc = condition.fc();
+    (((fc >> 2) & 1) << 12) | (((fc >> 1) & 1) << 7) | ((fc & 1) << (if scalar { 5 } else { 0 }))
+}
+// recover the fc code from a decoded VCMP word
+pub fn mve_vcmp_fc_from_word(word: u32, scalar: bool) -> u32 {
+    (((word >> 12) & 1) << 2) | (((word >> 7) & 1) << 1) | ((word >> (if scalar { 5 } else { 0 })) & 1)
+}

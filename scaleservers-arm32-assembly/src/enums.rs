@@ -132,6 +132,14 @@ pub use arm32_mve_operations::{
     MVE_VCADD_INT_MASK, MVE_VCADD_INT_PATTERN,
     MVE_VCADD_FLOAT_MASK, MVE_VCADD_FLOAT_PATTERN,
     MVE_VCMUL_MASK, MVE_VCMUL_PATTERN, MVE_VCMLA_MASK, MVE_VCMLA_PATTERN,
+    MVE_VPSEL_BASE, MVE_VPSEL_MASK, MVE_VPNOT_WORD,
+    MVE_VADC_BASE, MVE_VADC_MASK, MVE_VSHLC_BASE, MVE_VSHLC_MASK,
+    MVE_VPST_NOT_BASE, MVE_VPST_NOT_MASK,
+    mve_predicate_mask_bits, mve_predicate_mask_from_word,
+    mve_predicate_mask_suffix, mve_predicate_mask_from_suffix,
+    Arm32MveVcmpCondition,
+    MVE_VCMP_INT_BASE, MVE_VCMP_INT_MASK, MVE_VCMP_FLOAT_BASE, MVE_VCMP_FLOAT_MASK,
+    mve_vcmp_fc_bits, mve_vcmp_fc_from_word,
 };
 
 // ---- neutral ARM-wide aliases ----

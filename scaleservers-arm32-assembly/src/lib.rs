@@ -83,9 +83,11 @@ pub use enums::{
     Arm32MveMisc2Op,
     Arm32MveMisc2FloatOp,
     Arm32MveReduceOp,
-    Arm32MveFloatReduceOp,
     Arm32MveLongMacOp,
-    Arm32MveVrintOp,
     Arm32MveShiftNarrowOp,
     Arm32MveQMovnKind,
+    Arm32MveFloatReduceOp,
+    Arm32MveVrintOp,
+    Arm32MveVcmpCondition,
+    mve_predicate_mask_from_suffix,
 };
