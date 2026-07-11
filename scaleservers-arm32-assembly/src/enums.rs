@@ -20,3 +20,6 @@ pub use floating_point_data_operations::{ArmT32FpDataOperation3, ArmT32FpDataOpe
 
 mod armt32_cps_primask_effect;
 pub use armt32_cps_primask_effect::ArmT32CpsPrimaskEffect;
+
+mod armt32_index_mode;
+pub use armt32_index_mode::ArmT32IndexMode;

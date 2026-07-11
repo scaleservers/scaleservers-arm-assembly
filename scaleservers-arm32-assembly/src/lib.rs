@@ -28,4 +28,5 @@ pub use enums::{
     ArmT32CpsPrimaskEffect,
     ArmT32FpDataOperation3,
     ArmT32FpDataOperation2,
+    ArmT32IndexMode,
 };
