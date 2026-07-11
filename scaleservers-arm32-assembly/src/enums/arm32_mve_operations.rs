@@ -916,3 +916,126 @@ pub const MVE_VCVT_HALF_MASK: u32 = 0xEFFF_0FF1;
 // (VSHRN/VRSHRN, VQSHRUN/VQRSHRUN), bit0 for the [7:6]=01 forms (VQSHRN/VQRSHRN, where bit28 = U/signedness).
 pub const MVE_SHIFT_NARROW_BASE: u32 = 0xEE80_0F00;
 pub const MVE_SHIFT_NARROW_MASK: u32 = 0xEFE0_0F30; // fixes [23:21]=100, [11:8]=1111, [5:4]=00; clears bit28/imm5/Qd/T/[7:6]/Qm/bit0
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32MveShiftNarrowOp { Vshrn, Vrshrn, Vqshrn, Vqrshrn, Vqshrun, Vqrshrun }
+impl Arm32MveShiftNarrowOp {
+    /// The (bit28, `[7:6]`, bit0) opcode contribution. `unsigned` (bit28) is honoured only for VQSHRN/VQRSHRN;
+    /// for the other forms bit28 is the rounding selector and is fixed by the op.
+    pub fn opcode_bits(self, unsigned: bool) -> (u32, u32, u32) {
+        match self {
+            Self::Vshrn    => (0, 0b11, 1),
+            Self::Vrshrn   => (1, 0b11, 1),
+            Self::Vqshrun  => (0, 0b11, 0),
+            Self::Vqrshrun => (1, 0b11, 0),
+            Self::Vqshrn   => (unsigned as u32, 0b01, 0),
+            Self::Vqrshrn  => (unsigned as u32, 0b01, 1),
+        }
+    }
+    /// Decode `(op, unsigned)` from a shift-narrow word's bit28, `[7:6]` and bit0. For the `[7:6]`=11 forms bit28 is
+    /// the rounding selector; for `[7:6]`=01 it is the signedness of VQSHRN/VQRSHRN.
+    pub fn from_word(bit28: u32, bit76: u32, bit0: u32) -> Option<(Self, bool)> {
+        // bit28/bit0 are 1-bit and bit76 is the 2-bit [7:6] field; mask so stray high bits are ignored.
+        let bit28 = bit28 & 1;
+        match (bit76 & 0b11, bit0 & 1) {
+            (0b11, 1) => Some((if bit28 == 1 { Self::Vrshrn } else { Self::Vshrn }, false)),
+            (0b11, 0) => Some((if bit28 == 1 { Self::Vqrshrun } else { Self::Vqshrun }, false)),
+            (0b01, 0) => Some((Self::Vqshrn, bit28 == 1)),
+            (0b01, 1) => Some((Self::Vqrshrn, bit28 == 1)),
+            _ => None,
+        }
+    }
+    pub fn mnemonic(self) -> &'static str {
+        match self {
+            Self::Vshrn => "vshrn", Self::Vrshrn => "vrshrn", Self::Vqshrn => "vqshrn",
+            Self::Vqrshrn => "vqrshrn", Self::Vqshrun => "vqshrun", Self::Vqrshrun => "vqrshrun",
+        }
+    }
+}
+
+// ---- MVE width-changing register moves (all in the 0xEE../0xFE.. space) ----
+// VMOVLB/VMOVLT (`Qd, Qm`, long): widen the bottom/top half. B/T=bit12, U=bit28, source size sets bit19 (.8)
+// or bit20 (.16). Qd[15:13], Qm[3:1]. Base = (s8, bottom, regs 0).
+pub const MVE_VMOVL_BASE: u32 = 0xEEA0_0F40;
+pub const MVE_VMOVL_MASK: u32 = 0xEFE7_0FF1; // clears U(28), size(20:19), B/T(12), Qd, Qm
+// VMOVNB/VMOVNT (`Qd, Qm`, narrow): T=bit12, source size sets bit18 (.32 vs .16). No U. Base = (i16, bottom).
+pub const MVE_VMOVN_BASE: u32 = 0xFE31_0E81;
+pub const MVE_VMOVN_MASK: u32 = 0xFFFB_0FF1; // clears T(12), size(18), Qd, Qm
+// VADDLV/VADDLVA (`RdLo, RdHi, Qm`, 64-bit reduction): RdLo[15:12] (even), RdHi = RdLo+1 (also at [22:20] =
+// RdLo>>1), U=bit28, accumulate=bit5, Qm[3:1]. 32-bit elements only. Base = (s32, RdLo 0, no-acc).
+pub const MVE_VADDLV_BASE: u32 = 0xEE89_0F00;
+pub const MVE_VADDLV_MASK: u32 = 0xEF8F_0FD1; // clears U(28), [22:20](RdHi>>1), RdLo[15:12], acc(5), Qm
+// VQMOVN/VQMOVUN (`Qd, Qm`, saturating narrow): T=bit12, source size sets bit18 (.32 vs .16), Qd[15:13],
+// Qm[3:1]. VQMOVN has U=bit28 (signed/unsigned) and op-bits [17]=1,[7]=0; VQMOVUN is signed-source-only
+// (bit28 fixed 0) with op-bits [17]=0,[7]=1. Bases = (.16, bottom, regs 0). Validated byte-exact vs GNU.
+pub const MVE_VQMOVN_BASE: u32 = 0xEE33_0E01;
+pub const MVE_VQMOVN_MASK: u32 = 0xEFBB_0FE1; // clears U(28), size(18), Qd(D22+15:13), T(12), Qm(M4+3:1)
+pub const MVE_VQMOVUN_BASE: u32 = 0xEE31_0E81;
+pub const MVE_VQMOVUN_MASK: u32 = 0xFFBB_0FE1; // bit28 fixed 0 (signed source only)
+
+/// Selects between VQMOVN (saturating narrow, signed or unsigned) and VQMOVUN (signed source, unsigned
+/// saturated result). See `MVE_VQMOVN_BASE`/`MVE_VQMOVUN_BASE`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Arm32MveQMovnKind {
+    Vqmovn,
+    Vqmovun,
+}
+
+// ---- MVE long & high multiplies (0xEE../0xFE.. space, bit23 = 0; share that space with VMOVN/VQMOVN so
+// they decode AFTER the width-changing block). Qd[15:13], Qn[19:17], Qm[3:1]; D/N/M high bits unused (Q0-Q7).
+// VMULL (vector multiply long, widening, bottom/top): integer form has U=bit28, size[21:20] (8/16/32),
+// [11:8]=1110, [0]=0; polynomial form has size[21:20]=11 with bit28 selecting P8(0)/P16(1). T=bit12.
+pub const MVE_VMULL_INT_BASE: u32 = 0xEE01_0E00;
+pub const MVE_VMULL_INT_MASK: u32 = 0xEF81_0F51; // clears U(28), size(21:20), T(12), Qd, Qn, Qm
+pub const MVE_VMULL_POLY_BASE: u32 = 0xEE31_0E00;
+pub const MVE_VMULL_POLY_MASK: u32 = 0xEFB1_0F51; // additionally fixes size(21:20)=11; bit28 = P8/P16
+// VMULH/VRMULH (multiply returning the high half): U=bit28, size[21:20], rounding=bit12, [11:8]=1110, [0]=1.
+pub const MVE_VMULH_BASE: u32 = 0xEE01_0E01;
+pub const MVE_VMULH_MASK: u32 = 0xEF81_0F51; // same field layout as VMULL int but [0]=1 (set in base)
+// VQDMULL (saturating doubling multiply long): sz=bit28 (.s16=0/.s32=1), size[21:20]=11, [11:8]=1111, T=bit12.
+// Vector T1: [6]=0, M=bit5, Qm[3:1], [0]=1. Scalar T2: [6:4]=110, Rm[3:0]. Spec DDI0553 C2.4.440.
+pub const MVE_VQDMULL_VEC_BASE: u32 = 0xEE30_0F01;
+pub const MVE_VQDMULL_VEC_MASK: u32 = 0xEFB1_0F51; // clears sz(28), T(12), Qd, Qn, Qm
+pub const MVE_VQDMULL_SCALAR_BASE: u32 = 0xEE30_0F60;
+pub const MVE_VQDMULL_SCALAR_MASK: u32 = 0xEFB1_0F70; // clears sz(28), T(12), Qd, Qn, Rm
+// VQDMLADH/VQDMLSDH (+ rounding VQRD*) -- saturating doubling multiply add/subtract dual, returning high half;
+// accumulates into Qd. subtract(VQDMLSDH)=bit28, rounding(VQRD*)=bit0, exchange(X)=bit12, size[21:20] (.s8/16/32),
+// [16]=0, [11:8]=1110, [6]=0, [4]=0. Qd[15:13], Qn[19:17], Qm[3:1]. bit16=0 separates this from VMULL/VMULH
+// (bit16=1); [6:4]=000 separates it from int-arith VqdmlahS ([6:4]=110). Spec DDI0553 C2.4.435/438; byte-exact.
+pub const MVE_VQDMLADH_BASE: u32 = 0xEE00_0E00;
+pub const MVE_VQDMLADH_MASK: u32 = 0xEF81_0F50; // clears subtract(28), size(21:20), X(12), rounding(0), Qd, Qn, Qm
+// VSHL/VRSHL/VQSHL/VQRSHL -- vector shift by signed amount. Two encodings (no immediate; that is VshlI etc.):
+// (a) BY VECTOR `Qd, Qm, Qn` -- data in Qm[3:1], per-lane shift in Qn[19:17]. rounding=bit8, saturating=bit4,
+//     U=bit28, size[21:20]. [11:8]=010x (distinct from int-arith's 0xE/0xF) and bit23=0. Spec C2.4.444/466/472.
+pub const MVE_SHIFT_VEC_BASE: u32 = 0xEF00_0440;
+pub const MVE_SHIFT_VEC_MASK: u32 = 0xEFC1_1E41; // clears U(28), size(21:20), rounding(8), saturating(4), Qd, Qn, Qm
+// (b) BY GPR SCALAR `Qda, Rm` -- shift all lanes of Qda by Rm. rounding=bit17, saturating=bit7, U=bit28,
+//     size[19:18], [21:20]=11, [11:8]=1110, [6:5]=11, Rm[3:0]. bit16=1, [6:5]=11 separate it from the multiplies.
+pub const MVE_SHIFT_SCALAR_BASE: u32 = 0xEE31_1E60;
+pub const MVE_SHIFT_SCALAR_MASK: u32 = 0xEFB1_1F70; // clears U(28), size(19:18), rounding(17), saturating(7), Qda, Rm
+// VSHLL -- vector shift left long (widening), bottom/top. T1 (shift 1..esize-1) shares the VMOVL family base
+// (VMOVL is shift 0): imm5=[20:16]=esize+shift, esize=8([20:19]=01)/16([20:19]=1x). T2 (shift==esize) is a
+// distinct encoding with size at bit18. U=bit28, T=bit12. Spec DDI0553 C2.4.474.
+pub const MVE_VSHLL_T1_BASE: u32 = 0xEEA0_0F40;
+pub const MVE_VSHLL_T1_MASK: u32 = 0xEFA0_0FD1; // clears U(28), imm5(20:16), T(12), Qd, Qm -- matches VMOVL too
+pub const MVE_VSHLL_T2_BASE: u32 = 0xEE31_0E01;
+pub const MVE_VSHLL_T2_MASK: u32 = 0xEFBB_0FE1; // clears U(28), size(18), T(12), Qd, Qm (== VQMOVN mask; base differs)
+// VMOVX/VINS -- Armv8.1-M half-precision FP move-extract / insert on single-precision registers (Sd, Sm).
+// Sd = Vd[15:12]:D[22], Sm = Vm[3:0]:M[5]. insert(VINS)=bit7. bit28=1 separates these from VFP VMOV.F32 (0xEE).
+pub const MVE_VMOVX_BASE: u32 = 0xFEB0_0A40;
+pub const MVE_VMOVX_MASK: u32 = 0xFEBF_0F50; // clears insert(7), D(22), Vd(15:12), M(5), Vm(3:0)
+
+// ---- MVE complex-number ops (`Qd, Qn, Qm, #rotate`) ----
+// Four distinct encodings (mutually-exclusive gate masks). Qd[15:13], Qn[19:17], Qm[3:1] throughout.
+// VCADD (integer)/VHCADD: halving = bit28 (VCADD = 1, VHCADD = 0), element size[21:20], rotation 90/270 = bit12.
+pub const MVE_VCADD_INT_MASK: u32 = 0xEFC1_0FF1; // keeps bit16=0 (distinguishes from VCMP, which has bit16=1)
+pub const MVE_VCADD_INT_PATTERN: u32 = 0xEE00_0F00; // the VHCADD (bit28=0) form; OR bit28 for VCADD
+// VCADD (float): element size = bit20 (.f32 = 1), rotation 90/270 = bit24.
+pub const MVE_VCADD_FLOAT_MASK: u32 = 0xFEE1_1FF1;
+pub const MVE_VCADD_FLOAT_PATTERN: u32 = 0xFC80_0840;
+// VCMUL (float): element size = bit28 (.f32 = 1), rotation 0/90/180/270 = {bit12, bit0}.
+pub const MVE_VCMUL_MASK: u32 = 0xEFF1_0FF0;
+pub const MVE_VCMUL_PATTERN: u32 = 0xEE30_0E00;
+// VCMLA (float): element size = bit20 (.f32 = 1), rotation 0/90/180/270 = {bit24, bit23}.
+pub const MVE_VCMLA_MASK: u32 = 0xFE61_1FF1;
+pub const MVE_VCMLA_PATTERN: u32 = 0xFC20_0840;

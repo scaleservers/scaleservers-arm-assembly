@@ -86,4 +86,6 @@ pub use enums::{
     Arm32MveFloatReduceOp,
     Arm32MveLongMacOp,
     Arm32MveVrintOp,
+    Arm32MveShiftNarrowOp,
+    Arm32MveQMovnKind,
 };
