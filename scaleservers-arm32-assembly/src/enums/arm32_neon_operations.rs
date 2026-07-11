@@ -301,3 +301,127 @@ impl Arm32NeonMisc2SizedOp {
         })
     }
 }
+
+// Same-width 2-reg-misc ops with a fixed `size` field (no element-size operand): bitwise/permute corners,
+// the floating-point compares-with-zero and abs/neg, the v8 round-to-integral (VRINT*), reciprocal
+// estimates, and the vector float<->int / anchored conversions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32NeonMisc2FixedOp {
+    Vmvn, Vswp, Vcnt,                                            // a=00 / a=10 (size 00)
+    VcgtZeroF, VcgeZeroF, VceqZeroF, VcleZeroF, VcltZeroF, VabsF, VnegF, // a=01 (size 10)
+    VrintN, VrintX, VrintA, VrintZ, VrintM, VrintP,             // a=10 (size 10)
+    VrecpeU, VrsqrteU, VrecpeF, VrsqrteF,                       // a=11 (size 10)
+    VcvtF32FromS32, VcvtF32FromU32, VcvtS32FromF32, VcvtU32FromF32, // a=11 (size 10)
+    VcvtaS, VcvtaU, VcvtnS, VcvtnU, VcvtpS, VcvtpU, VcvtmS, VcvtmU,  // a=11 (size 10)
+}
+impl Arm32NeonMisc2FixedOp {
+    // (a, opc2, size)
+    pub fn fields(self) -> (u32, u32, u32) {
+        match self {
+            Self::Vcnt => (0b00, 0b01010, 0b00),
+            Self::Vmvn => (0b00, 0b01011, 0b00),
+            Self::Vswp => (0b10, 0b00000, 0b00),
+            Self::VcgtZeroF => (0b01, 0b01000, 0b10),
+            Self::VcgeZeroF => (0b01, 0b01001, 0b10),
+            Self::VceqZeroF => (0b01, 0b01010, 0b10),
+            Self::VcleZeroF => (0b01, 0b01011, 0b10),
+            Self::VcltZeroF => (0b01, 0b01100, 0b10),
+            Self::VabsF => (0b01, 0b01110, 0b10),
+            Self::VnegF => (0b01, 0b01111, 0b10),
+            Self::VrintN => (0b10, 0b01000, 0b10),
+            Self::VrintX => (0b10, 0b01001, 0b10),
+            Self::VrintA => (0b10, 0b01010, 0b10),
+            Self::VrintZ => (0b10, 0b01011, 0b10),
+            Self::VrintM => (0b10, 0b01101, 0b10),
+            Self::VrintP => (0b10, 0b01111, 0b10),
+            Self::VrecpeU => (0b11, 0b01000, 0b10),
+            Self::VrsqrteU => (0b11, 0b01001, 0b10),
+            Self::VrecpeF => (0b11, 0b01010, 0b10),
+            Self::VrsqrteF => (0b11, 0b01011, 0b10),
+            Self::VcvtF32FromS32 => (0b11, 0b01100, 0b10),
+            Self::VcvtF32FromU32 => (0b11, 0b01101, 0b10),
+            Self::VcvtS32FromF32 => (0b11, 0b01110, 0b10),
+            Self::VcvtU32FromF32 => (0b11, 0b01111, 0b10),
+            Self::VcvtaS => (0b11, 0b00000, 0b10),
+            Self::VcvtaU => (0b11, 0b00001, 0b10),
+            Self::VcvtnS => (0b11, 0b00010, 0b10),
+            Self::VcvtnU => (0b11, 0b00011, 0b10),
+            Self::VcvtpS => (0b11, 0b00100, 0b10),
+            Self::VcvtpU => (0b11, 0b00101, 0b10),
+            Self::VcvtmS => (0b11, 0b00110, 0b10),
+            Self::VcvtmU => (0b11, 0b00111, 0b10),
+        }
+    }
+    // the v8-only rounding/anchored-convert members (VRINT{N,X,A,Z,M,P}, VCVT{A,N,P,M}{S,U}) need ARMv8;
+    // every other member is available from ARMv7 with the Advanced SIMD extension.
+    pub fn is_armv8(self) -> bool {
+        matches!(self,
+            Self::VrintN | Self::VrintX | Self::VrintA | Self::VrintZ | Self::VrintM | Self::VrintP
+            | Self::VcvtaS | Self::VcvtaU | Self::VcvtnS | Self::VcvtnU
+            | Self::VcvtpS | Self::VcvtpU | Self::VcvtmS | Self::VcvtmU)
+    }
+    pub fn from_fields(a: u32, opc2: u32) -> Option<Self> {
+        Some(match (a, opc2) {
+            (0b00, 0b01010) => Self::Vcnt,
+            (0b00, 0b01011) => Self::Vmvn,
+            (0b10, 0b00000) => Self::Vswp,
+            (0b01, 0b01000) => Self::VcgtZeroF,
+            (0b01, 0b01001) => Self::VcgeZeroF,
+            (0b01, 0b01010) => Self::VceqZeroF,
+            (0b01, 0b01011) => Self::VcleZeroF,
+            (0b01, 0b01100) => Self::VcltZeroF,
+            (0b01, 0b01110) => Self::VabsF,
+            (0b01, 0b01111) => Self::VnegF,
+            (0b10, 0b01000) => Self::VrintN,
+            (0b10, 0b01001) => Self::VrintX,
+            (0b10, 0b01010) => Self::VrintA,
+            (0b10, 0b01011) => Self::VrintZ,
+            (0b10, 0b01101) => Self::VrintM,
+            (0b10, 0b01111) => Self::VrintP,
+            (0b11, 0b01000) => Self::VrecpeU,
+            (0b11, 0b01001) => Self::VrsqrteU,
+            (0b11, 0b01010) => Self::VrecpeF,
+            (0b11, 0b01011) => Self::VrsqrteF,
+            (0b11, 0b01100) => Self::VcvtF32FromS32,
+            (0b11, 0b01101) => Self::VcvtF32FromU32,
+            (0b11, 0b01110) => Self::VcvtS32FromF32,
+            (0b11, 0b01111) => Self::VcvtU32FromF32,
+            (0b11, 0b00000) => Self::VcvtaS,
+            (0b11, 0b00001) => Self::VcvtaU,
+            (0b11, 0b00010) => Self::VcvtnS,
+            (0b11, 0b00011) => Self::VcvtnU,
+            (0b11, 0b00100) => Self::VcvtpS,
+            (0b11, 0b00101) => Self::VcvtpU,
+            (0b11, 0b00110) => Self::VcvtmS,
+            (0b11, 0b00111) => Self::VcvtmU,
+            _ => return None,
+        })
+    }
+}
+
+// Narrowing 2-reg-misc ops (a=10): Qm -> Dd. opc2 + bit6 together select the op; the `size` field names the
+// SOURCE element size as 16/32/64 (field 00/01/10 = one less than the Arm32NeonSize bits).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Arm32NeonNarrowOp {
+    Vmovn, Vqmovun, VqmovnS, VqmovnU,
+}
+impl Arm32NeonNarrowOp {
+    // (opc2, bit6)
+    pub fn fields(self) -> (u32, u32) {
+        match self {
+            Self::Vmovn => (0b00100, 0),
+            Self::Vqmovun => (0b00100, 1),
+            Self::VqmovnS => (0b00101, 0),
+            Self::VqmovnU => (0b00101, 1),
+        }
+    }
+    pub fn from_fields(opc2: u32, bit6: u32) -> Option<Self> {
+        Some(match (opc2, bit6) {
+            (0b00100, 0) => Self::Vmovn,
+            (0b00100, 1) => Self::Vqmovun,
+            (0b00101, 0) => Self::VqmovnS,
+            (0b00101, 1) => Self::VqmovnU,
+            _ => return None,
+        })
+    }
+}

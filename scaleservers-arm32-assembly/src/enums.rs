@@ -72,7 +72,7 @@ pub use arm32_vrint_mode::Arm32VrintMode;
 mod arm32_neon_operations;
 pub use arm32_neon_operations::{
     Arm32NeonSize, Arm32NeonIntegerOp, Arm32NeonFloatOp, Arm32NeonBitwiseOp,
-    Arm32NeonMisc2SizedOp,
+    Arm32NeonMisc2SizedOp, Arm32NeonMisc2FixedOp, Arm32NeonNarrowOp,
 };
 
 // ---- neutral ARM-wide aliases ----

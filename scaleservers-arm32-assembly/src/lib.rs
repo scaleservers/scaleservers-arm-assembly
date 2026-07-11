@@ -57,4 +57,6 @@ pub use enums::{
     Arm32NeonFloatOp,
     Arm32NeonBitwiseOp,
     Arm32NeonMisc2SizedOp,
+    Arm32NeonMisc2FixedOp,
+    Arm32NeonNarrowOp,
 };
