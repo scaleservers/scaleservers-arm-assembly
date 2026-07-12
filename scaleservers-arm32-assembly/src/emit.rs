@@ -15,3 +15,6 @@ pub use arm_assembly_syntax::ArmAssemblySyntax;
 mod arm_assembly_emitter;
 pub use arm_assembly_emitter::apply_it_block_condition;
 pub use arm_assembly_emitter::apply_vpt_block_suffix;
+
+// A32 ("ARM" state) UAL emitter: adds `to_assembly_string` / `to_assembly_string_at` to `ArmA32Instruction`.
+mod arm_a32_assembly_emitter;
