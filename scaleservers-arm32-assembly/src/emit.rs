@@ -11,3 +11,7 @@
 
 mod arm_assembly_syntax;
 pub use arm_assembly_syntax::ArmAssemblySyntax;
+
+mod arm_assembly_emitter;
+pub use arm_assembly_emitter::apply_it_block_condition;
+pub use arm_assembly_emitter::apply_vpt_block_suffix;

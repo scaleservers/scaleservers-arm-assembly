@@ -132,5 +132,7 @@ pub use floating_point_immediate::{vfp_expand_imm8_to_f32, vfp_expand_imm8_to_f6
 // selects LLVM- or GNU-flavored formatting.
 pub mod emit;
 pub use emit::ArmAssemblySyntax;
+pub use emit::apply_it_block_condition;
+pub use emit::apply_vpt_block_suffix;
 
 mod utils;
