@@ -285,3 +285,179 @@ fn round_trip__m8d_all_36_parallel_forms() {
     }
 }
 
+#[test]
+fn encode__m8e_signed_multiplies_exact_bytes() {
+    // bytes verified against `clang --target=thumbv7em-none-eabi -mcpu=cortex-m4`
+    assert_eq!(
+        ArmT32Instruction::Smul_T1(R::R0, R::R1, R::R2, false, false)
+            .encode()
+            .unwrap(),
+        vec![0x11, 0xFB, 0x02, 0xF0]
+    ); // smulbb
+    assert_eq!(
+        ArmT32Instruction::Smul_T1(R::R0, R::R1, R::R2, true, true)
+            .encode()
+            .unwrap(),
+        vec![0x11, 0xFB, 0x32, 0xF0]
+    ); // smultt
+    assert_eq!(
+        ArmT32Instruction::Smulw_T1(R::R0, R::R1, R::R2, false)
+            .encode()
+            .unwrap(),
+        vec![0x31, 0xFB, 0x02, 0xF0]
+    ); // smulwb
+    assert_eq!(
+        ArmT32Instruction::Smla_T1(R::R0, R::R1, R::R2, R::R3, false, false)
+            .encode()
+            .unwrap(),
+        vec![0x11, 0xFB, 0x02, 0x30]
+    ); // smlabb
+    assert_eq!(
+        ArmT32Instruction::Smlal_Halfword_T1(R::R0, R::R1, R::R2, R::R3, false, false)
+            .encode()
+            .unwrap(),
+        vec![0xC2, 0xFB, 0x83, 0x01]
+    ); // smlalbb
+    assert_eq!(
+        ArmT32Instruction::Smuad_T1(R::R0, R::R1, R::R2, false)
+            .encode()
+            .unwrap(),
+        vec![0x21, 0xFB, 0x02, 0xF0]
+    ); // smuad
+    assert_eq!(
+        ArmT32Instruction::Smuad_T1(R::R0, R::R1, R::R2, true)
+            .encode()
+            .unwrap(),
+        vec![0x21, 0xFB, 0x12, 0xF0]
+    ); // smuadx
+    assert_eq!(
+        ArmT32Instruction::Smlad_T1(R::R0, R::R1, R::R2, R::R3, false)
+            .encode()
+            .unwrap(),
+        vec![0x21, 0xFB, 0x02, 0x30]
+    ); // smlad
+    assert_eq!(
+        ArmT32Instruction::Smlald_T1(R::R0, R::R1, R::R2, R::R3, false)
+            .encode()
+            .unwrap(),
+        vec![0xC2, 0xFB, 0xC3, 0x01]
+    ); // smlald
+    assert_eq!(
+        ArmT32Instruction::Smlsld_T1(R::R0, R::R1, R::R2, R::R3, false)
+            .encode()
+            .unwrap(),
+        vec![0xD2, 0xFB, 0xC3, 0x01]
+    ); // smlsld
+    assert_eq!(
+        ArmT32Instruction::Smmul_T1(R::R0, R::R1, R::R2, false)
+            .encode()
+            .unwrap(),
+        vec![0x51, 0xFB, 0x02, 0xF0]
+    ); // smmul
+    assert_eq!(
+        ArmT32Instruction::Smmla_T1(R::R0, R::R1, R::R2, R::R3, false)
+            .encode()
+            .unwrap(),
+        vec![0x51, 0xFB, 0x02, 0x30]
+    ); // smmla
+    assert_eq!(
+        ArmT32Instruction::Smmls_T1(R::R0, R::R1, R::R2, R::R3, false)
+            .encode()
+            .unwrap(),
+        vec![0x61, 0xFB, 0x02, 0x30]
+    ); // smmls
+}
+
+#[test]
+fn round_trip__m8e_signed_multiplies() {
+    for (n, m) in [(false, false), (false, true), (true, false), (true, true)] {
+        round_trip(&ArmT32Instruction::Smul_T1(R::R0, R::R1, R::R2, n, m));
+        round_trip(&ArmT32Instruction::Smla_T1(
+            R::R3,
+            R::R4,
+            R::R5,
+            R::R6,
+            n,
+            m,
+        ));
+        round_trip(&ArmT32Instruction::Smlal_Halfword_T1(
+            R::R7,
+            R::R8,
+            R::R9,
+            R::R10,
+            n,
+            m,
+        ));
+    }
+    for m in [false, true] {
+        round_trip(&ArmT32Instruction::Smulw_T1(R::R0, R::R1, R::R2, m));
+        round_trip(&ArmT32Instruction::Smlaw_T1(R::R3, R::R4, R::R5, R::R6, m));
+    }
+    for x in [false, true] {
+        round_trip(&ArmT32Instruction::Smuad_T1(R::R0, R::R1, R::R2, x));
+        round_trip(&ArmT32Instruction::Smusd_T1(R::R3, R::R4, R::R5, x));
+        round_trip(&ArmT32Instruction::Smlad_T1(R::R0, R::R1, R::R2, R::R3, x));
+        round_trip(&ArmT32Instruction::Smlsd_T1(R::R4, R::R5, R::R6, R::R7, x));
+        round_trip(&ArmT32Instruction::Smlald_T1(R::R0, R::R1, R::R2, R::R3, x));
+        round_trip(&ArmT32Instruction::Smlsld_T1(R::R4, R::R5, R::R6, R::R7, x));
+    }
+    for r in [false, true] {
+        round_trip(&ArmT32Instruction::Smmul_T1(R::R0, R::R1, R::R2, r));
+        round_trip(&ArmT32Instruction::Smmla_T1(R::R3, R::R4, R::R5, R::R6, r));
+        round_trip(&ArmT32Instruction::Smmls_T1(R::R7, R::R8, R::R9, R::R10, r));
+    }
+}
+
+#[test]
+fn encode__m8f_fp_load_store_exact_bytes() {
+    // bytes verified against `clang --target=thumbv7em-none-eabi -mcpu=cortex-m7 -mfpu=fpv5-d16`
+    assert_eq!(
+        ArmT32Instruction::Vldr_Single_T2(s(0), R::R0, 0)
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xED, 0x00, 0x0A]
+    ); // vldr s0, [r0]
+    assert_eq!(
+        ArmT32Instruction::Vldr_Single_T2(s(1), R::R0, 0)
+            .encode()
+            .unwrap(),
+        vec![0xD0, 0xED, 0x00, 0x0A]
+    ); // vldr s1, [r0]
+    assert_eq!(
+        ArmT32Instruction::Vldr_Single_T2(s(15), R::R1, 4)
+            .encode()
+            .unwrap(),
+        vec![0xD1, 0xED, 0x01, 0x7A]
+    ); // vldr s15, [r1, #4]
+    assert_eq!(
+        ArmT32Instruction::Vldr_Single_T2(s(31), R::R2, -8)
+            .encode()
+            .unwrap(),
+        vec![0x52, 0xED, 0x02, 0xFA]
+    ); // vldr s31, [r2, #-8]
+    assert_eq!(
+        ArmT32Instruction::Vstr_Single_T2(s(0), R::R0, 1020)
+            .encode()
+            .unwrap(),
+        vec![0x80, 0xED, 0xFF, 0x0A]
+    ); // vstr s0, [r0, #1020]
+    assert_eq!(
+        ArmT32Instruction::Vldr_Double_T1(d(0), R::R0, 0)
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xED, 0x00, 0x0B]
+    ); // vldr d0, [r0]
+    assert_eq!(
+        ArmT32Instruction::Vldr_Double_T1(d(15), R::R3, 16)
+            .encode()
+            .unwrap(),
+        vec![0x93, 0xED, 0x04, 0xFB]
+    ); // vldr d15, [r3, #16]
+    assert_eq!(
+        ArmT32Instruction::Vstr_Double_T1(d(5), R::R4, -256)
+            .encode()
+            .unwrap(),
+        vec![0x04, 0xED, 0x40, 0x5B]
+    ); // vstr d5, [r4, #-256]
+}
+
