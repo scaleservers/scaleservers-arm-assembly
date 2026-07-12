@@ -62,6 +62,7 @@ pub mod yield_instruction_tests;
 
 // cross-cutting tests (not tied to a single mnemonic)
 pub mod armv8m_tests;
+pub mod coverage_tests;
 pub mod emit_tests;
 pub mod encode_error_tests;
 pub mod modified_immediate_tests;
