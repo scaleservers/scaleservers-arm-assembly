@@ -130,3 +130,102 @@ fn emit__memory_and_lists() {
     );
 }
 
+#[test]
+fn emit__system_forms() {
+    assert_eq!(
+        ArmT32Instruction::Mrs_T1(
+            Arm32GeneralPurposeRegister::R0,
+            ArmT32SpecialRegister::Primask
+        )
+        .to_assembly_string(GNU),
+        "mrs r0, PRIMASK"
+    );
+    assert_eq!(
+        ArmT32Instruction::Msr_Register_T1(
+            ArmT32SpecialRegister::Control,
+            Arm32GeneralPurposeRegister::R1
+        )
+        .to_assembly_string(GNU),
+        "msr CONTROL, r1"
+    );
+    assert_eq!(ArmT32Instruction::Nop_T1.to_assembly_string(GNU), "nop");
+}
+
+#[test]
+fn emit__armv7m_additions() {
+    assert_eq!(
+        ArmT32Instruction::Mov_Immediate_T3(Arm32GeneralPurposeRegister::R0, 0x1234)
+            .to_assembly_string(GNU),
+        "movw r0, #4660"
+    );
+    assert_eq!(
+        ArmT32Instruction::Mov_Immediate_T3(Arm32GeneralPurposeRegister::R0, 0x1234)
+            .to_assembly_string(LLVM),
+        "movw r0, #0x1234"
+    );
+    assert_eq!(
+        ArmT32Instruction::Movt_T1(Arm32GeneralPurposeRegister::R1, 0xABCD)
+            .to_assembly_string(LLVM),
+        "movt r1, #0xabcd"
+    );
+    assert_eq!(
+        ArmT32Instruction::Mul_T2(
+            Arm32GeneralPurposeRegister::R0,
+            Arm32GeneralPurposeRegister::R1,
+            Arm32GeneralPurposeRegister::R2
+        )
+        .to_assembly_string(GNU),
+        "mul r0, r1, r2"
+    );
+    assert_eq!(
+        ArmT32Instruction::Mla_T1(
+            Arm32GeneralPurposeRegister::R0,
+            Arm32GeneralPurposeRegister::R1,
+            Arm32GeneralPurposeRegister::R2,
+            Arm32GeneralPurposeRegister::R3
+        )
+        .to_assembly_string(GNU),
+        "mla r0, r1, r2, r3"
+    );
+    assert_eq!(
+        ArmT32Instruction::Sdiv_T1(
+            Arm32GeneralPurposeRegister::R0,
+            Arm32GeneralPurposeRegister::R1,
+            Arm32GeneralPurposeRegister::R2
+        )
+        .to_assembly_string(GNU),
+        "sdiv r0, r1, r2"
+    );
+    assert_eq!(
+        ArmT32Instruction::Clz_T1(
+            Arm32GeneralPurposeRegister::R3,
+            Arm32GeneralPurposeRegister::R4
+        )
+        .to_assembly_string(GNU),
+        "clz r3, r4"
+    );
+}
+
+#[test]
+fn emit__branch_raw_vs_address_resolved() {
+    let conditional = ArmT32Instruction::B_T1(ArmT32InstructionCondition::Equal, 8);
+    assert_eq!(conditional.to_assembly_string(GNU), "beq #8");
+    assert_eq!(
+        conditional.to_assembly_string_at(0x0000_0100, GNU),
+        "beq 0x0000010c"
+    );
+}
+
+#[test]
+fn emit__decode_then_emit_at() {
+    let bytes = [0xC8, 0x1C];
+    let mut offset = 0;
+    let instruction = ArmT32Instruction::decode(&mut bytes.iter(), &mut offset)
+        .ok()
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        instruction.to_assembly_string_at(0x0000_2000, GNU),
+        "adds r0, r1, #3"
+    );
+}
