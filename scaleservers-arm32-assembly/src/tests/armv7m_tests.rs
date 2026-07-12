@@ -666,3 +666,153 @@ fn encode__armv7m_batch11_indexed_dual_literal_preload_exact_bytes() {
     ); // pli [r2, #8]
 }
 
+#[test]
+fn encode__armv7m_batch12_load_store_multiple_exact_bytes() {
+    // bytes verified against `clang --target=thumbv7m-none-eabi`
+    let r123 = || vec![R::R1, R::R2, R::R3];
+    let r456 = || vec![R::R4, R::R5, R::R6];
+    assert_eq!(
+        ArmT32Instruction::Ldmia_T2(R::R0, false, r123())
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xE8, 0x0E, 0x00]
+    ); // ldm.w  r0, {r1, r2, r3}
+    assert_eq!(
+        ArmT32Instruction::Ldmia_T2(R::R0, true, r123())
+            .encode()
+            .unwrap(),
+        vec![0xB0, 0xE8, 0x0E, 0x00]
+    ); // ldm.w  r0!, {r1, r2, r3}
+    assert_eq!(
+        ArmT32Instruction::Stmia_T2(R::R0, false, r456())
+            .encode()
+            .unwrap(),
+        vec![0x80, 0xE8, 0x70, 0x00]
+    ); // stm.w  r0, {r4, r5, r6}
+    assert_eq!(
+        ArmT32Instruction::Stmia_T2(R::R0, true, r456())
+            .encode()
+            .unwrap(),
+        vec![0xA0, 0xE8, 0x70, 0x00]
+    ); // stm.w  r0!, {r4, r5, r6}
+    assert_eq!(
+        ArmT32Instruction::Ldmdb_T1(R::R0, false, r123())
+            .encode()
+            .unwrap(),
+        vec![0x10, 0xE9, 0x0E, 0x00]
+    ); // ldmdb  r0, {r1, r2, r3}
+    assert_eq!(
+        ArmT32Instruction::Ldmdb_T1(R::R0, true, r123())
+            .encode()
+            .unwrap(),
+        vec![0x30, 0xE9, 0x0E, 0x00]
+    ); // ldmdb  r0!, {r1, r2, r3}
+    assert_eq!(
+        ArmT32Instruction::Stmdb_T1(R::R0, false, r456())
+            .encode()
+            .unwrap(),
+        vec![0x00, 0xE9, 0x70, 0x00]
+    ); // stmdb  r0, {r4, r5, r6}
+    assert_eq!(
+        ArmT32Instruction::Stmdb_T1(R::R0, true, r456())
+            .encode()
+            .unwrap(),
+        vec![0x20, 0xE9, 0x70, 0x00]
+    ); // stmdb  r0!, {r4, r5, r6}
+    // PUSH.W is STMDB sp! and POP.W is LDM sp!
+    assert_eq!(
+        ArmT32Instruction::Stmdb_T1(R::R13, true, vec![R::R4, R::R5, R::R14])
+            .encode()
+            .unwrap(),
+        vec![0x2D, 0xE9, 0x30, 0x40]
+    ); // push.w {r4, r5, lr}
+    assert_eq!(
+        ArmT32Instruction::Ldmia_T2(R::R13, true, vec![R::R4, R::R5, R::R15])
+            .encode()
+            .unwrap(),
+        vec![0xBD, 0xE8, 0x30, 0x80]
+    ); // pop.w  {r4, r5, pc}
+    assert_eq!(
+        ArmT32Instruction::Ldmia_T2(R::R3, false, vec![R::R4, R::R12, R::R14])
+            .encode()
+            .unwrap(),
+        vec![0x93, 0xE8, 0x10, 0x50]
+    ); // ldm.w  r3, {r4, r12, lr}
+    assert_eq!(
+        ArmT32Instruction::Ldmia_T2(R::R0, true, vec![R::R1, R::R15])
+            .encode()
+            .unwrap(),
+        vec![0xB0, 0xE8, 0x02, 0x80]
+    ); // ldm.w  r0!, {r1, pc}
+}
+
+#[test]
+fn encode__armv7m_batch13_wide_and_compare_branches_exact_bytes() {
+    // bytes verified against `clang --target=thumbv7m-none-eabi` (offsets are PC-relative, PC = addr + 4)
+    assert_eq!(
+        ArmT32Instruction::B_T4(2).encode().unwrap(),
+        vec![0x00, 0xF0, 0x01, 0xB8]
+    ); // b.w    .+2
+    assert_eq!(
+        ArmT32Instruction::B_T4(-4).encode().unwrap(),
+        vec![0xFF, 0xF7, 0xFE, 0xBF]
+    ); // b.w    .-4
+    assert_eq!(
+        ArmT32Instruction::B_T3(Cond::Equal, 2).encode().unwrap(),
+        vec![0x00, 0xF0, 0x01, 0x80]
+    ); // beq.w .+2
+    assert_eq!(
+        ArmT32Instruction::B_T3(Cond::NotEqual, -16)
+            .encode()
+            .unwrap(),
+        vec![0x7F, 0xF4, 0xF8, 0xAF]
+    ); // bne.w .-16
+    assert_eq!(
+        ArmT32Instruction::B_T3(Cond::SignedGreaterThan, 42)
+            .encode()
+            .unwrap(),
+        vec![0x00, 0xF3, 0x15, 0x80]
+    ); // bgt.w .+42
+    assert_eq!(
+        ArmT32Instruction::Cbz_T1(L::R0, 0).encode().unwrap(),
+        vec![0x00, 0xB1]
+    ); // cbz  r0, .+0
+    assert_eq!(
+        ArmT32Instruction::Cbz_T1(L::R3, 18).encode().unwrap(),
+        vec![0x4B, 0xB1]
+    ); // cbz  r3, .+18
+    assert_eq!(
+        ArmT32Instruction::Cbnz_T1(L::R1, 2).encode().unwrap(),
+        vec![0x09, 0xB9]
+    ); // cbnz r1, .+2
+}
+
+#[test]
+fn round_trip__armv7m_branches() {
+    // covers the offset extremes and both sizes (B.W/B<c>.W are 32-bit, CBZ/CBNZ 16-bit).
+    let instructions = [
+        ArmT32Instruction::B_T4(0),
+        ArmT32Instruction::B_T4(2),
+        ArmT32Instruction::B_T4(-4),
+        ArmT32Instruction::B_T4(16_777_214),
+        ArmT32Instruction::B_T4(-16_777_216),
+        ArmT32Instruction::B_T3(Cond::Equal, 2),
+        ArmT32Instruction::B_T3(Cond::NotEqual, -16),
+        ArmT32Instruction::B_T3(Cond::SignedLessThanOrEqual, 1_048_574),
+        ArmT32Instruction::B_T3(Cond::CarrySet, -1_048_576),
+        ArmT32Instruction::Cbz_T1(L::R0, 0),
+        ArmT32Instruction::Cbz_T1(L::R7, 126),
+        ArmT32Instruction::Cbnz_T1(L::R1, 2),
+        ArmT32Instruction::Cbnz_T1(L::R3, 64),
+    ];
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmT32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, bytes.len(), "consumed wrong byte count");
+        assert_eq!(decoded, instruction, "branch round-trip mismatch");
+    }
+}
+
