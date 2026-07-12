@@ -525,6 +525,480 @@ pub enum ArmA32Instruction {
     Svc_A1(/*cond*/ Arm32Condition, /*imm24*/ u32),
 }
 
+impl ArmA32Instruction {
+    /// Encode this instruction to its 4 little-endian machine-code bytes (A32 is fixed-width 32-bit).
+    /// Returns [`EncodeError`] if an operand field is out of range for the encoding. Use
+    /// [`encode_for_target`](Self::encode_for_target) to also check that a given profile has ARM state.
+    pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
+        let word = self.encode_word()?;
+        Ok(word.to_le_bytes().to_vec())
+    }
+
+    fn encode_word(&self) -> Result<u32, EncodeError> {
+        match self {
+            // -- data processing (immediate) --  helper packs: cccc 001 opcode S Rn Rd imm12
+            Self::And_Immediate_A1(c, s, rd, rn, v) => encode_dp_immediate(c, OP_AND, *s, reg(rn), reg(rd), *v),
+            Self::Eor_Immediate_A1(c, s, rd, rn, v) => encode_dp_immediate(c, OP_EOR, *s, reg(rn), reg(rd), *v),
+            Self::Sub_Immediate_A1(c, s, rd, rn, v) => encode_dp_immediate(c, OP_SUB, *s, reg(rn), reg(rd), *v),
+            Self::Rsb_Immediate_A1(c, s, rd, rn, v) => encode_dp_immediate(c, OP_RSB, *s, reg(rn), reg(rd), *v),
+            Self::Add_Immediate_A1(c, s, rd, rn, v) => encode_dp_immediate(c, OP_ADD, *s, reg(rn), reg(rd), *v),
+            Self::Adc_Immediate_A1(c, s, rd, rn, v) => encode_dp_immediate(c, OP_ADC, *s, reg(rn), reg(rd), *v),
+            Self::Sbc_Immediate_A1(c, s, rd, rn, v) => encode_dp_immediate(c, OP_SBC, *s, reg(rn), reg(rd), *v),
+            Self::Rsc_Immediate_A1(c, s, rd, rn, v) => encode_dp_immediate(c, OP_RSC, *s, reg(rn), reg(rd), *v),
+            Self::Orr_Immediate_A1(c, s, rd, rn, v) => encode_dp_immediate(c, OP_ORR, *s, reg(rn), reg(rd), *v),
+            Self::Bic_Immediate_A1(c, s, rd, rn, v) => encode_dp_immediate(c, OP_BIC, *s, reg(rn), reg(rd), *v),
+            Self::Mov_Immediate_A1(c, s, rd, v) => encode_dp_immediate(c, OP_MOV, *s, 0, reg(rd), *v),
+            Self::Mvn_Immediate_A1(c, s, rd, v) => encode_dp_immediate(c, OP_MVN, *s, 0, reg(rd), *v),
+            Self::Tst_Immediate_A1(c, rn, v) => encode_dp_immediate(c, OP_TST, true, reg(rn), 0, *v),
+            Self::Teq_Immediate_A1(c, rn, v) => encode_dp_immediate(c, OP_TEQ, true, reg(rn), 0, *v),
+            Self::Cmp_Immediate_A1(c, rn, v) => encode_dp_immediate(c, OP_CMP, true, reg(rn), 0, *v),
+            Self::Cmn_Immediate_A1(c, rn, v) => encode_dp_immediate(c, OP_CMN, true, reg(rn), 0, *v),
+
+            // -- data processing (register, immediate shift) --  helper packs: cccc 000 opcode S Rn Rd imm5 type 0 Rm
+            Self::And_Register_A1(c, s, rd, rn, rm, sh) => encode_dp_register(c, OP_AND, *s, reg(rn), reg(rd), reg(rm), sh),
+            Self::Eor_Register_A1(c, s, rd, rn, rm, sh) => encode_dp_register(c, OP_EOR, *s, reg(rn), reg(rd), reg(rm), sh),
+            Self::Sub_Register_A1(c, s, rd, rn, rm, sh) => encode_dp_register(c, OP_SUB, *s, reg(rn), reg(rd), reg(rm), sh),
+            Self::Rsb_Register_A1(c, s, rd, rn, rm, sh) => encode_dp_register(c, OP_RSB, *s, reg(rn), reg(rd), reg(rm), sh),
+            Self::Add_Register_A1(c, s, rd, rn, rm, sh) => encode_dp_register(c, OP_ADD, *s, reg(rn), reg(rd), reg(rm), sh),
+            Self::Adc_Register_A1(c, s, rd, rn, rm, sh) => encode_dp_register(c, OP_ADC, *s, reg(rn), reg(rd), reg(rm), sh),
+            Self::Sbc_Register_A1(c, s, rd, rn, rm, sh) => encode_dp_register(c, OP_SBC, *s, reg(rn), reg(rd), reg(rm), sh),
+            Self::Rsc_Register_A1(c, s, rd, rn, rm, sh) => encode_dp_register(c, OP_RSC, *s, reg(rn), reg(rd), reg(rm), sh),
+            Self::Orr_Register_A1(c, s, rd, rn, rm, sh) => encode_dp_register(c, OP_ORR, *s, reg(rn), reg(rd), reg(rm), sh),
+            Self::Bic_Register_A1(c, s, rd, rn, rm, sh) => encode_dp_register(c, OP_BIC, *s, reg(rn), reg(rd), reg(rm), sh),
+            Self::Mov_Register_A1(c, s, rd, rm, sh) => encode_dp_register(c, OP_MOV, *s, 0, reg(rd), reg(rm), sh),
+            Self::Mvn_Register_A1(c, s, rd, rm, sh) => encode_dp_register(c, OP_MVN, *s, 0, reg(rd), reg(rm), sh),
+            Self::Tst_Register_A1(c, rn, rm, sh) => encode_dp_register(c, OP_TST, true, reg(rn), 0, reg(rm), sh),
+            Self::Teq_Register_A1(c, rn, rm, sh) => encode_dp_register(c, OP_TEQ, true, reg(rn), 0, reg(rm), sh),
+            Self::Cmp_Register_A1(c, rn, rm, sh) => encode_dp_register(c, OP_CMP, true, reg(rn), 0, reg(rm), sh),
+            Self::Cmn_Register_A1(c, rn, rm, sh) => encode_dp_register(c, OP_CMN, true, reg(rn), 0, reg(rm), sh),
+
+            // -- data processing (register-shifted register) --  helper packs: cccc 000 opcode S Rn Rd Rs 0 type 1 Rm
+            Self::And_RegisterShiftedRegister_A1(c, s, rd, rn, rm, st, rs) => Ok(encode_dp_register_shifted(c, OP_AND, *s, reg(rn), reg(rd), reg(rm), *st, reg(rs))),
+            Self::Eor_RegisterShiftedRegister_A1(c, s, rd, rn, rm, st, rs) => Ok(encode_dp_register_shifted(c, OP_EOR, *s, reg(rn), reg(rd), reg(rm), *st, reg(rs))),
+            Self::Sub_RegisterShiftedRegister_A1(c, s, rd, rn, rm, st, rs) => Ok(encode_dp_register_shifted(c, OP_SUB, *s, reg(rn), reg(rd), reg(rm), *st, reg(rs))),
+            Self::Rsb_RegisterShiftedRegister_A1(c, s, rd, rn, rm, st, rs) => Ok(encode_dp_register_shifted(c, OP_RSB, *s, reg(rn), reg(rd), reg(rm), *st, reg(rs))),
+            Self::Add_RegisterShiftedRegister_A1(c, s, rd, rn, rm, st, rs) => Ok(encode_dp_register_shifted(c, OP_ADD, *s, reg(rn), reg(rd), reg(rm), *st, reg(rs))),
+            Self::Adc_RegisterShiftedRegister_A1(c, s, rd, rn, rm, st, rs) => Ok(encode_dp_register_shifted(c, OP_ADC, *s, reg(rn), reg(rd), reg(rm), *st, reg(rs))),
+            Self::Sbc_RegisterShiftedRegister_A1(c, s, rd, rn, rm, st, rs) => Ok(encode_dp_register_shifted(c, OP_SBC, *s, reg(rn), reg(rd), reg(rm), *st, reg(rs))),
+            Self::Rsc_RegisterShiftedRegister_A1(c, s, rd, rn, rm, st, rs) => Ok(encode_dp_register_shifted(c, OP_RSC, *s, reg(rn), reg(rd), reg(rm), *st, reg(rs))),
+            Self::Orr_RegisterShiftedRegister_A1(c, s, rd, rn, rm, st, rs) => Ok(encode_dp_register_shifted(c, OP_ORR, *s, reg(rn), reg(rd), reg(rm), *st, reg(rs))),
+            Self::Bic_RegisterShiftedRegister_A1(c, s, rd, rn, rm, st, rs) => Ok(encode_dp_register_shifted(c, OP_BIC, *s, reg(rn), reg(rd), reg(rm), *st, reg(rs))),
+            Self::Mov_RegisterShiftedRegister_A1(c, s, rd, rm, st, rs) => Ok(encode_dp_register_shifted(c, OP_MOV, *s, 0, reg(rd), reg(rm), *st, reg(rs))),
+            Self::Mvn_RegisterShiftedRegister_A1(c, s, rd, rm, st, rs) => Ok(encode_dp_register_shifted(c, OP_MVN, *s, 0, reg(rd), reg(rm), *st, reg(rs))),
+            Self::Tst_RegisterShiftedRegister_A1(c, rn, rm, st, rs) => Ok(encode_dp_register_shifted(c, OP_TST, true, reg(rn), 0, reg(rm), *st, reg(rs))),
+            Self::Teq_RegisterShiftedRegister_A1(c, rn, rm, st, rs) => Ok(encode_dp_register_shifted(c, OP_TEQ, true, reg(rn), 0, reg(rm), *st, reg(rs))),
+            Self::Cmp_RegisterShiftedRegister_A1(c, rn, rm, st, rs) => Ok(encode_dp_register_shifted(c, OP_CMP, true, reg(rn), 0, reg(rm), *st, reg(rs))),
+            Self::Cmn_RegisterShiftedRegister_A1(c, rn, rm, st, rs) => Ok(encode_dp_register_shifted(c, OP_CMN, true, reg(rn), 0, reg(rm), *st, reg(rs))),
+
+            // -- 16-bit immediate moves --
+            Self::Movw_A2(c, rd, imm16) => Ok(encode_movw_movt(c, false, reg(rd), *imm16)),
+            Self::Movt_A1(c, rd, imm16) => Ok(encode_movw_movt(c, true, reg(rd), *imm16)),
+
+            // -- multiply --  helper packs: cccc 0000 op S high low Rm 1001 Rn
+            Self::Mul_A1(c, s, rd, rn, rm) => Ok(encode_multiply(c, 0x0000_0090, *s, reg(rd), 0, reg(rm), reg(rn))),
+            Self::Mla_A1(c, s, rd, rn, rm, ra) => Ok(encode_multiply(c, 0x0020_0090, *s, reg(rd), reg(ra), reg(rm), reg(rn))),
+            Self::Mls_A1(c, rd, rn, rm, ra) => Ok(encode_multiply(c, 0x0060_0090, false, reg(rd), reg(ra), reg(rm), reg(rn))),
+            Self::Umull_A1(c, s, rdlo, rdhi, rn, rm) => Ok(encode_multiply(c, 0x0080_0090, *s, reg(rdhi), reg(rdlo), reg(rm), reg(rn))),
+            Self::Umlal_A1(c, s, rdlo, rdhi, rn, rm) => Ok(encode_multiply(c, 0x00A0_0090, *s, reg(rdhi), reg(rdlo), reg(rm), reg(rn))),
+            Self::Smull_A1(c, s, rdlo, rdhi, rn, rm) => Ok(encode_multiply(c, 0x00C0_0090, *s, reg(rdhi), reg(rdlo), reg(rm), reg(rn))),
+            Self::Smlal_A1(c, s, rdlo, rdhi, rn, rm) => Ok(encode_multiply(c, 0x00E0_0090, *s, reg(rdhi), reg(rdlo), reg(rm), reg(rn))),
+            Self::Umaal_A1(c, rdlo, rdhi, rn, rm) => Ok(encode_multiply(c, 0x0040_0090, false, reg(rdhi), reg(rdlo), reg(rm), reg(rn))),
+
+            // -- saturating arithmetic --  helper packs: cccc 00010 op 0 Rn Rd 0000 0101 Rm
+            Self::Qadd_A1(c, rd, rm, rn) => Ok(encode_saturating(c, 0x0100_0050, reg(rd), reg(rm), reg(rn))),
+            Self::Qsub_A1(c, rd, rm, rn) => Ok(encode_saturating(c, 0x0120_0050, reg(rd), reg(rm), reg(rn))),
+            Self::Qdadd_A1(c, rd, rm, rn) => Ok(encode_saturating(c, 0x0140_0050, reg(rd), reg(rm), reg(rn))),
+            Self::Qdsub_A1(c, rd, rm, rn) => Ok(encode_saturating(c, 0x0160_0050, reg(rd), reg(rm), reg(rn))),
+
+            // -- signed multiply (halfword, type 1): [7]=1, m=bit6, n=bit5, [4]=0 --
+            Self::Smla_A1(c, rd, rn, rm, ra, n, m) => Ok(encode_signed_mul(c, 0x0100_0080 | nm_bits(*n, *m), reg(rd), reg(ra), reg(rm), reg(rn))),
+            Self::Smlaw_A1(c, rd, rn, rm, ra, m) => Ok(encode_signed_mul(c, 0x0120_0080 | ((*m as u32) << 6), reg(rd), reg(ra), reg(rm), reg(rn))),
+            Self::Smulw_A1(c, rd, rn, rm, m) => Ok(encode_signed_mul(c, 0x0120_00A0 | ((*m as u32) << 6), reg(rd), 0, reg(rm), reg(rn))),
+            Self::Smlal_Halfword_A1(c, rdlo, rdhi, rn, rm, n, m) => Ok(encode_signed_mul(c, 0x0140_0080 | nm_bits(*n, *m), reg(rdhi), reg(rdlo), reg(rm), reg(rn))),
+            Self::Smul_A1(c, rd, rn, rm, n, m) => Ok(encode_signed_mul(c, 0x0160_0080 | nm_bits(*n, *m), reg(rd), 0, reg(rm), reg(rn))),
+            // -- signed multiply (dual / most-significant word, type 2): [27:24]=0111, x/round=bit5, [4]=1 --
+            Self::Smlad_A1(c, rd, rn, rm, ra, x) => Ok(encode_signed_mul(c, 0x0700_0010 | ((*x as u32) << 5), reg(rd), reg(ra), reg(rm), reg(rn))),
+            Self::Smuad_A1(c, rd, rn, rm, x) => Ok(encode_signed_mul(c, 0x0700_0010 | ((*x as u32) << 5), reg(rd), 0xF, reg(rm), reg(rn))),
+            Self::Smlsd_A1(c, rd, rn, rm, ra, x) => Ok(encode_signed_mul(c, 0x0700_0050 | ((*x as u32) << 5), reg(rd), reg(ra), reg(rm), reg(rn))),
+            Self::Smusd_A1(c, rd, rn, rm, x) => Ok(encode_signed_mul(c, 0x0700_0050 | ((*x as u32) << 5), reg(rd), 0xF, reg(rm), reg(rn))),
+            Self::Smmla_A1(c, rd, rn, rm, ra, r) => Ok(encode_signed_mul(c, 0x0750_0010 | ((*r as u32) << 5), reg(rd), reg(ra), reg(rm), reg(rn))),
+            Self::Smmul_A1(c, rd, rn, rm, r) => Ok(encode_signed_mul(c, 0x0750_0010 | ((*r as u32) << 5), reg(rd), 0xF, reg(rm), reg(rn))),
+            Self::Smmls_A1(c, rd, rn, rm, ra, r) => Ok(encode_signed_mul(c, 0x0750_00D0 | ((*r as u32) << 5), reg(rd), reg(ra), reg(rm), reg(rn))),
+            Self::Smlald_A1(c, rdlo, rdhi, rn, rm, x) => Ok(encode_signed_mul(c, 0x0740_0010 | ((*x as u32) << 5), reg(rdhi), reg(rdlo), reg(rm), reg(rn))),
+            Self::Smlsld_A1(c, rdlo, rdhi, rn, rm, x) => Ok(encode_signed_mul(c, 0x0740_0050 | ((*x as u32) << 5), reg(rdhi), reg(rdlo), reg(rm), reg(rn))),
+
+            // -- parallel (packed SIMD) add/sub + select --  cccc 01100 prefix Rn Rd 1111 op 1 Rm ; SEL: ..01101000.. 1111 1011 ..
+            Self::ParallelAddSub_A1(c, op, prefix, rd, rn, rm) => Ok(cond_bits(c) | 0x0600_0F00 | (a32_parallel_prefix_bits(*prefix) << 20) | (reg(rn) << 16) | (reg(rd) << 12) | (a32_parallel_op_bits(*op) << 4) | reg(rm)),
+            Self::Sel_A1(c, rd, rn, rm) => Ok(cond_bits(c) | 0x0680_0FB0 | (reg(rn) << 16) | (reg(rd) << 12) | reg(rm)),
+
+            // -- extend / extend-and-add --  cccc <byte> Rn Rd rotate 00 0111 Rm  (Rn=1111 => plain extend)
+            Self::Extend_A1(c, ty, rd, rm, rot) => Ok(encode_extend(c, ty.opcode_byte(), 0xF, reg(rd), reg(rm), encode_rotation(*rot)?)),
+            Self::ExtendAndAdd_A1(c, ty, rd, rn, rm, rot) => Ok(encode_extend(c, ty.opcode_byte(), reg(rn), reg(rd), reg(rm), encode_rotation(*rot)?)),
+            // -- byte/bit reverse + count leading zeros --
+            Self::Rev_A1(c, rd, rm) => Ok(cond_bits(c) | 0x06BF_0F30 | (reg(rd) << 12) | reg(rm)),
+            Self::Rev16_A1(c, rd, rm) => Ok(cond_bits(c) | 0x06BF_0FB0 | (reg(rd) << 12) | reg(rm)),
+            Self::Revsh_A1(c, rd, rm) => Ok(cond_bits(c) | 0x06FF_0FB0 | (reg(rd) << 12) | reg(rm)),
+            Self::Rbit_A1(c, rd, rm) => Ok(cond_bits(c) | 0x06FF_0F30 | (reg(rd) << 12) | reg(rm)),
+            Self::Clz_A1(c, rd, rm) => Ok(cond_bits(c) | 0x016F_0F10 | (reg(rd) << 12) | reg(rm)),
+
+            // -- pack halfword --  cccc 01101000 Rn Rd imm5 tb 01 Rm
+            Self::Pkhbt_A1(c, rd, rn, rm, lsl) => {
+                check_unsigned_maximum("lsl", *lsl as u32, 31)?;
+                Ok(cond_bits(c) | 0x0680_0010 | (reg(rn) << 16) | (reg(rd) << 12) | ((*lsl as u32) << 7) | reg(rm))
+            },
+            Self::Pkhtb_A1(c, rd, rn, rm, asr) => {
+                if *asr < 1 || *asr > 32 { return Err(EncodeError::ImmediateOutOfRange { field: "asr", value: *asr as i64, minimum: 1, maximum: 32 }); }
+                let imm5 = if *asr == 32 { 0 } else { *asr as u32 };
+                Ok(cond_bits(c) | 0x0680_0050 | (reg(rn) << 16) | (reg(rd) << 12) | (imm5 << 7) | reg(rm))
+            },
+            // -- saturate --  cccc 0110 101/111 sat_imm Rd imm5 sh 01 Rm  (SSAT/USAT) ; ...1010/1110 .. 1111 0011 .. (SSAT16/USAT16)
+            Self::Ssat_A1(c, rd, sat, rm, shift) => encode_saturate(c, false, *sat, reg(rd), reg(rm), shift),
+            Self::Usat_A1(c, rd, sat, rm, shift) => encode_saturate(c, true, *sat, reg(rd), reg(rm), shift),
+            Self::Ssat16_A1(c, rd, sat, rm) => {
+                if *sat < 1 || *sat > 16 { return Err(EncodeError::ImmediateOutOfRange { field: "sat", value: *sat as i64, minimum: 1, maximum: 16 }); }
+                Ok(cond_bits(c) | 0x06A0_0F30 | (((*sat - 1) as u32) << 16) | (reg(rd) << 12) | reg(rm))
+            },
+            Self::Usat16_A1(c, rd, sat, rm) => {
+                check_unsigned_maximum("sat", *sat as u32, 15)?;
+                Ok(cond_bits(c) | 0x06E0_0F30 | ((*sat as u32) << 16) | (reg(rd) << 12) | reg(rm))
+            },
+            // -- sum of absolute differences --  cccc 01111000 Rd Ra Rm 0001 Rn  (Ra=1111 => USAD8)
+            Self::Usad8_A1(c, rd, rn, rm) => Ok(cond_bits(c) | 0x0780_0010 | (reg(rd) << 16) | (0xF << 12) | (reg(rm) << 8) | reg(rn)),
+            Self::Usada8_A1(c, rd, rn, rm, ra) => Ok(cond_bits(c) | 0x0780_0010 | (reg(rd) << 16) | (reg(ra) << 12) | (reg(rm) << 8) | reg(rn)),
+
+            // -- bitfield --  BFC/BFI: cccc 0111110 msb Rd lsb 001 Rn(=1111 BFC) ; SBFX/UBFX: cccc 011110/111 widthm1 Rd lsb 101 Rn
+            Self::Bfc_A1(c, rd, lsb, width) => {
+                check_bitfield(*lsb, *width)?;
+                Ok(cond_bits(c) | 0x07C0_001F | (((*lsb + *width - 1) as u32) << 16) | (reg(rd) << 12) | ((*lsb as u32) << 7))
+            },
+            Self::Bfi_A1(c, rd, rn, lsb, width) => {
+                check_bitfield(*lsb, *width)?;
+                Ok(cond_bits(c) | 0x07C0_0010 | (((*lsb + *width - 1) as u32) << 16) | (reg(rd) << 12) | ((*lsb as u32) << 7) | reg(rn))
+            },
+            Self::Sbfx_A1(c, rd, rn, lsb, width) => {
+                check_bitfield(*lsb, *width)?;
+                Ok(cond_bits(c) | 0x07A0_0050 | (((*width - 1) as u32) << 16) | (reg(rd) << 12) | ((*lsb as u32) << 7) | reg(rn))
+            },
+            Self::Ubfx_A1(c, rd, rn, lsb, width) => {
+                check_bitfield(*lsb, *width)?;
+                Ok(cond_bits(c) | 0x07E0_0050 | (((*width - 1) as u32) << 16) | (reg(rd) << 12) | ((*lsb as u32) << 7) | reg(rn))
+            },
+
+            // -- load/store single (word/byte) --  cccc 01 I P U B W L Rn Rt <offset>
+            Self::Ldr_A1(c, rt, rn, off, idx) => { let (p, w) = a32_index_p_w(*idx); encode_load_store(c, false, true, p, w, reg(rn), reg(rt), off) },
+            Self::Str_A1(c, rt, rn, off, idx) => { let (p, w) = a32_index_p_w(*idx); encode_load_store(c, false, false, p, w, reg(rn), reg(rt), off) },
+            Self::Ldrb_A1(c, rt, rn, off, idx) => { let (p, w) = a32_index_p_w(*idx); encode_load_store(c, true, true, p, w, reg(rn), reg(rt), off) },
+            Self::Strb_A1(c, rt, rn, off, idx) => { let (p, w) = a32_index_p_w(*idx); encode_load_store(c, true, false, p, w, reg(rn), reg(rt), off) },
+            Self::Ldrt_A1(c, rt, rn, off) => encode_load_store(c, false, true, 0, 1, reg(rn), reg(rt), off),
+            Self::Strt_A1(c, rt, rn, off) => encode_load_store(c, false, false, 0, 1, reg(rn), reg(rt), off),
+            Self::Ldrbt_A1(c, rt, rn, off) => encode_load_store(c, true, true, 0, 1, reg(rn), reg(rt), off),
+            Self::Strbt_A1(c, rt, rn, off) => encode_load_store(c, true, false, 0, 1, reg(rn), reg(rt), off),
+
+            // -- load/store halfword/dual/signed --  cccc 000 P U I W L Rn Rt H4 1 S H 1 L4  (S,H select the op)
+            Self::Ldrh_A1(c, rt, rn, off, idx) => { let (p, w) = a32_index_p_w(*idx); Ok(encode_extra_load_store(c, p, w, true, 0, 1, reg(rn), reg(rt), off)) },
+            Self::Strh_A1(c, rt, rn, off, idx) => { let (p, w) = a32_index_p_w(*idx); Ok(encode_extra_load_store(c, p, w, false, 0, 1, reg(rn), reg(rt), off)) },
+            Self::Ldrsb_A1(c, rt, rn, off, idx) => { let (p, w) = a32_index_p_w(*idx); Ok(encode_extra_load_store(c, p, w, true, 1, 0, reg(rn), reg(rt), off)) },
+            Self::Ldrsh_A1(c, rt, rn, off, idx) => { let (p, w) = a32_index_p_w(*idx); Ok(encode_extra_load_store(c, p, w, true, 1, 1, reg(rn), reg(rt), off)) },
+            Self::Ldrd_A1(c, rt, rn, off, idx) => { let (p, w) = a32_index_p_w(*idx); Ok(encode_extra_load_store(c, p, w, false, 1, 0, reg(rn), reg(rt), off)) },
+            Self::Strd_A1(c, rt, rn, off, idx) => { let (p, w) = a32_index_p_w(*idx); Ok(encode_extra_load_store(c, p, w, false, 1, 1, reg(rn), reg(rt), off)) },
+            Self::Ldrht_A1(c, rt, rn, off) => Ok(encode_extra_load_store(c, 0, 1, true, 0, 1, reg(rn), reg(rt), off)),
+            Self::Strht_A1(c, rt, rn, off) => Ok(encode_extra_load_store(c, 0, 1, false, 0, 1, reg(rn), reg(rt), off)),
+            Self::Ldrsbt_A1(c, rt, rn, off) => Ok(encode_extra_load_store(c, 0, 1, true, 1, 0, reg(rn), reg(rt), off)),
+            Self::Ldrsht_A1(c, rt, rn, off) => Ok(encode_extra_load_store(c, 0, 1, true, 1, 1, reg(rn), reg(rt), off)),
+
+            // -- load/store multiple --  cccc 100 P U S W L Rn register_list
+            Self::Ldm_A1(c, mode, rn, wb, user, regs) => Ok(encode_load_store_multiple(c, *mode, *user, *wb, true, reg(rn), regs)),
+            Self::Stm_A1(c, mode, rn, wb, user, regs) => Ok(encode_load_store_multiple(c, *mode, *user, *wb, false, reg(rn), regs)),
+
+            // -- synchronization --  exclusive: cccc 00011 type L Rn (Rt|Rd) 1111 1001 (1111|Rt)
+            Self::Ldrex_A1(c, rt, rn) => Ok(cond_bits(c) | 0x0190_0F9F | (reg(rn) << 16) | (reg(rt) << 12)),
+            Self::Strex_A1(c, rd, rt, rn) => Ok(cond_bits(c) | 0x0180_0F90 | (reg(rn) << 16) | (reg(rd) << 12) | reg(rt)),
+            Self::Ldrexb_A1(c, rt, rn) => Ok(cond_bits(c) | 0x01D0_0F9F | (reg(rn) << 16) | (reg(rt) << 12)),
+            Self::Strexb_A1(c, rd, rt, rn) => Ok(cond_bits(c) | 0x01C0_0F90 | (reg(rn) << 16) | (reg(rd) << 12) | reg(rt)),
+            Self::Ldrexh_A1(c, rt, rn) => Ok(cond_bits(c) | 0x01F0_0F9F | (reg(rn) << 16) | (reg(rt) << 12)),
+            Self::Strexh_A1(c, rd, rt, rn) => Ok(cond_bits(c) | 0x01E0_0F90 | (reg(rn) << 16) | (reg(rd) << 12) | reg(rt)),
+            Self::Ldrexd_A1(c, rt, rn) => Ok(cond_bits(c) | 0x01B0_0F9F | (reg(rn) << 16) | (reg(rt) << 12)),
+            Self::Strexd_A1(c, rd, rt, rn) => Ok(cond_bits(c) | 0x01A0_0F90 | (reg(rn) << 16) | (reg(rd) << 12) | reg(rt)),
+            Self::Clrex_A1 => Ok(0xF57F_F01F),
+            // SWP/SWPB (deprecated): cccc 00010 B 00 Rn Rt 0000 1001 Rt2
+            Self::Swp_A1(c, rt, rt2, rn) => Ok(cond_bits(c) | 0x0100_0090 | (reg(rn) << 16) | (reg(rt) << 12) | reg(rt2)),
+            Self::Swpb_A1(c, rt, rt2, rn) => Ok(cond_bits(c) | 0x0140_0090 | (reg(rn) << 16) | (reg(rt) << 12) | reg(rt2)),
+
+            // -- status / system register access --
+            Self::Mrs_A1(c, spsr, rd) => Ok(cond_bits(c) | 0x010F_0000 | ((*spsr as u32) << 22) | (reg(rd) << 12)),
+            Self::Msr_Register_A1(c, spsr, mask, rn) => Ok(cond_bits(c) | 0x0120_F000 | ((*spsr as u32) << 22) | (((*mask & 0xF) as u32) << 16) | reg(rn)),
+            Self::MrsBanked_A1(c, spsr, sysm, rd) => Ok(cond_bits(c) | 0x0100_0200 | ((*spsr as u32) << 22) | (((*sysm & 0xF) as u32) << 16) | (reg(rd) << 12) | ((((*sysm >> 4) & 1) as u32) << 8)),
+            Self::MsrBanked_A1(c, spsr, sysm, rn) => Ok(cond_bits(c) | 0x0120_F200 | ((*spsr as u32) << 22) | (((*sysm & 0xF) as u32) << 16) | ((((*sysm >> 4) & 1) as u32) << 8) | reg(rn)),
+            Self::Msr_Immediate_A1(c, spsr, mask, value) => {
+                let imm12 = encode_a32_modified_immediate(*value)
+                    .ok_or(EncodeError::ModifiedImmediateNotEncodable { field: "const", value: *value })?;
+                Ok(cond_bits(c) | 0x0320_F000 | ((*spsr as u32) << 22) | (((*mask & 0xF) as u32) << 16) | (imm12 as u32))
+            },
+            Self::Cps_A1(mode, a, i, f, new_mode) => {
+                // 1111 00010000 imod M 0 0000000 A I F 0 mode
+                let m = new_mode.is_some() as u32;
+                let mode_bits = (new_mode.unwrap_or(0) & 0x1F) as u32;
+                Ok(0xF100_0000 | (mode.imod_bits() << 18) | (m << 17) | ((*a as u32) << 8) | ((*i as u32) << 7) | ((*f as u32) << 6) | mode_bits)
+            },
+            Self::Setend_A1(big_endian) => Ok(0xF101_0000 | ((*big_endian as u32) << 9)), // 1111 00010000 0001 0000 00 E 0 ...
+
+            // -- coprocessor --
+            Self::Mcr_A1(c, coproc, opc1, rt, crn, crm, opc2) => Ok(cond_bits(c) | 0x0E00_0010 | mcr_fields(*coproc, *opc1, *opc2, *crn, *crm, reg(rt))),
+            Self::Mrc_A1(c, coproc, opc1, rt, crn, crm, opc2) => Ok(cond_bits(c) | 0x0E10_0010 | mcr_fields(*coproc, *opc1, *opc2, *crn, *crm, reg(rt))),
+            Self::Mcr2_A1(coproc, opc1, rt, crn, crm, opc2) => Ok(0xFE00_0010 | mcr_fields(*coproc, *opc1, *opc2, *crn, *crm, reg(rt))),
+            Self::Mrc2_A1(coproc, opc1, rt, crn, crm, opc2) => Ok(0xFE10_0010 | mcr_fields(*coproc, *opc1, *opc2, *crn, *crm, reg(rt))),
+            Self::Cdp_A1(c, coproc, opc1, crd, crn, crm, opc2) => Ok(cond_bits(c) | 0x0E00_0000 | cdp_fields(*coproc, *opc1, *opc2, *crn, *crd, *crm)),
+            Self::Cdp2_A1(coproc, opc1, crd, crn, crm, opc2) => Ok(0xFE00_0000 | cdp_fields(*coproc, *opc1, *opc2, *crn, *crd, *crm)),
+            Self::Mcrr_A1(c, coproc, opc1, rt, rt2, crm) => Ok(cond_bits(c) | 0x0C40_0000 | mcrr_fields(*coproc, *opc1, reg(rt), reg(rt2), *crm)),
+            Self::Mrrc_A1(c, coproc, opc1, rt, rt2, crm) => Ok(cond_bits(c) | 0x0C50_0000 | mcrr_fields(*coproc, *opc1, reg(rt), reg(rt2), *crm)),
+            Self::Mcrr2_A1(coproc, opc1, rt, rt2, crm) => Ok(0xFC40_0000 | mcrr_fields(*coproc, *opc1, reg(rt), reg(rt2), *crm)),
+            Self::Mrrc2_A1(coproc, opc1, rt, rt2, crm) => Ok(0xFC50_0000 | mcrr_fields(*coproc, *opc1, reg(rt), reg(rt2), *crm)),
+            Self::Ldc_A1(c, coproc, long, crd, rn, add, imm8, idx) => { let (p, w) = ldc_index_p_w(*idx); Ok(cond_bits(c) | ldc_base(p, *add, *long, w, true) | ldc_fields(reg(rn), *crd, *coproc, *imm8)) },
+            Self::Stc_A1(c, coproc, long, crd, rn, add, imm8, idx) => { let (p, w) = ldc_index_p_w(*idx); Ok(cond_bits(c) | ldc_base(p, *add, *long, w, false) | ldc_fields(reg(rn), *crd, *coproc, *imm8)) },
+            Self::Ldc2_A1(coproc, long, crd, rn, add, imm8, idx) => { let (p, w) = ldc_index_p_w(*idx); Ok(0xF000_0000 | ldc_base(p, *add, *long, w, true) | ldc_fields(reg(rn), *crd, *coproc, *imm8)) },
+            Self::Stc2_A1(coproc, long, crd, rn, add, imm8, idx) => { let (p, w) = ldc_index_p_w(*idx); Ok(0xF000_0000 | ldc_base(p, *add, *long, w, false) | ldc_fields(reg(rn), *crd, *coproc, *imm8)) },
+
+            // -- hints --  cccc 0011 0010 0000 1111 0000 0000 hint8
+            Self::Nop_A1(c) => Ok(cond_bits(c) | 0x0320_F000),
+            Self::Yield_A1(c) => Ok(cond_bits(c) | 0x0320_F001),
+            Self::Wfe_A1(c) => Ok(cond_bits(c) | 0x0320_F002),
+            Self::Wfi_A1(c) => Ok(cond_bits(c) | 0x0320_F003),
+            Self::Sev_A1(c) => Ok(cond_bits(c) | 0x0320_F004),
+            Self::Dbg_A1(c, option) => Ok(cond_bits(c) | 0x0320_F0F0 | ((*option & 0xF) as u32)),
+            Self::Csdb_A1(c) => Ok(cond_bits(c) | 0x0320_F014),
+            Self::Esb_A1(c) => Ok(cond_bits(c) | 0x0320_F010),
+
+            // -- memory barriers (unconditional) --  1111 0101 0111 1111 0000 0000 op4 option
+            Self::Dmb_A1(option) => Ok(0xF57F_F050 | ((*option & 0xF) as u32)),
+            Self::Dsb_A1(option) => Ok(0xF57F_F040 | ((*option & 0xF) as u32)),
+            Self::Isb_A1(option) => Ok(0xF57F_F060 | ((*option & 0xF) as u32)),
+            Self::Sb_A1 => Ok(0xF57F_F070),
+
+            // -- exception generation --
+            Self::Bkpt_A1(c, imm16) => Ok(cond_bits(c) | 0x0120_0070 | imm16_split(*imm16)), // cccc 00010010 imm12 0111 imm4
+            Self::Hvc_A1(c, imm16) => Ok(cond_bits(c) | 0x0140_0070 | imm16_split(*imm16)),  // cccc 00010100 imm12 0111 imm4
+            Self::Smc_A1(c, imm4) => Ok(cond_bits(c) | 0x0160_0070 | ((*imm4 & 0xF) as u32)), // cccc 00010110 0000 0000 0000 0111 imm4
+            Self::Udf_A1(c, imm16) => Ok(cond_bits(c) | 0x07F0_00F0 | imm16_split(*imm16)),   // cccc 01111111 imm12 1111 imm4
+            Self::Eret_A1(c) => Ok(cond_bits(c) | 0x0160_006E),                               // cccc 0001 0110 0000 0000 0000 0110 1110
+            Self::Sevl_A1(c) => Ok(cond_bits(c) | 0x0320_F005),                                // hint8 = 5
+
+            // -- CRC32 (ARMv8-A) --  cccc 00010 sz 0 Rn Rd 0000 0 C 00 0100 Rm
+            Self::Crc32b_A1(c, rd, rn, rm) => Ok(cond_bits(c) | 0x0100_0040 | (reg(rn) << 16) | (reg(rd) << 12) | reg(rm)),
+            Self::Crc32h_A1(c, rd, rn, rm) => Ok(cond_bits(c) | 0x0120_0040 | (reg(rn) << 16) | (reg(rd) << 12) | reg(rm)),
+            Self::Crc32w_A1(c, rd, rn, rm) => Ok(cond_bits(c) | 0x0140_0040 | (reg(rn) << 16) | (reg(rd) << 12) | reg(rm)),
+            Self::Crc32cb_A1(c, rd, rn, rm) => Ok(cond_bits(c) | 0x0100_0240 | (reg(rn) << 16) | (reg(rd) << 12) | reg(rm)),
+            Self::Crc32ch_A1(c, rd, rn, rm) => Ok(cond_bits(c) | 0x0120_0240 | (reg(rn) << 16) | (reg(rd) << 12) | reg(rm)),
+            Self::Crc32cw_A1(c, rd, rn, rm) => Ok(cond_bits(c) | 0x0140_0240 | (reg(rn) << 16) | (reg(rd) << 12) | reg(rm)),
+
+            // -- load-acquire / store-release (ARMv8-A) --
+            Self::Lda_A1(c, rt, rn) => Ok(cond_bits(c) | 0x0190_0C9F | (reg(rn) << 16) | (reg(rt) << 12)),
+            Self::Ldab_A1(c, rt, rn) => Ok(cond_bits(c) | 0x01D0_0C9F | (reg(rn) << 16) | (reg(rt) << 12)),
+            Self::Ldah_A1(c, rt, rn) => Ok(cond_bits(c) | 0x01F0_0C9F | (reg(rn) << 16) | (reg(rt) << 12)),
+            Self::Stl_A1(c, rt, rn) => Ok(cond_bits(c) | 0x0180_FC90 | (reg(rn) << 16) | reg(rt)),
+            Self::Stlb_A1(c, rt, rn) => Ok(cond_bits(c) | 0x01C0_FC90 | (reg(rn) << 16) | reg(rt)),
+            Self::Stlh_A1(c, rt, rn) => Ok(cond_bits(c) | 0x01E0_FC90 | (reg(rn) << 16) | reg(rt)),
+            Self::Ldaex_A1(c, rt, rn) => Ok(cond_bits(c) | 0x0190_0E9F | (reg(rn) << 16) | (reg(rt) << 12)),
+            Self::Ldaexb_A1(c, rt, rn) => Ok(cond_bits(c) | 0x01D0_0E9F | (reg(rn) << 16) | (reg(rt) << 12)),
+            Self::Ldaexh_A1(c, rt, rn) => Ok(cond_bits(c) | 0x01F0_0E9F | (reg(rn) << 16) | (reg(rt) << 12)),
+            Self::Ldaexd_A1(c, rt, rn) => Ok(cond_bits(c) | 0x01B0_0E9F | (reg(rn) << 16) | (reg(rt) << 12)),
+            Self::Stlex_A1(c, rd, rt, rn) => Ok(cond_bits(c) | 0x0180_0E90 | (reg(rn) << 16) | (reg(rd) << 12) | reg(rt)),
+            Self::Stlexb_A1(c, rd, rt, rn) => Ok(cond_bits(c) | 0x01C0_0E90 | (reg(rn) << 16) | (reg(rd) << 12) | reg(rt)),
+            Self::Stlexh_A1(c, rd, rt, rn) => Ok(cond_bits(c) | 0x01E0_0E90 | (reg(rn) << 16) | (reg(rd) << 12) | reg(rt)),
+            Self::Stlexd_A1(c, rd, rt, rn) => Ok(cond_bits(c) | 0x01A0_0E90 | (reg(rn) << 16) | (reg(rd) << 12) | reg(rt)),
+
+            // -- floating-point (VFP) load/store --
+            Self::Vldr_Single_A1(c, sd, rn, off) => encode_fp_load_store_a32(c, 0x0D10_0A00, sd.field(), sd.extra_bit(), reg(rn), *off),
+            Self::Vstr_Single_A1(c, sd, rn, off) => encode_fp_load_store_a32(c, 0x0D00_0A00, sd.field(), sd.extra_bit(), reg(rn), *off),
+            Self::Vldr_Double_A1(c, dd, rn, off) => encode_fp_load_store_a32(c, 0x0D10_0B00, dd.field(), dd.extra_bit(), reg(rn), *off),
+            Self::Vstr_Double_A1(c, dd, rn, off) => encode_fp_load_store_a32(c, 0x0D00_0B00, dd.field(), dd.extra_bit(), reg(rn), *off),
+            Self::Vldm_Single_A1(c, rn, wb, db, first, count) => encode_fp_load_store_multiple_a32(c, 0x0A00, true, reg(rn), *wb, *db, first.field(), first.extra_bit(), *count, first.number(), 31, false),
+            Self::Vstm_Single_A1(c, rn, wb, db, first, count) => encode_fp_load_store_multiple_a32(c, 0x0A00, false, reg(rn), *wb, *db, first.field(), first.extra_bit(), *count, first.number(), 31, false),
+            Self::Vldm_Double_A1(c, rn, wb, db, first, count) => encode_fp_load_store_multiple_a32(c, 0x0B00, true, reg(rn), *wb, *db, first.field(), first.extra_bit(), *count, first.number(), 15, true),
+            Self::Vstm_Double_A1(c, rn, wb, db, first, count) => encode_fp_load_store_multiple_a32(c, 0x0B00, false, reg(rn), *wb, *db, first.field(), first.extra_bit(), *count, first.number(), 15, true),
+
+            // -- floating-point (VFP) data-processing --
+            Self::FpDataProcess3_Single_A1(c, op, sd, sn, sm) => Ok(cond_bits(c) | 0x0E00_0A00 | op.opcode_bits() | (sd.extra_bit() << 22) | (sn.field() << 16) | (sd.field() << 12) | (sn.extra_bit() << 7) | (sm.extra_bit() << 5) | sm.field()),
+            Self::FpDataProcess3_Double_A1(c, op, dd, dn, dm) => Ok(cond_bits(c) | 0x0E00_0B00 | op.opcode_bits() | (dd.extra_bit() << 22) | (dn.field() << 16) | (dd.field() << 12) | (dn.extra_bit() << 7) | (dm.extra_bit() << 5) | dm.field()),
+            Self::FpDataProcess2_Single_A1(c, op, sd, sm) => Ok(cond_bits(c) | (op.base() & 0x0FFF_FFFF) | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field()),
+            Self::FpDataProcess2_Double_A1(c, op, dd, dm) => Ok(cond_bits(c) | (op.base() & 0x0FFF_FFFF) | (1 << 8) | (dd.extra_bit() << 22) | (dd.field() << 12) | (dm.extra_bit() << 5) | dm.field()),
+
+            // -- floating-point (VFP) compare / transfer / immediate --
+            Self::Vcmp_Single_A1(c, sd, sm, e) => Ok(cond_bits(c) | 0x0EB4_0A40 | (sd.extra_bit() << 22) | (sd.field() << 12) | ((*e as u32) << 7) | (sm.extra_bit() << 5) | sm.field()),
+            Self::Vcmp_Double_A1(c, dd, dm, e) => Ok(cond_bits(c) | 0x0EB4_0B40 | (dd.extra_bit() << 22) | (dd.field() << 12) | ((*e as u32) << 7) | (dm.extra_bit() << 5) | dm.field()),
+            Self::Vcmp_Zero_Single_A1(c, sd, e) => Ok(cond_bits(c) | 0x0EB5_0A40 | (sd.extra_bit() << 22) | (sd.field() << 12) | ((*e as u32) << 7)),
+            Self::Vcmp_Zero_Double_A1(c, dd, e) => Ok(cond_bits(c) | 0x0EB5_0B40 | (dd.extra_bit() << 22) | (dd.field() << 12) | ((*e as u32) << 7)),
+            Self::Vmrs_A1(c, rt) => Ok(cond_bits(c) | 0x0EF1_0A10 | (reg(rt) << 12)),
+            Self::Vmrs_Apsr_Nzcv_A1(c) => Ok(cond_bits(c) | 0x0EF1_FA10),
+            Self::Vmsr_A1(c, rt) => Ok(cond_bits(c) | 0x0EE1_0A10 | (reg(rt) << 12)),
+            Self::Vmov_Core_To_Single_A1(c, sn, rt) => Ok(cond_bits(c) | 0x0E00_0A10 | (sn.field() << 16) | (reg(rt) << 12) | (sn.extra_bit() << 7)),
+            Self::Vmov_Single_To_Core_A1(c, rt, sn) => Ok(cond_bits(c) | 0x0E10_0A10 | (sn.field() << 16) | (reg(rt) << 12) | (sn.extra_bit() << 7)),
+            Self::Vmov_Immediate_Single_A1(c, sd, imm8) => Ok(cond_bits(c) | 0x0EB0_0A00 | (((*imm8 as u32) >> 4) << 16) | (sd.extra_bit() << 22) | (sd.field() << 12) | ((*imm8 as u32) & 0xF)),
+            Self::Vmov_Immediate_Double_A1(c, dd, imm8) => Ok(cond_bits(c) | 0x0EB0_0B00 | (((*imm8 as u32) >> 4) << 16) | (dd.extra_bit() << 22) | (dd.field() << 12) | ((*imm8 as u32) & 0xF)),
+            Self::Vmov_Double_To_CorePair_A1(c, rt, rt2, dm) => Ok(encode_vmov_core_pair_a32(c, 0x0C40_0B10, true, reg(rt), reg(rt2), dm.field(), dm.extra_bit())),
+            Self::Vmov_CorePair_To_Double_A1(c, dm, rt, rt2) => Ok(encode_vmov_core_pair_a32(c, 0x0C40_0B10, false, reg(rt), reg(rt2), dm.field(), dm.extra_bit())),
+            Self::Vmov_Singles_To_CorePair_A1(c, rt, rt2, sm) => Ok(encode_vmov_core_pair_a32(c, 0x0C40_0A10, true, reg(rt), reg(rt2), sm.field(), sm.extra_bit())),
+            Self::Vmov_CorePair_To_Singles_A1(c, sm, rt, rt2) => Ok(encode_vmov_core_pair_a32(c, 0x0C40_0A10, false, reg(rt), reg(rt2), sm.field(), sm.extra_bit())),
+            Self::Vmov_Core_To_Scalar_A1(c, size, index, dd, rt) => {
+                if *index >= size.lane_count() {
+                    return Err(EncodeError::ImmediateOutOfRange { field: "VMOV scalar lane index", value: *index as i64, minimum: 0, maximum: size.lane_count() as i64 - 1 });
+                }
+                let (opc1, opc2) = size.opc_fields(*index);
+                Ok(cond_bits(c) | 0x0E00_0B10 | (opc1 << 21) | (dd.field() << 16) | (reg(rt) << 12) | (dd.extra_bit() << 7) | (opc2 << 5))
+            },
+            Self::Vmov_Scalar_To_Core_A1(c, unsigned, size, index, rt, dn) => {
+                if *index >= size.lane_count() {
+                    return Err(EncodeError::ImmediateOutOfRange { field: "VMOV scalar lane index", value: *index as i64, minimum: 0, maximum: size.lane_count() as i64 - 1 });
+                }
+                let (opc1, opc2) = size.opc_fields(*index);
+                // The .32 transfer has no sign distinction -- U is 0 there; only .8/.16 sign/zero-extend.
+                let u = if matches!(size, Arm32VmovLaneSize::Word) { 0 } else { *unsigned as u32 };
+                Ok(cond_bits(c) | 0x0E10_0B10 | (u << 23) | (opc1 << 21) | (dn.field() << 16) | (reg(rt) << 12) | (dn.extra_bit() << 7) | (opc2 << 5))
+            },
+
+            // -- floating-point (VFP) conversions (VCVT) --
+            Self::Vcvt_FloatToInt_FromSingle_A1(c, sd, sm, signed, round) => Ok(cond_bits(c) | 0x0EBC_0A40 | ((*signed as u32) << 16) | ((*round as u32) << 7) | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field()),
+            Self::Vcvt_FloatToInt_FromDouble_A1(c, sd, dm, signed, round) => Ok(cond_bits(c) | 0x0EBC_0B40 | ((*signed as u32) << 16) | ((*round as u32) << 7) | (sd.extra_bit() << 22) | (sd.field() << 12) | (dm.extra_bit() << 5) | dm.field()),
+            Self::Vcvt_IntToFloat_ToSingle_A1(c, sd, sm, signed) => Ok(cond_bits(c) | 0x0EB8_0A40 | ((*signed as u32) << 7) | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field()),
+            Self::Vcvt_IntToFloat_ToDouble_A1(c, dd, sm, signed) => Ok(cond_bits(c) | 0x0EB8_0B40 | ((*signed as u32) << 7) | (dd.extra_bit() << 22) | (dd.field() << 12) | (sm.extra_bit() << 5) | sm.field()),
+            Self::Vcvt_Single_To_Double_A1(c, dd, sm) => Ok(cond_bits(c) | 0x0EB7_0AC0 | (dd.extra_bit() << 22) | (dd.field() << 12) | (sm.extra_bit() << 5) | sm.field()),
+            Self::Vcvt_Double_To_Single_A1(c, sd, dm) => Ok(cond_bits(c) | 0x0EB7_0BC0 | (sd.extra_bit() << 22) | (sd.field() << 12) | (dm.extra_bit() << 5) | dm.field()),
+            Self::Vcvt_HalfToSingle_A1(c, sd, sm, top) => Ok(cond_bits(c) | 0x0EB2_0A40 | ((*top as u32) << 7) | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field()),
+            Self::Vjcvt_A1(c, sd, dm) => Ok(cond_bits(c) | 0x0EB9_0BC0 | (sd.extra_bit() << 22) | (sd.field() << 12) | (dm.extra_bit() << 5) | dm.field()),
+            Self::Vcvt_HalfToDouble_A1(c, dd, sm, top) => Ok(cond_bits(c) | 0x0EB2_0B40 | ((*top as u32) << 7) | (dd.extra_bit() << 22) | (dd.field() << 12) | (sm.extra_bit() << 5) | sm.field()),
+            Self::Vcvt_DoubleToHalf_A1(c, sd, dm, top) => Ok(cond_bits(c) | 0x0EB3_0B40 | ((*top as u32) << 7) | (sd.extra_bit() << 22) | (sd.field() << 12) | (dm.extra_bit() << 5) | dm.field()),
+            Self::Vcvt_SingleToHalf_A1(c, sd, sm, top) => Ok(cond_bits(c) | 0x0EB3_0A40 | ((*top as u32) << 7) | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field()),
+            Self::Vcvt_FloatToFixed_Single_A1(c, sd, signed, bits32, frac) => encode_vcvt_fixed_a32(c, sd.field(), sd.extra_bit(), 0, true, *signed, *bits32, *frac),
+            Self::Vcvt_FloatToFixed_Double_A1(c, dd, signed, bits32, frac) => encode_vcvt_fixed_a32(c, dd.field(), dd.extra_bit(), 1, true, *signed, *bits32, *frac),
+            Self::Vcvt_FixedToFloat_Single_A1(c, sd, signed, bits32, frac) => encode_vcvt_fixed_a32(c, sd.field(), sd.extra_bit(), 0, false, *signed, *bits32, *frac),
+            Self::Vcvt_FixedToFloat_Double_A1(c, dd, signed, bits32, frac) => encode_vcvt_fixed_a32(c, dd.field(), dd.extra_bit(), 1, false, *signed, *bits32, *frac),
+
+            // -- ARMv8-A floating-point additions (VSEL / VMAXNM / VMINNM / VRINT / VCVTA-N-P-M) --
+            Self::Vsel_Single_A1(cc, sd, sn, sm) => Ok(0xFE00_0A00 | (cc.cc_bits() << 20) | (sd.extra_bit() << 22) | (sn.field() << 16) | (sd.field() << 12) | (sn.extra_bit() << 7) | (sm.extra_bit() << 5) | sm.field()),
+            Self::Vsel_Double_A1(cc, dd, dn, dm) => Ok(0xFE00_0B00 | (cc.cc_bits() << 20) | (dd.extra_bit() << 22) | (dn.field() << 16) | (dd.field() << 12) | (dn.extra_bit() << 7) | (dm.extra_bit() << 5) | dm.field()),
+            Self::Vmaxnm_Single_A1(sd, sn, sm) => Ok(0xFE80_0A00 | (sd.extra_bit() << 22) | (sn.field() << 16) | (sd.field() << 12) | (sn.extra_bit() << 7) | (sm.extra_bit() << 5) | sm.field()),
+            Self::Vmaxnm_Double_A1(dd, dn, dm) => Ok(0xFE80_0B00 | (dd.extra_bit() << 22) | (dn.field() << 16) | (dd.field() << 12) | (dn.extra_bit() << 7) | (dm.extra_bit() << 5) | dm.field()),
+            Self::Vminnm_Single_A1(sd, sn, sm) => Ok(0xFE80_0A40 | (sd.extra_bit() << 22) | (sn.field() << 16) | (sd.field() << 12) | (sn.extra_bit() << 7) | (sm.extra_bit() << 5) | sm.field()),
+            Self::Vminnm_Double_A1(dd, dn, dm) => Ok(0xFE80_0B40 | (dd.extra_bit() << 22) | (dn.field() << 16) | (dd.field() << 12) | (dn.extra_bit() << 7) | (dm.extra_bit() << 5) | dm.field()),
+            Self::Vrint_Directed_Single_A1(mode, sd, sm) => Ok(0xFEB8_0A40 | (mode.rm_bits() << 16) | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field()),
+            Self::Vrint_Directed_Double_A1(mode, dd, dm) => Ok(0xFEB8_0B40 | (mode.rm_bits() << 16) | (dd.extra_bit() << 22) | (dd.field() << 12) | (dm.extra_bit() << 5) | dm.field()),
+            Self::Vrint_Cond_Single_A1(c, mode, sd, sm) => { let (opc2, op7) = mode.selector_bits(); Ok(cond_bits(c) | 0x0EB0_0A40 | (opc2 << 16) | (op7 << 7) | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field()) },
+            Self::Vrint_Cond_Double_A1(c, mode, dd, dm) => { let (opc2, op7) = mode.selector_bits(); Ok(cond_bits(c) | 0x0EB0_0B40 | (opc2 << 16) | (op7 << 7) | (dd.extra_bit() << 22) | (dd.field() << 12) | (dm.extra_bit() << 5) | dm.field()) },
+            Self::Vcvt_Directed_FromSingle_A1(mode, sd, sm, signed) => Ok(0xFEBC_0A40 | (mode.rm_bits() << 16) | ((*signed as u32) << 7) | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field()),
+            Self::Vcvt_Directed_FromDouble_A1(mode, sd, dm, signed) => Ok(0xFEBC_0B40 | (mode.rm_bits() << 16) | ((*signed as u32) << 7) | (sd.extra_bit() << 22) | (sd.field() << 12) | (dm.extra_bit() << 5) | dm.field()),
+
+            // -- NEON 3-reg-same-length data-processing --
+            Self::NeonInt3Same_D_A1(op, size, dd, dn, dm) => { let (u, opc, o) = op.fields(); Ok(encode_neon_3same(u, size.size_bits(), opc, o, 0, dd.extra_bit(), dd.field(), dn.extra_bit(), dn.field(), dm.extra_bit(), dm.field())) },
+            Self::NeonInt3Same_Q_A1(op, size, qd, qn, qm) => { let (u, opc, o) = op.fields(); Ok(encode_neon_3same(u, size.size_bits(), opc, o, 1, qd.extra_bit(), qd.field(), qn.extra_bit(), qn.field(), qm.extra_bit(), qm.field())) },
+            Self::NeonFloat3Same_D_A1(op, dd, dn, dm) => { let (u, opc, o, sz) = op.fields(); Ok(encode_neon_3same(u, sz, opc, o, 0, dd.extra_bit(), dd.field(), dn.extra_bit(), dn.field(), dm.extra_bit(), dm.field())) },
+            Self::NeonFloat3Same_Q_A1(op, qd, qn, qm) => { let (u, opc, o, sz) = op.fields(); Ok(encode_neon_3same(u, sz, opc, o, 1, qd.extra_bit(), qd.field(), qn.extra_bit(), qn.field(), qm.extra_bit(), qm.field())) },
+            Self::NeonBitwise3Same_D_A1(op, dd, dn, dm) => { let (u, sz) = op.fields(); Ok(encode_neon_3same(u, sz, 0b0001, 1, 0, dd.extra_bit(), dd.field(), dn.extra_bit(), dn.field(), dm.extra_bit(), dm.field())) },
+            Self::NeonBitwise3Same_Q_A1(op, qd, qn, qm) => { let (u, sz) = op.fields(); Ok(encode_neon_3same(u, sz, 0b0001, 1, 1, qd.extra_bit(), qd.field(), qn.extra_bit(), qn.field(), qm.extra_bit(), qm.field())) },
+
+            // -- NEON 2-reg-misc --
+            Self::NeonMisc2Sized_D_A1(op, size, dd, dm) => { let (a, opc2) = op.fields(); Ok(encode_neon_2misc(a, size.size_bits(), opc2, 0, dd.extra_bit(), dd.field(), dm.extra_bit(), dm.field())) },
+            Self::NeonMisc2Sized_Q_A1(op, size, qd, qm) => { let (a, opc2) = op.fields(); Ok(encode_neon_2misc(a, size.size_bits(), opc2, 1, qd.extra_bit(), qd.field(), qm.extra_bit(), qm.field())) },
+            Self::NeonMisc2Fixed_D_A1(op, dd, dm) => { let (a, opc2, sz) = op.fields(); Ok(encode_neon_2misc(a, sz, opc2, 0, dd.extra_bit(), dd.field(), dm.extra_bit(), dm.field())) },
+            Self::NeonMisc2Fixed_Q_A1(op, qd, qm) => { let (a, opc2, sz) = op.fields(); Ok(encode_neon_2misc(a, sz, opc2, 1, qd.extra_bit(), qd.field(), qm.extra_bit(), qm.field())) },
+            Self::NeonMisc2Narrow_A1(op, size, dd, qm) => { let (opc2, bit6) = op.fields(); Ok(encode_neon_2misc(0b10, size.size_bits().wrapping_sub(1) & 0b11, opc2, bit6, dd.extra_bit(), dd.field(), qm.extra_bit(), qm.field())) },
+            Self::NeonShllMax_A1(size, qd, dm) => Ok(encode_neon_2misc(0b10, size.size_bits(), 0b00110, 0, qd.extra_bit(), qd.field(), dm.extra_bit(), dm.field())),
+
+            // -- NEON 3-reg-different-length --
+            Self::NeonDiffLong_A1(op, size, qd, dn, dm) => { let (u, opc) = op.fields(); Ok(encode_neon_3diff(u, size.size_bits(), opc, qd.extra_bit(), qd.field(), dn.extra_bit(), dn.field(), dm.extra_bit(), dm.field())) },
+            Self::NeonDiffWide_A1(op, size, qd, qn, dm) => { let (u, opc) = op.fields(); Ok(encode_neon_3diff(u, size.size_bits(), opc, qd.extra_bit(), qd.field(), qn.extra_bit(), qn.field(), dm.extra_bit(), dm.field())) },
+            Self::NeonDiffNarrow_A1(op, size, dd, qn, qm) => { let (u, opc) = op.fields(); Ok(encode_neon_3diff(u, size.size_bits().wrapping_sub(1) & 0b11, opc, dd.extra_bit(), dd.field(), qn.extra_bit(), qn.field(), qm.extra_bit(), qm.field())) },
+
+            // -- NEON 2-reg-and-a-scalar --
+            Self::NeonScalar_D_A1(op, size, dd, dn, dm, index) => { let (vm, m) = neon_scalar_vm(size.size_bits(), dm.number(), *index); Ok(encode_neon_scalar(0, size.size_bits(), op.opc(), dd.extra_bit(), dd.field(), dn.extra_bit(), dn.field(), m, vm)) },
+            Self::NeonScalar_Q_A1(op, size, qd, qn, dm, index) => { let (vm, m) = neon_scalar_vm(size.size_bits(), dm.number(), *index); Ok(encode_neon_scalar(1, size.size_bits(), op.opc(), qd.extra_bit(), qd.field(), qn.extra_bit(), qn.field(), m, vm)) },
+            Self::NeonScalarLong_A1(op, size, qd, dn, dm, index) => { let (u, opc) = op.fields(); let (vm, m) = neon_scalar_vm(size.size_bits(), dm.number(), *index); Ok(encode_neon_scalar(u, size.size_bits(), opc, qd.extra_bit(), qd.field(), dn.extra_bit(), dn.field(), m, vm)) },
+
+            // -- NEON 2-reg-and-a-shift-amount --
+            Self::NeonShift_D_A1(op, size, shift, dd, dm) => {
+                let (u, opc, is_left) = op.fields();
+                let esize = 8u32 << size.size_bits();
+                let field7 = neon_shift_imm6(is_left, esize, *shift as u32)?;
+                Ok(encode_neon_shift(u, field7 & 0x3F, opc, field7 >> 6, 0, dd.extra_bit(), dd.field(), dm.extra_bit(), dm.field()))
+            },
+            Self::NeonShift_Q_A1(op, size, shift, qd, qm) => {
+                let (u, opc, is_left) = op.fields();
+                let esize = 8u32 << size.size_bits();
+                let field7 = neon_shift_imm6(is_left, esize, *shift as u32)?;
+                Ok(encode_neon_shift(u, field7 & 0x3F, opc, field7 >> 6, 1, qd.extra_bit(), qd.field(), qm.extra_bit(), qm.field()))
+            },
+            Self::NeonShiftNarrow_A1(op, size, shift, dd, qm) => {
+                let (u, opc, r) = op.fields();
+                let src_esize = 8u32 << size.size_bits();
+                let shift = *shift as u32;
+                if shift < 1 || shift > src_esize {
+                    return Err(EncodeError::ImmediateOutOfRange { field: "shift", value: shift as i64, minimum: 1, maximum: src_esize as i64 });
+                }
+                Ok(encode_neon_shift(u, src_esize - shift, opc, 0, r, dd.extra_bit(), dd.field(), qm.extra_bit(), qm.field()))
+            },
+            Self::NeonShiftLong_A1(signed, size, shift, qd, dm) => {
+                let src_esize = 8u32 << size.size_bits();
+                Ok(encode_neon_shift(*signed as u32, src_esize + *shift as u32, 0b1010, 0, 0, qd.extra_bit(), qd.field(), dm.extra_bit(), dm.field()))
+            },
+
+            // -- NEON extract / table / duplicate / modified-immediate --
+            Self::NeonExt_D_A1(imm4, dd, dn, dm) => Ok(0xF2B0_0000 | (dd.extra_bit() << 22) | (dn.field() << 16) | (dd.field() << 12) | ((*imm4 as u32 & 0xF) << 8) | (dn.extra_bit() << 7) | (dm.extra_bit() << 5) | dm.field()),
+            Self::NeonExt_Q_A1(imm4, qd, qn, qm) => Ok(0xF2B0_0000 | (qd.extra_bit() << 22) | (qn.field() << 16) | (qd.field() << 12) | ((*imm4 as u32 & 0xF) << 8) | (qn.extra_bit() << 7) | (1 << 6) | (qm.extra_bit() << 5) | qm.field()),
+            Self::NeonTableLookup_A1(is_vtbx, length, dd, dn, dm) => {
+                let len2 = (*length as u32).wrapping_sub(1) & 0b11;
+                Ok(0xF3B0_0000 | (dd.extra_bit() << 22) | (dn.field() << 16) | (dd.field() << 12) | ((0b1000 | len2) << 8) | (dn.extra_bit() << 7) | ((*is_vtbx as u32) << 6) | (dm.extra_bit() << 5) | dm.field())
+            },
+            Self::NeonVdupScalar_D_A1(size, index, dd, dm) => Ok(0xF3B0_0C00 | (dd.extra_bit() << 22) | (vdup_scalar_imm4(*size, *index) << 16) | (dd.field() << 12) | (dm.extra_bit() << 5) | dm.field()),
+            Self::NeonVdupScalar_Q_A1(size, index, qd, dm) => Ok(0xF3B0_0C00 | (qd.extra_bit() << 22) | (vdup_scalar_imm4(*size, *index) << 16) | (qd.field() << 12) | (1 << 6) | (dm.extra_bit() << 5) | dm.field()),
+            Self::NeonVdupCore_D_A1(c, size, dd, rt) => { let (b, e) = vdup_core_be(*size); Ok(cond_bits(c) | 0x0E80_0B10 | (b << 22) | (dd.field() << 16) | (reg(rt) << 12) | (dd.extra_bit() << 7) | (e << 5)) },
+            Self::NeonVdupCore_Q_A1(c, size, qd, rt) => { let (b, e) = vdup_core_be(*size); Ok(cond_bits(c) | 0x0E80_0B10 | (b << 22) | (1 << 21) | (qd.field() << 16) | (reg(rt) << 12) | (qd.extra_bit() << 7) | (e << 5)) },
+            Self::NeonModifiedImmediate_D_A1(cmode, op, imm8, dd) => Ok(encode_neon_modified_imm(*cmode, *op, *imm8, 0, dd.extra_bit(), dd.field())),
+            Self::NeonModifiedImmediate_Q_A1(cmode, op, imm8, qd) => Ok(encode_neon_modified_imm(*cmode, *op, *imm8, 1, qd.extra_bit(), qd.field())),
+
+            // -- NEON element/structure load & store (VLD1-4 / VST1-4) --
+            Self::NeonLoadStoreMultiple_A1(is_load, type_bits, size, align, first, rn, address) =>
+                Ok(0xF400_0000 | (first.extra_bit() << 22) | ((*is_load as u32) << 21) | (reg(rn) << 16) | (first.field() << 12) | ((*type_bits as u32 & 0xF) << 8) | (size.size_bits() << 6) | ((*align as u32 & 0b11) << 4) | address.rm_bits()),
+            Self::NeonLoadStoreSingleLane_A1(is_load, struct_count, size, index_align, first, rn, address) =>
+                Ok(0xF480_0000 | (first.extra_bit() << 22) | ((*is_load as u32) << 21) | (reg(rn) << 16) | (first.field() << 12) | ((*size as u32 & 0b11) << 10) | (((*struct_count as u32).wrapping_sub(1) & 0b11) << 8) | ((*index_align as u32 & 0xF) << 4) | address.rm_bits()),
+            Self::NeonLoadStoreAllLanes_A1(struct_count, size, t, a, first, rn, address) =>
+                Ok(0xF480_0000 | (first.extra_bit() << 22) | (1 << 21) | (reg(rn) << 16) | (first.field() << 12) | (0b11 << 10) | (((*struct_count as u32).wrapping_sub(1) & 0b11) << 8) | ((*size as u32 & 0b11) << 6) | ((*t as u32) << 5) | ((*a as u32) << 4) | address.rm_bits()),
+
+            // -- ARMv8 cryptography extension --
+            Self::NeonAes_A1(op, qd, qm) => Ok(0xF3B0_0300 | (qd.extra_bit() << 22) | (qd.field() << 12) | (op.op_bits() << 6) | (qm.extra_bit() << 5) | qm.field()),
+            Self::NeonSha3Reg_A1(op, qd, qn, qm) => { let (u, size) = op.fields(); Ok(encode_neon_3same(u, size, 0b1100, 0, 1, qd.extra_bit(), qd.field(), qn.extra_bit(), qn.field(), qm.extra_bit(), qm.field())) },
+            Self::NeonSha2Reg_A1(op, qd, qm) => Ok(op.base() | (qd.extra_bit() << 22) | (qd.field() << 12) | (qm.extra_bit() << 5) | qm.field()),
+
+            // -- preload (unconditional) --
+            Self::Pld_A1(rn, offset) => encode_preload(0xF550_F000, 0xF750_F000, reg(rn), offset),
+            Self::Pldw_A1(rn, offset) => encode_preload(0xF510_F000, 0xF710_F000, reg(rn), offset),
+            Self::Pli_A1(rn, offset) => encode_preload(0xF450_F000, 0xF650_F000, reg(rn), offset),
+
+            // -- exception save/return (unconditional) --
+            Self::Rfe_A1(mode, rn, wb) => { let (p, u) = mode.p_u_bits(); Ok(0xF810_0A00 | (p << 24) | (u << 23) | ((*wb as u32) << 21) | (reg(rn) << 16)) }, // 1111 100 P U 0 W 1 Rn 0000 1010 0000 0000
+            Self::Srs_A1(mode, wb, mode_num) => { let (p, u) = mode.p_u_bits(); Ok(0xF84D_0500 | (p << 24) | (u << 23) | ((*wb as u32) << 21) | ((*mode_num & 0x1F) as u32)) }, // 1111 100 P U 1 W 0 1101 0000 0101 mode
+
+            // -- branch / interwork --
+            Self::B_A1(c, offset) => encode_a32_branch(c, 0x0A00_0000, *offset),
+            Self::Bl_A1(c, offset) => encode_a32_branch(c, 0x0B00_0000, *offset),
+            Self::Blx_Immediate_A1(offset) => {
+                // 1111 101 H imm24 ; offset = SignExtend(imm24:H:0, 26), a multiple of 2 (H is offset bit 1)
+                check_multiple_of_2("offset", *offset)?;
+                let imm = *offset >> 2;
+                check_signed_24("offset", imm, *offset)?;
+                let h = ((*offset >> 1) & 1) as u32;
+                Ok(0xFA00_0000 | (h << 24) | ((imm as u32) & 0x00FF_FFFF))
+            },
+            Self::Bx_A1(c, rm) => Ok(cond_bits(c) | 0x012F_FF10 | reg(rm)), // cccc 0001 0010 1111 1111 1111 0001 Rm
+            Self::Blx_Register_A1(c, rm) => Ok(cond_bits(c) | 0x012F_FF30 | reg(rm)),
+            Self::Bxj_A1(c, rm) => Ok(cond_bits(c) | 0x012F_FF20 | reg(rm)),
+
+            // -- exception generation --
+            Self::Svc_A1(c, imm24) => {
+                check_unsigned_maximum("imm24", *imm24, 0x00FF_FFFF)?;
+                Ok(cond_bits(c) | 0x0F00_0000 | (*imm24 & 0x00FF_FFFF)) // cccc 1111 imm24
+            },
+        }
+    }
+}
+
 // ===================== data-processing opcode nibbles (bits 24:21) =====================
 const OP_AND: u32 = 0b0000;
 const OP_EOR: u32 = 0b0001;
