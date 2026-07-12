@@ -408,3 +408,405 @@ fn round_trip__a32_data_processing() {
     }
 }
 
+#[test]
+fn encode__a32_register_shifted_register_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    // shift amount taken from Rs
+    assert_eq!(
+        Add_RegisterShiftedRegister_A1(al, false, R::R0, R::R1, R::R2, ShiftType::Lsl, R::R3)
+            .encode()
+            .unwrap(),
+        le(0xE081_0312)
+    ); // add  r0, r1, r2, lsl r3
+    assert_eq!(
+        Mov_RegisterShiftedRegister_A1(al, false, R::R0, R::R1, ShiftType::Asr, R::R2)
+            .encode()
+            .unwrap(),
+        le(0xE1A0_0251)
+    ); // mov  r0, r1, asr r2   (= asr r0, r1, r2)
+    assert_eq!(
+        Mov_RegisterShiftedRegister_A1(al, true, R::R4, R::R5, ShiftType::Lsr, R::R6)
+            .encode()
+            .unwrap(),
+        le(0xE1B0_4635)
+    ); // movs r4, r5, lsr r6   (= lsrs r4, r5, r6)
+    assert_eq!(
+        Cmp_RegisterShiftedRegister_A1(al, R::R0, R::R1, ShiftType::Ror, R::R2)
+            .encode()
+            .unwrap(),
+        le(0xE150_0271)
+    ); // cmp  r0, r1, ror r2
+}
+
+#[test]
+fn round_trip__a32_register_shifted_register() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let instructions = [
+        And_RegisterShiftedRegister_A1(al, true, R::R0, R::R1, R::R2, ShiftType::Lsl, R::R3),
+        Eor_RegisterShiftedRegister_A1(al, false, R::R4, R::R5, R::R6, ShiftType::Lsr, R::R7),
+        Sub_RegisterShiftedRegister_A1(al, false, R::R8, R::R9, R::R10, ShiftType::Asr, R::R11),
+        Rsb_RegisterShiftedRegister_A1(al, true, R::R0, R::R1, R::R2, ShiftType::Ror, R::R3),
+        Add_RegisterShiftedRegister_A1(
+            Cond::NotEqual,
+            false,
+            R::R4,
+            R::R5,
+            R::R6,
+            ShiftType::Lsl,
+            R::R7,
+        ),
+        Adc_RegisterShiftedRegister_A1(al, true, R::R8, R::R9, R::R10, ShiftType::Lsr, R::R11),
+        Sbc_RegisterShiftedRegister_A1(al, false, R::R0, R::R1, R::R2, ShiftType::Asr, R::R3),
+        Rsc_RegisterShiftedRegister_A1(al, true, R::R4, R::R5, R::R6, ShiftType::Ror, R::R7),
+        Orr_RegisterShiftedRegister_A1(al, false, R::R8, R::R9, R::R10, ShiftType::Lsl, R::R11),
+        Bic_RegisterShiftedRegister_A1(al, true, R::R0, R::R1, R::R2, ShiftType::Lsr, R::R3),
+        Mov_RegisterShiftedRegister_A1(al, false, R::R4, R::R5, ShiftType::Asr, R::R6),
+        Mvn_RegisterShiftedRegister_A1(al, true, R::R7, R::R8, ShiftType::Ror, R::R9),
+        Tst_RegisterShiftedRegister_A1(al, R::R10, R::R11, ShiftType::Lsl, R::R12),
+        Teq_RegisterShiftedRegister_A1(al, R::R0, R::R1, ShiftType::Lsr, R::R2),
+        Cmp_RegisterShiftedRegister_A1(al, R::R3, R::R4, ShiftType::Asr, R::R5),
+        Cmn_RegisterShiftedRegister_A1(Cond::CarrySet, R::R6, R::R7, ShiftType::Ror, R::R8),
+    ];
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 register-shifted-register round-trip mismatch"
+        );
+    }
+}
+
+// ---- A2: multiply ----
+
+#[test]
+fn encode__a32_multiply_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(
+        Mul_A1(al, false, R::R0, R::R1, R::R2).encode().unwrap(),
+        le(0xE000_0291)
+    ); // mul    r0, r1, r2
+    assert_eq!(
+        Mla_A1(al, false, R::R0, R::R1, R::R2, R::R3)
+            .encode()
+            .unwrap(),
+        le(0xE020_3291)
+    ); // mla    r0, r1, r2, r3
+    assert_eq!(
+        Mls_A1(al, R::R0, R::R1, R::R2, R::R3).encode().unwrap(),
+        le(0xE060_3291)
+    ); // mls    r0, r1, r2, r3
+    assert_eq!(
+        Umull_A1(al, false, R::R0, R::R1, R::R2, R::R3)
+            .encode()
+            .unwrap(),
+        le(0xE081_0392)
+    ); // umull  r0, r1, r2, r3
+    assert_eq!(
+        Umlal_A1(al, false, R::R0, R::R1, R::R2, R::R3)
+            .encode()
+            .unwrap(),
+        le(0xE0A1_0392)
+    ); // umlal  r0, r1, r2, r3
+    assert_eq!(
+        Smull_A1(al, true, R::R4, R::R5, R::R6, R::R7)
+            .encode()
+            .unwrap(),
+        le(0xE0D5_4796)
+    ); // smulls r4, r5, r6, r7
+    assert_eq!(
+        Smlal_A1(al, false, R::R0, R::R1, R::R2, R::R3)
+            .encode()
+            .unwrap(),
+        le(0xE0E1_0392)
+    ); // smlal  r0, r1, r2, r3
+    assert_eq!(
+        Umaal_A1(al, R::R0, R::R1, R::R2, R::R3).encode().unwrap(),
+        le(0xE041_0392)
+    ); // umaal  r0, r1, r2, r3
+    assert_eq!(
+        Mul_A1(al, true, R::R8, R::R9, R::R10).encode().unwrap(),
+        le(0xE018_0A99)
+    ); // muls   r8, r9, r10
+}
+
+#[test]
+fn round_trip__a32_multiply() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let instructions = [
+        Mul_A1(al, false, R::R0, R::R1, R::R2),
+        Mul_A1(Cond::NotEqual, true, R::R3, R::R4, R::R5),
+        Mla_A1(al, false, R::R6, R::R7, R::R8, R::R9),
+        Mla_A1(al, true, R::R10, R::R11, R::R12, R::R0),
+        Mls_A1(al, R::R1, R::R2, R::R3, R::R4),
+        Umull_A1(al, false, R::R0, R::R1, R::R2, R::R3),
+        Umull_A1(al, true, R::R4, R::R5, R::R6, R::R7),
+        Umlal_A1(al, false, R::R8, R::R9, R::R10, R::R11),
+        Smull_A1(al, true, R::R0, R::R1, R::R2, R::R3),
+        Smlal_A1(Cond::CarrySet, false, R::R4, R::R5, R::R6, R::R7),
+        Umaal_A1(al, R::R8, R::R9, R::R10, R::R11),
+    ];
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(decoded, instruction, "A32 multiply round-trip mismatch");
+    }
+}
+
+// ---- A3: saturating arithmetic ----
+
+#[test]
+fn encode__a32_saturating_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(
+        Qadd_A1(al, R::R0, R::R1, R::R2).encode().unwrap(),
+        le(0xE102_0051)
+    ); // qadd  r0, r1, r2
+    assert_eq!(
+        Qsub_A1(al, R::R0, R::R1, R::R2).encode().unwrap(),
+        le(0xE122_0051)
+    ); // qsub  r0, r1, r2
+    assert_eq!(
+        Qdadd_A1(al, R::R3, R::R4, R::R5).encode().unwrap(),
+        le(0xE145_3054)
+    ); // qdadd r3, r4, r5
+    assert_eq!(
+        Qdsub_A1(al, R::R6, R::R7, R::R8).encode().unwrap(),
+        le(0xE168_6057)
+    ); // qdsub r6, r7, r8
+}
+
+#[test]
+fn round_trip__a32_saturating() {
+    use ArmA32Instruction::*;
+    let instructions = [
+        Qadd_A1(Cond::AlwaysUnconditional, R::R0, R::R1, R::R2),
+        Qsub_A1(Cond::NotEqual, R::R3, R::R4, R::R5),
+        Qdadd_A1(Cond::AlwaysUnconditional, R::R6, R::R7, R::R8),
+        Qdsub_A1(Cond::AlwaysUnconditional, R::R9, R::R10, R::R11),
+    ];
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(decoded, instruction, "A32 saturating round-trip mismatch");
+    }
+}
+
+// ---- A3: signed multiply (DSP) ----
+
+#[test]
+fn encode__a32_signed_multiply_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    // halfword multiplies
+    assert_eq!(
+        Smla_A1(al, R::R0, R::R1, R::R2, R::R3, false, false)
+            .encode()
+            .unwrap(),
+        le(0xE100_3281)
+    ); // smlabb  r0, r1, r2, r3
+    assert_eq!(
+        Smla_A1(al, R::R4, R::R5, R::R6, R::R7, true, true)
+            .encode()
+            .unwrap(),
+        le(0xE104_76E5)
+    ); // smlatt  r4, r5, r6, r7
+    assert_eq!(
+        Smul_A1(al, R::R0, R::R1, R::R2, true, true)
+            .encode()
+            .unwrap(),
+        le(0xE160_02E1)
+    ); // smultt  r0, r1, r2
+    assert_eq!(
+        Smlaw_A1(al, R::R0, R::R1, R::R2, R::R3, false)
+            .encode()
+            .unwrap(),
+        le(0xE120_3281)
+    ); // smlawb  r0, r1, r2, r3
+    assert_eq!(
+        Smulw_A1(al, R::R0, R::R1, R::R2, true).encode().unwrap(),
+        le(0xE120_02E1)
+    ); // smulwt  r0, r1, r2
+    assert_eq!(
+        Smlal_Halfword_A1(al, R::R0, R::R1, R::R2, R::R3, false, false)
+            .encode()
+            .unwrap(),
+        le(0xE141_0382)
+    ); // smlalbb r0, r1, r2, r3
+    // dual / most-significant-word multiplies
+    assert_eq!(
+        Smlad_A1(al, R::R0, R::R1, R::R2, R::R3, false)
+            .encode()
+            .unwrap(),
+        le(0xE700_3211)
+    ); // smlad   r0, r1, r2, r3
+    assert_eq!(
+        Smuad_A1(al, R::R0, R::R1, R::R2, false).encode().unwrap(),
+        le(0xE700_F211)
+    ); // smuad   r0, r1, r2
+    assert_eq!(
+        Smusd_A1(al, R::R0, R::R1, R::R2, false).encode().unwrap(),
+        le(0xE700_F251)
+    ); // smusd   r0, r1, r2
+    assert_eq!(
+        Smmul_A1(al, R::R0, R::R1, R::R2, false).encode().unwrap(),
+        le(0xE750_F211)
+    ); // smmul   r0, r1, r2
+    assert_eq!(
+        Smmla_A1(al, R::R0, R::R1, R::R2, R::R3, false)
+            .encode()
+            .unwrap(),
+        le(0xE750_3211)
+    ); // smmla   r0, r1, r2, r3
+    assert_eq!(
+        Smmls_A1(al, R::R0, R::R1, R::R2, R::R3, false)
+            .encode()
+            .unwrap(),
+        le(0xE750_32D1)
+    ); // smmls   r0, r1, r2, r3
+    assert_eq!(
+        Smlald_A1(al, R::R0, R::R1, R::R2, R::R3, false)
+            .encode()
+            .unwrap(),
+        le(0xE741_0312)
+    ); // smlald  r0, r1, r2, r3
+}
+
+#[test]
+fn round_trip__a32_signed_multiply() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let instructions = [
+        Smla_A1(al, R::R0, R::R1, R::R2, R::R3, false, false),
+        Smla_A1(al, R::R0, R::R1, R::R2, R::R3, true, false),
+        Smla_A1(al, R::R0, R::R1, R::R2, R::R3, false, true),
+        Smla_A1(al, R::R0, R::R1, R::R2, R::R3, true, true),
+        Smlaw_A1(al, R::R4, R::R5, R::R6, R::R7, true),
+        Smulw_A1(al, R::R8, R::R9, R::R10, false),
+        Smlal_Halfword_A1(al, R::R0, R::R1, R::R2, R::R3, true, false),
+        Smul_A1(al, R::R0, R::R1, R::R2, false, true),
+        Smlad_A1(al, R::R0, R::R1, R::R2, R::R3, true),
+        Smuad_A1(al, R::R4, R::R5, R::R6, false),
+        Smlsd_A1(al, R::R0, R::R1, R::R2, R::R3, true),
+        Smusd_A1(al, R::R7, R::R8, R::R9, false),
+        Smmla_A1(al, R::R0, R::R1, R::R2, R::R3, true),
+        Smmul_A1(al, R::R4, R::R5, R::R6, false),
+        Smmls_A1(al, R::R0, R::R1, R::R2, R::R3, true),
+        Smlald_A1(al, R::R0, R::R1, R::R2, R::R3, true),
+        Smlsld_A1(Cond::NotEqual, R::R0, R::R1, R::R2, R::R3, false),
+    ];
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 signed-multiply round-trip mismatch"
+        );
+    }
+}
+
+// ---- A4: parallel (packed SIMD) add/sub + SEL ----
+
+#[test]
+fn encode__a32_parallel_and_sel_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(
+        ParallelAddSub_A1(al, POp::Add16, PPfx::Signed, R::R0, R::R1, R::R2)
+            .encode()
+            .unwrap(),
+        le(0xE611_0F12)
+    ); // sadd16  r0, r1, r2
+    assert_eq!(
+        ParallelAddSub_A1(al, POp::Sub8, PPfx::UnsignedSaturating, R::R3, R::R4, R::R5)
+            .encode()
+            .unwrap(),
+        le(0xE664_3FF5)
+    ); // uqsub8  r3, r4, r5
+    assert_eq!(
+        ParallelAddSub_A1(al, POp::Add8, PPfx::SignedHalving, R::R0, R::R1, R::R2)
+            .encode()
+            .unwrap(),
+        le(0xE631_0F92)
+    ); // shadd8  r0, r1, r2
+    assert_eq!(
+        ParallelAddSub_A1(al, POp::Asx, PPfx::Unsigned, R::R0, R::R1, R::R2)
+            .encode()
+            .unwrap(),
+        le(0xE651_0F32)
+    ); // uasx    r0, r1, r2
+    assert_eq!(
+        Sel_A1(al, R::R0, R::R1, R::R2).encode().unwrap(),
+        le(0xE681_0FB2)
+    ); // sel     r0, r1, r2
+}
+
+#[test]
+fn round_trip__a32_parallel_and_sel() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let ops = [
+        POp::Add16,
+        POp::Asx,
+        POp::Sax,
+        POp::Sub16,
+        POp::Add8,
+        POp::Sub8,
+    ];
+    let prefixes = [
+        PPfx::Signed,
+        PPfx::SignedSaturating,
+        PPfx::SignedHalving,
+        PPfx::Unsigned,
+        PPfx::UnsignedSaturating,
+        PPfx::UnsignedHalving,
+    ];
+    for op in ops {
+        for prefix in prefixes {
+            let instruction = ParallelAddSub_A1(al, op, prefix, R::R0, R::R1, R::R2);
+            let bytes = instruction.encode().unwrap();
+            let mut offset = 0;
+            let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+                .unwrap()
+                .unwrap();
+            assert_eq!(offset, 4, "decode consumed wrong byte count");
+            assert_eq!(
+                decoded, instruction,
+                "A32 parallel round-trip mismatch ({:?} {:?})",
+                op, prefix
+            );
+        }
+    }
+    let sel = Sel_A1(Cond::NotEqual, R::R3, R::R4, R::R5);
+    let bytes = sel.encode().unwrap();
+    let mut offset = 0;
+    assert_eq!(
+        ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap(),
+        sel,
+        "SEL round-trip mismatch"
+    );
+}
+
