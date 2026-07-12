@@ -1193,3 +1193,170 @@ fn t32_vmaxnm_vminnm() {
     }
 }
 
+// VRINTA/N/P/M (T32) -- ARMv8-M directed FP round to integral. Dual-oracle confirmed (arm-none-eabi-as
+// -march=armv8.1-m.main+fp.dp + llvm-mc -triple=thumbv8a).
+#[test]
+fn t32_vrint_directed() {
+    use Arm32DirectedRound::{A, M, N, P};
+    use ArmT32Instruction::*;
+    assert_eq!(
+        Vrint_Directed_Single_T1(A, s(0), s(1)).encode().unwrap(),
+        vec![0xb8, 0xfe, 0x60, 0x0a]
+    ); // vrinta.f32 s0, s1
+    assert_eq!(
+        Vrint_Directed_Single_T1(N, s(0), s(1)).encode().unwrap(),
+        vec![0xb9, 0xfe, 0x60, 0x0a]
+    ); // vrintn.f32
+    assert_eq!(
+        Vrint_Directed_Single_T1(P, s(0), s(1)).encode().unwrap(),
+        vec![0xba, 0xfe, 0x60, 0x0a]
+    ); // vrintp.f32
+    assert_eq!(
+        Vrint_Directed_Single_T1(M, s(0), s(1)).encode().unwrap(),
+        vec![0xbb, 0xfe, 0x60, 0x0a]
+    ); // vrintm.f32
+    assert_eq!(
+        Vrint_Directed_Double_T1(A, d(0), d(1)).encode().unwrap(),
+        vec![0xb8, 0xfe, 0x41, 0x0b]
+    ); // vrinta.f64 d0, d1
+    assert_eq!(
+        Vrint_Directed_Single_T1(A, s(0), s(1))
+            .to_assembly_string(crate::emit::ArmAssemblySyntax::Gnu),
+        "vrinta.f32 s0, s1"
+    );
+    assert_eq!(
+        Vrint_Directed_Double_T1(M, d(3), d(4))
+            .to_assembly_string(crate::emit::ArmAssemblySyntax::Gnu),
+        "vrintm.f64 d3, d4"
+    );
+    assert_eq!(
+        Vrint_Directed_Single_T1(A, s(0), s(1)).requirement(),
+        ArmInstructionRequirement::new(
+            ArmIsaVersion::Armv8MBaseline,
+            &[ArmCpuFeature::FloatingPoint]
+        )
+    );
+    for mode in [A, N, P, M] {
+        for (vd, vm) in [(0u8, 1), (5, 20), (31, 15)] {
+            round_trip(&Vrint_Directed_Single_T1(mode, s(vd), s(vm)));
+            round_trip(&Vrint_Directed_Double_T1(mode, d(vd), d(vm)));
+        }
+    }
+}
+
+#[test]
+fn t32_vrintz_vrintx() {
+    use ArmT32Instruction::*;
+    // Dual-oracle (arm-none-eabi-as -march=armv8.1-m.main+fp.dp -mthumb + llvm-mc -triple=thumbv8a):
+    assert_eq!(
+        Vrintz_Single_T1(s(3), s(4)).encode().unwrap(),
+        vec![0xf6, 0xee, 0xc2, 0x1a]
+    ); // vrintz.f32 s3, s4
+    assert_eq!(
+        Vrintz_Double_T1(d(3), d(4)).encode().unwrap(),
+        vec![0xb6, 0xee, 0xc4, 0x3b]
+    ); // vrintz.f64 d3, d4
+    assert_eq!(
+        Vrintx_Single_T1(s(3), s(4)).encode().unwrap(),
+        vec![0xf7, 0xee, 0x42, 0x1a]
+    ); // vrintx.f32 s3, s4
+    assert_eq!(
+        Vrintx_Double_T1(d(3), d(4)).encode().unwrap(),
+        vec![0xb7, 0xee, 0x44, 0x3b]
+    ); // vrintx.f64 d3, d4
+    assert_eq!(
+        Vrintz_Single_T1(s(3), s(4)).to_assembly_string(crate::emit::ArmAssemblySyntax::Gnu),
+        "vrintz.f32 s3, s4"
+    );
+    assert_eq!(
+        Vrintx_Double_T1(d(3), d(4)).to_assembly_string(crate::emit::ArmAssemblySyntax::Gnu),
+        "vrintx.f64 d3, d4"
+    );
+    assert_eq!(
+        Vrintz_Single_T1(s(3), s(4)).requirement(),
+        ArmInstructionRequirement::new(
+            ArmIsaVersion::Armv8MBaseline,
+            &[ArmCpuFeature::FloatingPoint]
+        )
+    );
+    for (vd, vm) in [(0u8, 1), (5, 20), (31, 15)] {
+        round_trip(&Vrintz_Single_T1(s(vd), s(vm)));
+        round_trip(&Vrintz_Double_T1(d(vd), d(vm)));
+        round_trip(&Vrintx_Single_T1(s(vd), s(vm)));
+        round_trip(&Vrintx_Double_T1(d(vd), d(vm)));
+    }
+}
+
+#[test]
+fn t32_vcvt_directed_fp_to_int() {
+    use Arm32DirectedRound::{A, M, N, P};
+    use ArmT32Instruction::*;
+    // Dual-oracle (arm-none-eabi-as -march=armv8.1-m.main+fp.dp -mthumb + llvm-mc -triple=thumbv8a):
+    assert_eq!(
+        Vcvt_Directed_FromSingle_T1(A, s(0), s(1), true)
+            .encode()
+            .unwrap(),
+        vec![0xbc, 0xfe, 0xe0, 0x0a]
+    ); // vcvta.s32.f32 s0, s1
+    assert_eq!(
+        Vcvt_Directed_FromSingle_T1(A, s(0), s(1), false)
+            .encode()
+            .unwrap(),
+        vec![0xbc, 0xfe, 0x60, 0x0a]
+    ); // vcvta.u32.f32 s0, s1
+    assert_eq!(
+        Vcvt_Directed_FromDouble_T1(A, s(0), d(1), true)
+            .encode()
+            .unwrap(),
+        vec![0xbc, 0xfe, 0xc1, 0x0b]
+    ); // vcvta.s32.f64 s0, d1
+    assert_eq!(
+        Vcvt_Directed_FromSingle_T1(N, s(2), s(3), true)
+            .encode()
+            .unwrap(),
+        vec![0xbd, 0xfe, 0xe1, 0x1a]
+    ); // vcvtn.s32.f32 s2, s3
+    assert_eq!(
+        Vcvt_Directed_FromSingle_T1(P, s(4), s(5), false)
+            .encode()
+            .unwrap(),
+        vec![0xbe, 0xfe, 0x62, 0x2a]
+    ); // vcvtp.u32.f32 s4, s5
+    assert_eq!(
+        Vcvt_Directed_FromDouble_T1(M, s(6), d(7), true)
+            .encode()
+            .unwrap(),
+        vec![0xbf, 0xfe, 0xc7, 0x3b]
+    ); // vcvtm.s32.f64 s6, d7
+    assert_eq!(
+        Vcvt_Directed_FromDouble_T1(M, s(8), d(9), false)
+            .encode()
+            .unwrap(),
+        vec![0xbf, 0xfe, 0x49, 0x4b]
+    ); // vcvtm.u32.f64 s8, d9
+    assert_eq!(
+        Vcvt_Directed_FromSingle_T1(A, s(0), s(1), true)
+            .to_assembly_string(crate::emit::ArmAssemblySyntax::Gnu),
+        "vcvta.s32.f32 s0, s1"
+    );
+    assert_eq!(
+        Vcvt_Directed_FromDouble_T1(M, s(8), d(9), false)
+            .to_assembly_string(crate::emit::ArmAssemblySyntax::Gnu),
+        "vcvtm.u32.f64 s8, d9"
+    );
+    assert_eq!(
+        Vcvt_Directed_FromSingle_T1(A, s(0), s(1), true).requirement(),
+        ArmInstructionRequirement::new(
+            ArmIsaVersion::Armv8MBaseline,
+            &[ArmCpuFeature::FloatingPoint]
+        )
+    );
+    for mode in [A, N, P, M] {
+        for signed in [true, false] {
+            for (vd, vm) in [(0u8, 1), (5, 20), (31, 15)] {
+                round_trip(&Vcvt_Directed_FromSingle_T1(mode, s(vd), s(vm), signed));
+                round_trip(&Vcvt_Directed_FromDouble_T1(mode, s(vd), d(vm), signed));
+            }
+        }
+    }
+}
