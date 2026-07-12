@@ -3,6 +3,7 @@
 #![cfg(test)]
 
 pub mod adc_instruction_tests;
+pub mod add_instruction_tests;
 pub mod adr_instruction_tests;
 pub mod and_instruction_tests;
 pub mod asr_instruction_tests;
