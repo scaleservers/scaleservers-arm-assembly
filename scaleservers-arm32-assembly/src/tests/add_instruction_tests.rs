@@ -130,3 +130,110 @@ fn decode__add_register_t2__register_to_register() {
     assert_eq!(iter_offset, encoded_instruction.len());
 }
 
+//
+
+#[test]
+fn encode__add_sp_plus_immediate_t1__immediate_to_register() {
+    // ADD r0, SP, #340
+    let instruction =
+        ArmT32Instruction::Add_SpPlusImmediate_T1(Arm32LowGeneralPurposeRegister::R0, 340);
+    //
+    let encoded_instruction = instruction.encode().ok().unwrap();
+    assert_eq!(encoded_instruction, vec![0x55, 0xA8]);
+}
+
+#[test]
+fn decode__add_sp_plus_immediate_t1__immediate_to_register() {
+    // ADD r0, SP, #340
+    let encoded_instruction = [0x55, 0xA8];
+    let verify_instruction =
+        ArmT32Instruction::Add_SpPlusImmediate_T1(Arm32LowGeneralPurposeRegister::R0, 340);
+    //
+    let mut iter_offset = 0;
+    let instruction = ArmT32Instruction::decode(&mut encoded_instruction.iter(), &mut iter_offset)
+        .ok()
+        .unwrap()
+        .unwrap();
+    assert_eq!(instruction, verify_instruction);
+    assert_eq!(iter_offset, encoded_instruction.len());
+}
+
+//
+
+#[test]
+fn encode__add_sp_plus_immediate_t2__immediate_to_sp() {
+    // ADD SP, SP, #340
+    let instruction = ArmT32Instruction::Add_SpPlusImmediate_T2(340);
+    //
+    let encoded_instruction = instruction.encode().ok().unwrap();
+    assert_eq!(encoded_instruction, vec![0x55, 0xB0]);
+}
+
+#[test]
+fn decode__add_sp_plus_immediate_t2__immediate_to_sp() {
+    // ADD SP, SP, #340
+    let encoded_instruction = [0x55, 0xB0];
+    let verify_instruction = ArmT32Instruction::Add_SpPlusImmediate_T2(340);
+    //
+    let mut iter_offset = 0;
+    let instruction = ArmT32Instruction::decode(&mut encoded_instruction.iter(), &mut iter_offset)
+        .ok()
+        .unwrap()
+        .unwrap();
+    assert_eq!(instruction, verify_instruction);
+    assert_eq!(iter_offset, encoded_instruction.len());
+}
+
+//
+
+#[test]
+fn encode__add_sp_plus_register_t1__register_and_sp_to_register() {
+    // ADD r0, SP, r0
+    let instruction = ArmT32Instruction::Add_SpPlusRegister_T1(Arm32GeneralPurposeRegister::R0);
+    //
+    let encoded_instruction = instruction.encode().ok().unwrap();
+    assert_eq!(encoded_instruction, vec![0x68, 0x44]);
+}
+
+#[test]
+fn decode__add_sp_plus_register_t1__register_and_sp_to_register() {
+    // ADD r0, SP, r0
+    let encoded_instruction = [0x68, 0x44];
+    let verify_instruction =
+        ArmT32Instruction::Add_SpPlusRegister_T1(Arm32GeneralPurposeRegister::R0);
+    //
+    let mut iter_offset = 0;
+    let instruction = ArmT32Instruction::decode(&mut encoded_instruction.iter(), &mut iter_offset)
+        .ok()
+        .unwrap()
+        .unwrap();
+    assert_eq!(instruction, verify_instruction);
+    assert_eq!(iter_offset, encoded_instruction.len());
+}
+
+//
+
+#[test]
+fn encode__add_sp_plus_register_t2__register_to_sp() {
+    // ADD SP, SP
+    let instruction = ArmT32Instruction::Add_SpPlusRegister_T1(Arm32GeneralPurposeRegister::R13);
+    //
+    let encoded_instruction = instruction.encode().ok().unwrap();
+    assert_eq!(encoded_instruction, vec![0xED, 0x44]);
+}
+
+#[test]
+fn decode__add_sp_plus_register_t2__register_to_sp() {
+    // ADD SP, SP
+    let encoded_instruction = [0xED, 0x44];
+    let verify_instruction =
+        ArmT32Instruction::Add_SpPlusRegister_T1(Arm32GeneralPurposeRegister::R13);
+    //
+    let mut iter_offset = 0;
+    let instruction = ArmT32Instruction::decode(&mut encoded_instruction.iter(), &mut iter_offset)
+        .ok()
+        .unwrap()
+        .unwrap();
+    assert_eq!(instruction, verify_instruction);
+    assert_eq!(iter_offset, encoded_instruction.len());
+}
