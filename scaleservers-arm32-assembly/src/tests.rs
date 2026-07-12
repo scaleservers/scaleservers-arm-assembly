@@ -66,4 +66,5 @@ pub mod coverage_tests;
 pub mod emit_tests;
 pub mod encode_error_tests;
 pub mod modified_immediate_tests;
+pub mod robustness_tests;
 pub mod targets_tests;
