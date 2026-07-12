@@ -4597,6 +4597,347 @@ impl ArmT32Instruction {
         Ok(convert_halfwords_to_u8_vec(&halfwords))
     }
 }
+impl ArmT32Instruction {
+
+    // What this instruction needs from the target processor to be emittable (minimum ISA version +
+    // extension features). The ARMv7-M (Thumb-2) forms report `Armv7M`; everything else is the ARMv6-M
+    // baseline (the `_` arm). This is what makes `encode_for_target(&ArmTargetProfile::armv6m())` reject a
+    // v7-M instruction with `UnsupportedInstructionForTarget`.
+    pub fn requirement(&self) -> ArmInstructionRequirement {
+        match self {
+            Self::Mov_Immediate_T3(..) |
+            Self::Movt_T1(..) |
+            Self::Mul_T2(..) |
+            Self::Mla_T1(..) |
+            Self::Mls_T1(..) |
+            Self::Sdiv_T1(..) |
+            Self::Udiv_T1(..) |
+            Self::Clz_T1(..) |
+            Self::Rbit_T1(..) |
+            Self::Ubfx_T1(..) |
+            Self::Sbfx_T1(..) |
+            Self::Bfi_T1(..) |
+            Self::Bfc_T1(..) |
+            Self::Ldr_Immediate_T3(..) |
+            Self::Str_Immediate_T3(..) |
+            Self::Ldrex_T1(..) |
+            Self::Strex_T1(..) |
+            Self::Ldrexb_T1(..) |
+            Self::Strexb_T1(..) |
+            Self::Ldrexh_T1(..) |
+            Self::Strexh_T1(..) |
+            Self::Clrex_T1 |
+            Self::Tbb_T1(..) |
+            Self::Tbh_T1(..) |
+            Self::Mov_Immediate_T2(..) |
+            Self::Mvn_Immediate_T1(..) |
+            Self::And_Immediate_T1(..) |
+            Self::Bic_Immediate_T1(..) |
+            Self::Orr_Immediate_T1(..) |
+            Self::Eor_Immediate_T1(..) |
+            Self::Add_Immediate_T3(..) |
+            Self::Sub_Immediate_T3(..) |
+            Self::Tst_Immediate_T1(..) |
+            Self::Teq_Immediate_T1(..) |
+            Self::Cmn_Immediate_T1(..) |
+            Self::Cmp_Immediate_T2(..) |
+            Self::Adc_Immediate_T1(..) |
+            Self::Sbc_Immediate_T1(..) |
+            Self::Rsb_Immediate_T2(..) |
+            Self::Orn_Immediate_T1(..) |
+            Self::Add_Register_T3(..) |
+            Self::Sub_Register_T2(..) |
+            Self::And_Register_T2(..) |
+            Self::Orr_Register_T2(..) |
+            Self::Eor_Register_T2(..) |
+            Self::Bic_Register_T2(..) |
+            Self::Mov_Register_T3(..) |
+            Self::Mvn_Register_T2(..) |
+            Self::Adc_Register_T2(..) |
+            Self::Sbc_Register_T2(..) |
+            Self::Rsb_Register_T1(..) |
+            Self::Orn_Register_T1(..) |
+            Self::Tst_Register_T2(..) |
+            Self::Teq_Register_T1(..) |
+            Self::Cmn_Register_T2(..) |
+            Self::Cmp_Register_T3(..) |
+            Self::Ldrb_Immediate_T2(..) |
+            Self::Strb_Immediate_T2(..) |
+            Self::Ldrh_Immediate_T2(..) |
+            Self::Strh_Immediate_T2(..) |
+            Self::Ldrsb_Immediate_T1(..) |
+            Self::Ldrsh_Immediate_T1(..) |
+            Self::Ldr_Register_T2(..) |
+            Self::Str_Register_T2(..) |
+            Self::Ldrb_Register_T2(..) |
+            Self::Strb_Register_T2(..) |
+            Self::Ldrh_Register_T2(..) |
+            Self::Strh_Register_T2(..) |
+            Self::Ldrsb_Register_T2(..) |
+            Self::Ldrsh_Register_T2(..) |
+            Self::Smull_T1(..) |
+            Self::Umull_T1(..) |
+            Self::Smlal_T1(..) |
+            Self::Umlal_T1(..) |
+            Self::Umaal_T1(..) |
+            Self::Sxtb_T2(..) |
+            Self::Uxtb_T2(..) |
+            Self::Sxth_T2(..) |
+            Self::Uxth_T2(..) |
+            Self::Rev_T2(..) |
+            Self::Rev16_T2(..) |
+            Self::Revsh_T2(..) |
+            Self::Ssat_T1(..) |
+            Self::Usat_T1(..) |
+            Self::Ldr_Immediate_T4(..) |
+            Self::Str_Immediate_T4(..) |
+            Self::Ldrb_Immediate_T3(..) |
+            Self::Strb_Immediate_T3(..) |
+            Self::Ldrh_Immediate_T3(..) |
+            Self::Strh_Immediate_T3(..) |
+            Self::Ldrsb_Immediate_T2(..) |
+            Self::Ldrsh_Immediate_T2(..) |
+            Self::Ldrd_Immediate_T1(..) |
+            Self::Strd_Immediate_T1(..) |
+            Self::Ldr_Literal_T2(..) |
+            Self::Ldrb_Literal_T1(..) |
+            Self::Ldrh_Literal_T1(..) |
+            Self::Ldrsb_Literal_T1(..) |
+            Self::Ldrsh_Literal_T1(..) |
+            Self::Pld_Immediate_T1(..) |
+            Self::Pli_Immediate_T1(..) |
+            Self::Ldmia_T2(..) |
+            Self::Stmia_T2(..) |
+            Self::Ldmdb_T1(..) |
+            Self::Stmdb_T1(..) |
+            Self::B_T4(..) |
+            Self::B_T3(..) |
+            Self::Cbz_T1(..) |
+            Self::Cbnz_T1(..) |
+            Self::It_T1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv7M, &[]),
+
+            // ---- ARMv7E-M DSP extension (Armv7EM + DspExtension) ----
+            Self::Qadd_T1(..) |
+            Self::Qsub_T1(..) |
+            Self::Qdadd_T1(..) |
+            Self::Qdsub_T1(..) |
+            Self::Sxtab_T1(..) |
+            Self::Uxtab_T1(..) |
+            Self::Sxtah_T1(..) |
+            Self::Uxtah_T1(..) |
+            Self::Sxtab16_T1(..) |
+            Self::Uxtab16_T1(..) |
+            Self::Sxtb16_T1(..) |
+            Self::Uxtb16_T1(..) |
+            Self::Pkhbt_T1(..) |
+            Self::Pkhtb_T1(..) |
+            Self::Ssat16_T1(..) |
+            Self::Usat16_T1(..) |
+            Self::Sel_T1(..) |
+            Self::Usad8_T1(..) |
+            Self::Usada8_T1(..) |
+            Self::ParallelAddSub_T1(..) |
+            Self::Smul_T1(..) |
+            Self::Smulw_T1(..) |
+            Self::Smla_T1(..) |
+            Self::Smlaw_T1(..) |
+            Self::Smlal_Halfword_T1(..) |
+            Self::Smuad_T1(..) |
+            Self::Smusd_T1(..) |
+            Self::Smlad_T1(..) |
+            Self::Smlsd_T1(..) |
+            Self::Smlald_T1(..) |
+            Self::Smlsld_T1(..) |
+            Self::Smmul_T1(..) |
+            Self::Smmla_T1(..) |
+            Self::Smmls_T1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv7EM, &[ArmCpuFeature::DspExtension]),
+
+            // ---- ARMv7E-M hardware floating-point (FloatingPoint feature) ----
+            Self::Vldr_Single_T2(..) |
+            Self::Vstr_Single_T2(..) |
+            Self::Vldr_Double_T1(..) |
+            Self::Vstr_Double_T1(..) |
+            Self::Vldm_Single_T2(..) |
+            Self::Vstm_Single_T2(..) |
+            Self::Vldm_Double_T1(..) |
+            Self::Vstm_Double_T1(..) |
+            Self::FldmdbxFstmdbx_T1(..) |
+            Self::FpDataProcess3_Single(..) |
+            Self::FpDataProcess3_Double(..) |
+            Self::FpDataProcess2_Single(..) |
+            Self::FpDataProcess2_Double(..) |
+            Self::Vcmp_Single_T1(..) |
+            Self::Vcmp_Double_T1(..) |
+            Self::Vcmp_Zero_Single_T2(..) |
+            Self::Vcmp_Zero_Double_T2(..) |
+            Self::Vmrs_T1(..) |
+            Self::Vmrs_Apsr_Nzcv_T1 |
+            Self::Vmsr_T1(..) |
+            Self::Vmov_Core_To_Single_T1(..) |
+            Self::Vmov_Single_To_Core_T1(..) |
+            Self::Vmov_Core_To_Scalar_T1(..) |
+            Self::Vmov_Scalar_To_Core_T1(..) |
+            Self::Vcvt_FloatToInt_FromSingle_T1(..) |
+            Self::Vcvt_FloatToInt_FromDouble_T1(..) |
+            Self::Vcvt_IntToFloat_ToSingle_T1(..) |
+            Self::Vcvt_IntToFloat_ToDouble_T1(..) |
+            Self::Vcvt_Single_To_Double_T1(..) |
+            Self::Vcvt_Double_To_Single_T1(..) |
+            Self::Vmov_Immediate_Single_T1(..) |
+            Self::Vmov_Immediate_Double_T1(..) |
+            Self::Vmov_CorePair_To_Double_T1(..) |
+            Self::Vmov_Double_To_CorePair_T1(..) |
+            Self::Vmov_CorePair_To_Singles_T1(..) |
+            Self::Vmov_Singles_To_CorePair_T1(..) |
+            Self::Vcvt_HalfToSingle_T1(..) |
+            Self::Vcvt_SingleToHalf_T1(..) |
+            Self::Vcvt_FloatToFixed_Single_T1(..) |
+            Self::Vcvt_FloatToFixed_Double_T1(..) |
+            Self::Vcvt_FixedToFloat_Single_T1(..) |
+            Self::Vcvt_FixedToFloat_Double_T1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv7M, &[ArmCpuFeature::FloatingPoint]),
+
+            // CSDB is a 32-bit hint (Thumb-2); it executes as a NOP on cores without speculation, so it only
+            // needs the ARMv7-M 32-bit encoding space.
+            Self::Csdb_T1 => ArmInstructionRequirement::new(ArmIsaVersion::Armv7M, &[]),
+            // ARMv8-M Security Extension (TrustZone-M): the v8-M baseline plus the Security feature.
+            Self::Sg_T1 | Self::Bxns_T1(..) | Self::Blxns_T1(..) | Self::Tt_T1(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8MBaseline, &[ArmCpuFeature::Security]),
+            // lazy FP state save/restore additionally needs an FPU and the Mainline profile.
+            Self::Vlstm_T1(..) | Self::Vlldm_T1(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8MMainline, &[ArmCpuFeature::Security, ArmCpuFeature::FloatingPoint]),
+
+            // ARMv8.1-M MVE (Helium): the integer/bitwise vector forms need the MVE feature; the
+            // floating-point vector forms additionally need the MVE floating-point option.
+            Self::MveIntArith(..) | Self::MveBitwise(..) | Self::MveVecScalarInt(..) | Self::MveVdup(..)
+            | Self::MveShiftImm(..) | Self::MveMisc2(..) | Self::MveMvnRegister(..) | Self::MveLoadStore(..) | Self::MveGatherScatter(..) | Self::MveGatherScatterBase(..) | Self::MveInterleave(..)
+            | Self::MveReduce(..) | Self::MveVabav(..) | Self::MveDualMac(..) | Self::MveLongDualMac(..) | Self::MveVmovl(..) | Self::MveVmovn(..) | Self::MveVqmovn(..) | Self::MveVaddlv(..)
+            | Self::MveVmull(..) | Self::MveVmulh(..) | Self::MveVqdmull(..) | Self::MveVqdmullScalar(..) | Self::MveVqdmladh(..)
+            | Self::MveShiftByVector(..) | Self::MveShiftByScalar(..) | Self::MveVshll(..)
+            | Self::MveVcaddInt(..) | Self::MveVpsel(..) | Self::MveVpnot | Self::MveVpst(..)
+            | Self::MveVadc(..) | Self::MveVshlc(..) | Self::MveViddup(..) | Self::MveVbrsr(..) | Self::MveShiftNarrow(..)
+            | Self::MveVcmpReg(..) | Self::MveVcmpScalar(..) | Self::MveVptReg(..) | Self::MveVptScalar(..)
+            | Self::MveVmaxaMina(..) | Self::MveVmovTwoLane(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8_1MMainline, &[ArmCpuFeature::Mve]),
+            Self::MveVcaddFloat(..) | Self::MveVcmul(..) | Self::MveVcmla(..)
+            | Self::MveVcmpFloatReg(..) | Self::MveVcmpFloatScalar(..) | Self::MveVptFloatReg(..) | Self::MveVptFloatScalar(..)
+            | Self::MveFloatReduce(..) | Self::MveVcvtRound(..) | Self::MveVcvtFixed(..) | Self::MveVcvtHalf(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8_1MMainline, &[ArmCpuFeature::Mve, ArmCpuFeature::MveFloat]),
+            Self::MveMisc2Float(..) | Self::MveVmaxnmaMinnma(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8_1MMainline, &[ArmCpuFeature::Mve, ArmCpuFeature::MveFloat]),
+            Self::MveFloatArith(..) | Self::MveVecScalarFloat(..) | Self::MveVrint(..) | Self::MveVcvtFloatInt(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8_1MMainline, &[ArmCpuFeature::Mve, ArmCpuFeature::MveFloat]),
+            // the modified immediate is integer MVE, except VMOV.f32 (cmode 0b1111, op=0) which needs MVE FP.
+            Self::MveModifiedImmediate(0b1111, false, _, _) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8_1MMainline, &[ArmCpuFeature::Mve, ArmCpuFeature::MveFloat]),
+            Self::MveModifiedImmediate(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8_1MMainline, &[ArmCpuFeature::Mve]),
+            // low-overhead loops: the plain DLS/WLS/LE need only the Armv8.1-M Low-Overhead-Branch extension;
+            // the tail-predicated DLSTP/WLSTP/LETP and VCTP/LCTP need MVE.
+            Self::LobStart(_, Some(_), _, _) | Self::LobEnd(true, _) | Self::Lctp | Self::MveVctp(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8_1MMainline, &[ArmCpuFeature::Mve]),
+            Self::LobStart(_, None, _, _) | Self::LobEnd(false, _) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8_1MMainline, &[]),
+            // VMOVX/VINS are the Armv8.1-M half-precision FP move-extract/insert (need an FPU, not MVE).
+            Self::Vmovx_T1(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8_1MMainline, &[ArmCpuFeature::FloatingPoint]),
+            // ARMv8-M load-acquire / store-release (LDA/STL + exclusive variants).
+            Self::LoadAcquire_T1(..) | Self::StoreRelease_T1(..) | Self::StoreReleaseExclusive_T1(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8MBaseline, &[]),
+            // Unprivileged load/store (LDRT/STRT family) -- ARMv7-M 32-bit encodings.
+            Self::UnprivLoadStore_T1(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv7M, &[]),
+            // Generic coprocessor instructions -- ARMv7-M 32-bit encodings.
+            Self::Coproc_Mcr_T1(..) | Self::Coproc_Cdp_T1(..) | Self::Coproc_Mcrr_T1(..) | Self::Coproc_Ldc_T1(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv7M, &[]),
+            // PACBTI (pointer authentication / branch target identification) -- ARMv8.1-M extension.
+            Self::PacbtiHint_T1(..) | Self::PacbtiData_T1(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8_1MMainline, &[]),
+            // VSCCLRM -- ARMv8.1-M Security Extension + an FPU/MVE register file.
+            Self::Vscclrm_T1(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8_1MMainline, &[ArmCpuFeature::FloatingPoint]),
+            // CDE custom datapath (the CX1/CX2/CX3 GPR forms) -- ARMv8-M Custom Datapath Extension.
+            Self::Cde_Cx1_T1(..) | Self::Cde_Cx2_T1(..) | Self::Cde_Cx3_T1(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8MBaseline, &[]),
+            // Branch Future (BF/BFL/BFX/BFLX/BFCSEL) -- Armv8.1-M Low Overhead Branch extension (no MVE needed).
+            Self::Bf_T1(..) | Self::Bfl_T4(..) | Self::Bfx_T3(..) | Self::Bflx_T5(..) | Self::Bfcsel_T2(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8_1MMainline, &[]),
+            // CDE VCX1/2/3 -- the Custom Datapath Extension with an FP/vector register file. The vector (Q) form
+            // (kind==2) needs MVE; the scalar S/D forms need a floating-point unit.
+            Self::Vcx1_T1(_, 2, ..) | Self::Vcx2_T1(_, 2, ..) | Self::Vcx3_T1(_, 2, ..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8MBaseline, &[ArmCpuFeature::Mve]),
+            Self::Vcx1_T1(..) | Self::Vcx2_T1(..) | Self::Vcx3_T1(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8MBaseline, &[ArmCpuFeature::FloatingPoint]),
+            // Batch 9 hints/barriers/CLRM/VSEL.
+            Self::Dbg_T1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv7M, &[]),
+            Self::Esb_T1 | Self::Ssbb_T1 | Self::Pssbb_T1 | Self::Sb_T1 | Self::Clrm_T1(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8MBaseline, &[]),
+            Self::Vsel_Single_T1(..) | Self::Vsel_Double_T1(..) | Self::Vrintr_Single_T1(..) | Self::Vrintr_Double_T1(..)
+            | Self::Vmaxnm_Single_T1(..) | Self::Vmaxnm_Double_T1(..) | Self::Vminnm_Single_T1(..) | Self::Vminnm_Double_T1(..)
+            | Self::Vrint_Directed_Single_T1(..) | Self::Vrint_Directed_Double_T1(..)
+            | Self::Vrintz_Single_T1(..) | Self::Vrintz_Double_T1(..) | Self::Vrintx_Single_T1(..) | Self::Vrintx_Double_T1(..)
+            | Self::Vcvt_Directed_FromSingle_T1(..) | Self::Vcvt_Directed_FromDouble_T1(..)
+            | Self::Vjcvt_T1(..) => // VJCVT needs FEAT_JSCVT; no finer gate in the model than the v8-M FP group.
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8MBaseline, &[ArmCpuFeature::FloatingPoint]),
+            // ARMv8.1-M conditional select (CSEL/CSINC/CSINV/CSNEG and the CSET/CINC/... aliases).
+            Self::Csel_T1(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8_1MMainline, &[]),
+            // 64-bit long shifts and the saturating/rounding scalar shifts -- MVE scalar-shift extension.
+            Self::LongShiftImm_T1(..) | Self::LongShiftReg_T1(..)
+            | Self::SatShiftImm_T1(..) | Self::SatShiftLongImm_T1(..) | Self::SatShiftReg_T1(..) | Self::SatShiftLongReg_T1(..) =>
+                ArmInstructionRequirement::new(ArmIsaVersion::Armv8_1MMainline, &[ArmCpuFeature::Mve]),
+
+            _ => ArmInstructionRequirement::baseline(),
+        }
+    }
+
+    // For an IT instruction, the condition that applies to each of its N (1..=4) member instructions:
+    // slot 1 is `firstcond`; a later slot is `firstcond` when its mask bit equals firstcond[0] (a "then"),
+    // otherwise the inverse condition (an "else"). Returns None for any non-IT instruction. The
+    // disassembler uses this to apply the right `<c>` suffix to the instructions that follow an IT.
+    pub fn it_block_member_conditions(&self) -> Option<Vec<ArmT32InstructionCondition>> {
+        let (firstcond, mask) = match self {
+            Self::It_T1(firstcond, mask) => (*firstcond, *mask),
+            _ => return None,
+        };
+        let firstcond_low_bit = firstcond.as_operand_bits() & 1;
+        let inverse = ArmT32InstructionCondition::from_operand_bits(firstcond.as_operand_bits() ^ 1);
+        let length = 4 - mask.trailing_zeros() as usize; // 1..=4
+        let mut conditions = vec![firstcond];
+        for slot in 2..=length {
+            let bit = (mask >> (5 - slot)) & 1;
+            conditions.push(if bit == firstcond_low_bit { firstcond } else { inverse });
+        }
+        Some(conditions)
+    }
+
+    /// If this instruction opens a VPT/VPST predicate block, the then/else (`t`/`e`) letter for each of the
+    /// instructions that follow it, in order. The disassembler appends these to the member mnemonics, and the
+    /// assembler uses them to strip a predication suffix (the predicated and plain encodings are identical).
+    pub fn vpt_block_member_suffixes(&self) -> Option<Vec<char>> {
+        let mask = match self {
+            Self::MveVpst(mask) => *mask,
+            Self::MveVptReg(.., mask) | Self::MveVptScalar(.., mask)
+            | Self::MveVptFloatReg(.., mask) | Self::MveVptFloatScalar(.., mask) => *mask,
+            _ => return None,
+        };
+        Some(mve_predicate_mask_suffix(mask).chars().collect())
+    }
+
+    /// Encode this instruction, but first verify `target_profile` actually supports it. The bytes
+    /// themselves are target-independent (a Thumb encoding is fixed), so [`encode`](Self::encode) stays
+    /// pure and this guarded path sits beside it for a compiler backend to use. Returns [`EncodeError`] if
+    /// the target lacks the required architecture version or extension.
+    pub fn encode_for_target(&self, target_profile: &ArmTargetProfile) -> Result<Vec<u8>, EncodeError> {
+        let requirement = self.requirement();
+        if !target_profile.supports(&requirement) {
+            return Err(EncodeError::UnsupportedInstructionForTarget {
+                required: requirement,
+                target_isa_version: target_profile.isa_version(),
+            });
+        }
+        self.encode()
+    }
+}
 
 //
 
