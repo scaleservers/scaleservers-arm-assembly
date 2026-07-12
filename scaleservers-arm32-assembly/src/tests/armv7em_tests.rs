@@ -585,3 +585,189 @@ fn round_trip__m8g_fp_load_store_multiple() {
     )); // vpop {d0-d3}
 }
 
+#[test]
+fn encode__m8h_fp_data_processing_exact_bytes() {
+    use crate::{ArmT32FpDataOperation2 as Op2, ArmT32FpDataOperation3 as Op3};
+    // bytes verified against `clang --target=thumbv7em-none-eabi -mcpu=cortex-m7 -mfpu=fpv5-d16`
+    assert_eq!(
+        ArmT32Instruction::FpDataProcess3_Single(Op3::Vadd, s(0), s(1), s(2))
+            .encode()
+            .unwrap(),
+        vec![0x30, 0xEE, 0x81, 0x0A]
+    ); // vadd.f32 s0, s1, s2
+    assert_eq!(
+        ArmT32Instruction::FpDataProcess3_Single(Op3::Vsub, s(3), s(4), s(5))
+            .encode()
+            .unwrap(),
+        vec![0x72, 0xEE, 0x62, 0x1A]
+    ); // vsub.f32 s3, s4, s5
+    assert_eq!(
+        ArmT32Instruction::FpDataProcess3_Single(Op3::Vmul, s(6), s(7), s(8))
+            .encode()
+            .unwrap(),
+        vec![0x23, 0xEE, 0x84, 0x3A]
+    ); // vmul.f32 s6, s7, s8
+    assert_eq!(
+        ArmT32Instruction::FpDataProcess3_Single(Op3::Vdiv, s(9), s(10), s(11))
+            .encode()
+            .unwrap(),
+        vec![0xC5, 0xEE, 0x25, 0x4A]
+    ); // vdiv.f32 s9, s10, s11
+    assert_eq!(
+        ArmT32Instruction::FpDataProcess3_Single(Op3::Vfma, s(0), s(1), s(2))
+            .encode()
+            .unwrap(),
+        vec![0xA0, 0xEE, 0x81, 0x0A]
+    ); // vfma.f32 s0, s1, s2
+    assert_eq!(
+        ArmT32Instruction::FpDataProcess2_Single(Op2::Vabs, s(0), s(1))
+            .encode()
+            .unwrap(),
+        vec![0xB0, 0xEE, 0xE0, 0x0A]
+    ); // vabs.f32 s0, s1
+    assert_eq!(
+        ArmT32Instruction::FpDataProcess2_Single(Op2::Vneg, s(3), s(4))
+            .encode()
+            .unwrap(),
+        vec![0xF1, 0xEE, 0x42, 0x1A]
+    ); // vneg.f32 s3, s4
+    assert_eq!(
+        ArmT32Instruction::FpDataProcess2_Single(Op2::Vmov, s(10), s(11))
+            .encode()
+            .unwrap(),
+        vec![0xB0, 0xEE, 0x65, 0x5A]
+    ); // vmov.f32 s10, s11
+    assert_eq!(
+        ArmT32Instruction::FpDataProcess3_Double(Op3::Vadd, d(0), d(1), d(2))
+            .encode()
+            .unwrap(),
+        vec![0x31, 0xEE, 0x02, 0x0B]
+    ); // vadd.f64 d0, d1, d2
+    assert_eq!(
+        ArmT32Instruction::FpDataProcess2_Double(Op2::Vabs, d(6), d(7))
+            .encode()
+            .unwrap(),
+        vec![0xB0, 0xEE, 0xC7, 0x6B]
+    ); // vabs.f64 d6, d7
+    assert_eq!(
+        ArmT32Instruction::FpDataProcess2_Double(Op2::Vmov, d(10), d(11))
+            .encode()
+            .unwrap(),
+        vec![0xB0, 0xEE, 0x4B, 0xAB]
+    ); // vmov.f64 d10, d11
+}
+
+#[test]
+fn round_trip__m8h_fp_data_processing() {
+    use crate::{ArmT32FpDataOperation2 as Op2, ArmT32FpDataOperation3 as Op3};
+    let ops3 = [
+        Op3::Vmla,
+        Op3::Vmls,
+        Op3::Vnmla,
+        Op3::Vnmls,
+        Op3::Vmul,
+        Op3::Vnmul,
+        Op3::Vadd,
+        Op3::Vsub,
+        Op3::Vdiv,
+        Op3::Vfnma,
+        Op3::Vfnms,
+        Op3::Vfma,
+        Op3::Vfms,
+    ];
+    for op in ops3 {
+        round_trip(&ArmT32Instruction::FpDataProcess3_Single(
+            op,
+            s(1),
+            s(20),
+            s(31),
+        ));
+        round_trip(&ArmT32Instruction::FpDataProcess3_Double(
+            op,
+            d(1),
+            d(10),
+            d(15),
+        ));
+    }
+    for op in [Op2::Vmov, Op2::Vabs, Op2::Vneg, Op2::Vsqrt] {
+        round_trip(&ArmT32Instruction::FpDataProcess2_Single(op, s(5), s(30)));
+        round_trip(&ArmT32Instruction::FpDataProcess2_Double(op, d(5), d(14)));
+    }
+}
+
+#[test]
+fn encode__m8i_fp_compare_move_exact_bytes() {
+    // bytes verified against `clang --target=thumbv7em-none-eabi -mcpu=cortex-m7 -mfpu=fpv5-d16`
+    assert_eq!(
+        ArmT32Instruction::Vcmp_Single_T1(s(0), s(1), false)
+            .encode()
+            .unwrap(),
+        vec![0xB4, 0xEE, 0x60, 0x0A]
+    ); // vcmp.f32  s0, s1
+    assert_eq!(
+        ArmT32Instruction::Vcmp_Single_T1(s(2), s(3), true)
+            .encode()
+            .unwrap(),
+        vec![0xB4, 0xEE, 0xE1, 0x1A]
+    ); // vcmpe.f32 s2, s3
+    assert_eq!(
+        ArmT32Instruction::Vcmp_Zero_Single_T2(s(4), false)
+            .encode()
+            .unwrap(),
+        vec![0xB5, 0xEE, 0x40, 0x2A]
+    ); // vcmp.f32  s4, #0
+    assert_eq!(
+        ArmT32Instruction::Vcmp_Double_T1(d(0), d(1), false)
+            .encode()
+            .unwrap(),
+        vec![0xB4, 0xEE, 0x41, 0x0B]
+    ); // vcmp.f64  d0, d1
+    assert_eq!(
+        ArmT32Instruction::Vcmp_Zero_Double_T2(d(2), false)
+            .encode()
+            .unwrap(),
+        vec![0xB5, 0xEE, 0x40, 0x2B]
+    ); // vcmp.f64  d2, #0
+    assert_eq!(
+        ArmT32Instruction::Vmrs_Apsr_Nzcv_T1.encode().unwrap(),
+        vec![0xF1, 0xEE, 0x10, 0xFA]
+    ); // vmrs APSR_nzcv, fpscr
+    assert_eq!(
+        ArmT32Instruction::Vmrs_T1(R::R0).encode().unwrap(),
+        vec![0xF1, 0xEE, 0x10, 0x0A]
+    ); // vmrs r0, fpscr
+    assert_eq!(
+        ArmT32Instruction::Vmsr_T1(R::R1).encode().unwrap(),
+        vec![0xE1, 0xEE, 0x10, 0x1A]
+    ); // vmsr fpscr, r1
+    assert_eq!(
+        ArmT32Instruction::Vmov_Core_To_Single_T1(s(0), R::R1)
+            .encode()
+            .unwrap(),
+        vec![0x00, 0xEE, 0x10, 0x1A]
+    ); // vmov s0, r1
+    assert_eq!(
+        ArmT32Instruction::Vmov_Single_To_Core_T1(R::R2, s(3))
+            .encode()
+            .unwrap(),
+        vec![0x11, 0xEE, 0x90, 0x2A]
+    ); // vmov r2, s3
+}
+
+#[test]
+fn round_trip__m8i_fp_compare_move() {
+    for e in [false, true] {
+        round_trip(&ArmT32Instruction::Vcmp_Single_T1(s(10), s(20), e));
+        round_trip(&ArmT32Instruction::Vcmp_Double_T1(d(5), d(10), e));
+        round_trip(&ArmT32Instruction::Vcmp_Zero_Single_T2(s(31), e));
+        round_trip(&ArmT32Instruction::Vcmp_Zero_Double_T2(d(15), e));
+    }
+    round_trip(&ArmT32Instruction::Vmrs_T1(R::R7));
+    round_trip(&ArmT32Instruction::Vmrs_Apsr_Nzcv_T1);
+    round_trip(&ArmT32Instruction::Vmsr_T1(R::R12));
+    for number in [0u8, 1, 15, 30, 31] {
+        round_trip(&ArmT32Instruction::Vmov_Core_To_Single_T1(s(number), R::R3));
+        round_trip(&ArmT32Instruction::Vmov_Single_To_Core_T1(R::R4, s(number)));
+    }
+}
+
