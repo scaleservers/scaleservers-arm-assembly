@@ -2229,7 +2229,7 @@ impl ArmT32Instruction {
                         return Ok(Some(Self::Sub_Immediate_T3(rd_reg, rn_reg, constant, set_flags)));
                     },
                     0b1110 => return Ok(Some(Self::Rsb_Immediate_T2(rd_reg, rn_reg, constant, set_flags))),
-                    _ => (), // unallocated op4: not modeled -> InvalidOpcode
+                    _ => (), // unallocated op4 -> InvalidOpcode
                 }
             }
 

@@ -127,4 +127,10 @@ pub use arm32_instruction::{Arm32Instruction, ArmInstructionSet};
 pub mod floating_point_immediate;
 pub use floating_point_immediate::{vfp_expand_imm8_to_f32, vfp_expand_imm8_to_f64, vfp_encode_f64_to_imm8};
 
+// Assembly-string emission (model -> UAL text). Adds `to_assembly_string` / `to_assembly_string_at`
+// inherent methods to ArmT32Instruction; the disassembler renders through this layer. `ArmAssemblySyntax`
+// selects LLVM- or GNU-flavored formatting.
+pub mod emit;
+pub use emit::ArmAssemblySyntax;
+
 mod utils;
