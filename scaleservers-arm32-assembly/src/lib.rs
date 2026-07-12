@@ -120,6 +120,9 @@ pub use armt32_instruction::ArmT32Instruction;
 mod arma32_instruction;
 pub use arma32_instruction::ArmA32Instruction;
 
+mod arm32_instruction;
+pub use arm32_instruction::{Arm32Instruction, ArmInstructionSet};
+
 // The VFP modified-immediate codec for VMOV (immediate).
 pub mod floating_point_immediate;
 pub use floating_point_immediate::{vfp_expand_imm8_to_f32, vfp_expand_imm8_to_f64, vfp_encode_f64_to_imm8};
