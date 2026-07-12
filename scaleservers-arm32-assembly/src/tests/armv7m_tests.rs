@@ -816,3 +816,75 @@ fn round_trip__armv7m_branches() {
     }
 }
 
+#[test]
+fn encode__armv7m_it_blocks_exact_bytes_round_trip_and_members() {
+    use Cond::*;
+    // (instruction, exact bytes verified against clang, the per-slot member conditions)
+    let cases = [
+        (
+            ArmT32Instruction::It_T1(Equal, 0x8),
+            vec![0x08, 0xBF],
+            vec![Equal],
+        ), // it    eq
+        (
+            ArmT32Instruction::It_T1(NotEqual, 0xC),
+            vec![0x1C, 0xBF],
+            vec![NotEqual, NotEqual],
+        ), // itt   ne
+        (
+            ArmT32Instruction::It_T1(SignedGreaterThan, 0xC),
+            vec![0xCC, 0xBF],
+            vec![SignedGreaterThan, SignedLessThanOrEqual],
+        ), // ite   gt
+        (
+            ArmT32Instruction::It_T1(CarrySet, 0x6),
+            vec![0x26, 0xBF],
+            vec![CarrySet, CarrySet, CarryClear],
+        ), // itte  cs
+        (
+            ArmT32Instruction::It_T1(MinusNegative, 0x9),
+            vec![0x49, 0xBF],
+            vec![
+                MinusNegative,
+                PlusPositiveOrZero,
+                MinusNegative,
+                MinusNegative,
+            ],
+        ), // itett mi
+    ];
+    for (instruction, bytes, members) in cases {
+        assert_eq!(instruction.encode().unwrap(), bytes, "encode mismatch");
+        let mut offset = 0;
+        let decoded = ArmT32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 2);
+        assert_eq!(decoded, instruction, "IT round-trip mismatch");
+        assert_eq!(
+            instruction.it_block_member_conditions().unwrap(),
+            members,
+            "member conditions mismatch"
+        );
+    }
+    // a non-IT instruction has no member conditions
+    assert_eq!(ArmT32Instruction::Nop_T1.it_block_member_conditions(), None);
+}
+
+#[test]
+fn encode__modified_immediate_not_representable_errors() {
+    // 0x12345678 is not a Thumb modified immediate (no byte form, no single rotated byte)
+    assert_eq!(
+        ArmT32Instruction::Mov_Immediate_T2(R::R0, 0x12345678, false).encode(),
+        Err(EncodeError::ModifiedImmediateNotEncodable {
+            field: "const",
+            value: 0x12345678
+        })
+    );
+    // a representable boundary still succeeds (smallest non-byte: 0x00010001)
+    assert!(
+        ArmT32Instruction::Mov_Immediate_T2(R::R0, 0x00010001, false)
+            .encode()
+            .is_ok()
+    );
+}
+
