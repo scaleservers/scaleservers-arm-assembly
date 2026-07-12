@@ -132,3 +132,93 @@ fn a32_decode_never_panics_on_random_bytes() {
     }
 }
 
+// Bootstrap a corpus of REAL encodings by decoding random words and keeping the canonical re-encoding of
+// whatever decodes -- no hardcoded byte tables, and it naturally covers the whole space the decoder reaches.
+fn gather_corpus(count: usize, t32: bool) -> Vec<Vec<u8>> {
+    let mut prng = Prng(if t32 { 0xC0DE_7032 } else { 0xC0DE_A032 });
+    let mut corpus = Vec::new();
+    let mut guard = 0;
+    while corpus.len() < count && guard < count * 10_000 {
+        guard += 1;
+        let bytes: Vec<u8> = (0..4).map(|_| prng.byte()).collect();
+        let mut iter = bytes.iter();
+        let mut offset = 0usize;
+        let encoded = if t32 {
+            ArmT32Instruction::decode(&mut iter, &mut offset)
+                .ok()
+                .flatten()
+                .and_then(|i| i.encode().ok())
+        } else {
+            ArmA32Instruction::decode(&mut iter, &mut offset)
+                .ok()
+                .flatten()
+                .and_then(|i| i.encode().ok())
+        };
+        if let Some(encoded) = encoded {
+            corpus.push(encoded);
+        }
+    }
+    corpus
+}
+
+// Regression corpus: exact inputs the cargo-fuzz campaign (`fuzz/`) flagged, kept here so they re-run on the
+// stable toolchain in normal `cargo test`. Each must satisfy the same sweep contract (never panic; any
+// re-encodable instruction is an encode/decode fixed point).
+#[test]
+fn regression_fuzz_found_inputs() {
+    // crash-8bf72b... (t32_instruction_stream): LDC2 p0 <-> VCX3 both encoded to 0xFD94_0000 (cp0-7 = CDE space).
+    sweep_t32(&[
+        0x00, 0x9f, 0xec, 0x6b, 0x00, 0x9f, 0x00, 0x9f, 0x14, 0xfd, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x04, 0xec, 0x20, 0x0a,
+    ]);
+    // a32_instruction_stream crashes: a barrier-option / FP-range emit panic, and a NEON narrowing-shift with
+    // an out-of-range amount (L:imm6 past the >=8 gate) that re-encoded into the modified-immediate space.
+    sweep_a32(&[
+        0x86, 0x67, 0x86, 0xf2, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc, 0xdc,
+        0xdc, 0xdc, 0x08, 0xc1, 0xf2, 0xb2, 0xb1, 0xb1, 0xdc,
+    ]);
+
+    // Additional inputs the later (post-fix) campaigns surfaced and which the current code already survives --
+    // pinned here so the fixes stay pinned on the STABLE toolchain too (the cargo-fuzz corpus is nightly-only
+    // and not committed). Each must satisfy the same never-panic / encode-decode fixed-point contract.
+    sweep_t32(&[
+        0x00, 0x29, 0x70, 0x3b, 0xec, 0x20, 0x80, 0x80, 0xad, 0xf3, 0x0a, 0x00, 0x00, 0x9f, 0xec,
+        0xec, 0x80, 0x00, 0x0a, 0x9f, 0x20, 0x00, 0x9f, 0xec, 0xec, 0xea, 0x04, 0x0a,
+    ]);
+    sweep_t32(&[0x45, 0x8f, 0xbf, 0xf3, 0x45, 0x8f, 0xbf, 0xf3]);
+    sweep_a32(&[
+        0xf1, 0x2a, 0x87, 0xf3, 0x30, 0xf0, 0x10, 0x6b, 0x59, 0x0e, 0xbf, 0x6b, 0x6b, 0x2a, 0x7b,
+        0x1e,
+    ]);
+}
+
+#[test]
+fn mutated_valid_instructions_never_panic() {
+    // Near-valid input is where decoders are most fragile, so take real encodings and hit each with every
+    // single-byte corruption (three replacements) and every truncation -- decode + emit + re-encode of the
+    // result must still never panic.
+    let mut prng = Prng(0x5EED_3333);
+    for (corpus, t32) in [
+        (gather_corpus(MUTATION_CORPUS_SIZE, true), true),
+        (gather_corpus(MUTATION_CORPUS_SIZE, false), false),
+    ] {
+        let sweep = if t32 {
+            sweep_t32 as fn(&[u8])
+        } else {
+            sweep_a32 as fn(&[u8])
+        };
+        for seed in &corpus {
+            for position in 0..seed.len() {
+                for replacement in [0x00u8, 0xFF, prng.byte()] {
+                    let mut mutated = seed.clone();
+                    mutated[position] = replacement;
+                    sweep(&mutated);
+                }
+            }
+            for length in 0..=seed.len() {
+                sweep(&seed[..length]);
+            }
+        }
+    }
+}
+
