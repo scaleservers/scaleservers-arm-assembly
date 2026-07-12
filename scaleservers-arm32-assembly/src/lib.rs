@@ -115,6 +115,11 @@ pub use arm32_decode_context::ArmDecodeContext;
 mod armt32_instruction;
 pub use armt32_instruction::ArmT32Instruction;
 
+// A32 ("ARM" state) -- the sibling instruction set to T32, kept as a SEPARATE type so a compiler backend
+// cannot mix the two sets within one code stream. `Arm32Instruction` is the interworking union of both.
+mod arma32_instruction;
+pub use arma32_instruction::ArmA32Instruction;
+
 // The VFP modified-immediate codec for VMOV (immediate).
 pub mod floating_point_immediate;
 pub use floating_point_immediate::{vfp_expand_imm8_to_f32, vfp_expand_imm8_to_f64, vfp_encode_f64_to_imm8};

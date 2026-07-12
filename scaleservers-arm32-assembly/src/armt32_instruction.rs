@@ -2948,8 +2948,6 @@ impl ArmT32Instruction {
         // if we could not match against any known opcode, return an invalid opcode error; the iter_offset value will indicate the new index in the iterator
         Err(DecodeError::InvalidOpcode)
     }
-}
-impl ArmT32Instruction {
 
     /// Encode this instruction to its little-endian machine-code bytes -- 2 bytes for a 16-bit Thumb
     /// encoding, 4 for a 32-bit one. Returns [`EncodeError`] if an operand field is out of range for the
@@ -4596,8 +4594,6 @@ impl ArmT32Instruction {
 
         Ok(convert_halfwords_to_u8_vec(&halfwords))
     }
-}
-impl ArmT32Instruction {
 
     // What this instruction needs from the target processor to be emittable (minimum ISA version +
     // extension features). The ARMv7-M (Thumb-2) forms report `Armv7M`; everything else is the ARMv6-M
