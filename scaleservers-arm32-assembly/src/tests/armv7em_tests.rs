@@ -461,3 +461,127 @@ fn encode__m8f_fp_load_store_exact_bytes() {
     ); // vstr d5, [r4, #-256]
 }
 
+#[test]
+fn round_trip__m8f_fp_load_store() {
+    for number in [0u8, 1, 2, 15, 16, 30, 31] {
+        round_trip(&ArmT32Instruction::Vldr_Single_T2(s(number), R::R1, 0));
+        round_trip(&ArmT32Instruction::Vstr_Single_T2(s(number), R::R2, -1020));
+    }
+    for number in 0u8..=15 {
+        round_trip(&ArmT32Instruction::Vldr_Double_T1(d(number), R::R3, 1020));
+        round_trip(&ArmT32Instruction::Vstr_Double_T1(d(number), R::R4, 8));
+    }
+}
+
+#[test]
+fn encode__m8g_fp_load_store_multiple_exact_bytes() {
+    // bytes verified against `clang --target=thumbv7em-none-eabi -mcpu=cortex-m7 -mfpu=fpv5-d16`
+    assert_eq!(
+        ArmT32Instruction::Vldm_Single_T2(R::R0, false, false, s(0), 4)
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xEC, 0x04, 0x0A]
+    ); // vldmia r0, {s0-s3}
+    assert_eq!(
+        ArmT32Instruction::Vldm_Single_T2(R::R0, true, false, s(4), 4)
+            .encode()
+            .unwrap(),
+        vec![0xB0, 0xEC, 0x04, 0x2A]
+    ); // vldmia r0!, {s4-s7}
+    assert_eq!(
+        ArmT32Instruction::Vstm_Single_T2(R::R1, true, false, s(0), 1)
+            .encode()
+            .unwrap(),
+        vec![0xA1, 0xEC, 0x01, 0x0A]
+    ); // vstmia r1!, {s0}
+    assert_eq!(
+        ArmT32Instruction::Vldm_Single_T2(R::R2, true, true, s(8), 2)
+            .encode()
+            .unwrap(),
+        vec![0x32, 0xED, 0x02, 0x4A]
+    ); // vldmdb r2!, {s8-s9}
+    assert_eq!(
+        ArmT32Instruction::Vstm_Single_T2(R::R13, true, true, s(0), 4)
+            .encode()
+            .unwrap(),
+        vec![0x2D, 0xED, 0x04, 0x0A]
+    ); // vpush  {s0-s3}
+    assert_eq!(
+        ArmT32Instruction::Vldm_Single_T2(R::R13, true, false, s(0), 4)
+            .encode()
+            .unwrap(),
+        vec![0xBD, 0xEC, 0x04, 0x0A]
+    ); // vpop   {s0-s3}
+    assert_eq!(
+        ArmT32Instruction::Vldm_Double_T1(R::R0, false, false, d(0), 2)
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xEC, 0x04, 0x0B]
+    ); // vldmia r0, {d0-d1}
+    assert_eq!(
+        ArmT32Instruction::Vstm_Double_T1(R::R3, true, true, d(5), 3)
+            .encode()
+            .unwrap(),
+        vec![0x23, 0xED, 0x06, 0x5B]
+    ); // vstmdb r3!, {d5-d7}
+    assert_eq!(
+        ArmT32Instruction::Vstm_Double_T1(R::R13, true, true, d(0), 4)
+            .encode()
+            .unwrap(),
+        vec![0x2D, 0xED, 0x08, 0x0B]
+    ); // vpush  {d0-d3}
+}
+
+#[test]
+fn round_trip__m8g_fp_load_store_multiple() {
+    round_trip(&ArmT32Instruction::Vldm_Single_T2(
+        R::R0,
+        false,
+        false,
+        s(0),
+        4,
+    ));
+    round_trip(&ArmT32Instruction::Vstm_Single_T2(
+        R::R1,
+        true,
+        false,
+        s(4),
+        8,
+    ));
+    round_trip(&ArmT32Instruction::Vldm_Single_T2(
+        R::R2,
+        true,
+        true,
+        s(16),
+        16,
+    ));
+    round_trip(&ArmT32Instruction::Vstm_Single_T2(
+        R::R13,
+        true,
+        true,
+        s(0),
+        1,
+    ));
+    round_trip(&ArmT32Instruction::Vldm_Double_T1(
+        R::R0,
+        false,
+        false,
+        d(0),
+        2,
+    ));
+    round_trip(&ArmT32Instruction::Vstm_Double_T1(
+        R::R3,
+        true,
+        true,
+        d(8),
+        8,
+    ));
+    round_trip(&ArmT32Instruction::Vldm_Double_T1(
+        R::R13,
+        true,
+        false,
+        d(0),
+        4,
+    )); // vpop {d0-d3}
+}
+
