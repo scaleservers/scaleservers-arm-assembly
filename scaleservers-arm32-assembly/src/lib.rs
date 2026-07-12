@@ -169,3 +169,5 @@ pub use emit::apply_it_block_condition;
 pub use emit::apply_vpt_block_suffix;
 
 mod utils;
+
+mod tests;
