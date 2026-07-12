@@ -61,6 +61,7 @@ pub mod wfi_instruction_tests;
 pub mod yield_instruction_tests;
 
 // cross-cutting tests (not tied to a single mnemonic)
+pub mod armv7m_tests;
 pub mod armv8m_tests;
 pub mod coverage_tests;
 pub mod emit_tests;
