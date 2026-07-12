@@ -222,3 +222,147 @@ fn mutated_valid_instructions_never_panic() {
     }
 }
 
+// The sweeps above prove the DECODE entry point never panics (and that decode outputs re-encode/emit
+// cleanly). This test proves the ENCODE entry point directly: instructions hand-built with boundary and
+// out-of-range fields -- the shape a code generator or a fuzzer of the *builder* API produces, which decode
+// never yields -- must still never panic. `encode()` may return Err and the emitters may render nonsense,
+// but neither may panic (no arithmetic under/overflow, no slice-index or unwrap blow-up).
+#[test]
+fn constructed_instructions_never_panic_on_encode_or_emit() {
+    use crate::enums::{
+        Arm32DirectedRound, Arm32DoublePrecisionRegister, Arm32GeneralPurposeRegister,
+        Arm32MveFloatSize, Arm32MveSize, Arm32MveVectorRegister, Arm32SinglePrecisionRegister,
+        Arm32VmovLaneSize,
+    };
+    use ArmA32Instruction as A;
+    use ArmT32Instruction as T;
+    let s = |n: u8| Arm32SinglePrecisionRegister::new(n % 32).unwrap();
+    let d = |n: u8| Arm32DoublePrecisionRegister::new(n % 16).unwrap();
+    let q = |n: u8| Arm32MveVectorRegister::new(n % 8).unwrap();
+    let g = Arm32GeneralPurposeRegister::from_operand_bits;
+
+    // encode() + both emit flavors must not panic; Ok/Err and any rendered string are acceptable.
+    fn hammer_t32(i: &ArmT32Instruction) {
+        let _ = i.encode();
+        let _ = i.to_assembly_string(ArmAssemblySyntax::Gnu);
+        let _ = i.to_assembly_string(ArmAssemblySyntax::Llvm);
+    }
+    fn hammer_a32(i: &ArmA32Instruction) {
+        let _ = i.encode();
+        let _ = i.to_assembly_string(ArmAssemblySyntax::Gnu);
+        let _ = i.to_assembly_string(ArmAssemblySyntax::Llvm);
+    }
+
+    // Lane/index fields whose valid range decode always respects, hammered past it (the `idx1 - 2` class).
+    for idx in [0u8, 1, 2, 3, 4, 7, 8, 15, 200, 255] {
+        for tv in [false, true] {
+            hammer_t32(&T::MveVmovTwoLane(
+                tv,
+                idx,
+                q(idx),
+                g(idx),
+                g(idx.wrapping_add(1)),
+            ));
+        }
+        for size in [
+            Arm32VmovLaneSize::Byte,
+            Arm32VmovLaneSize::Half,
+            Arm32VmovLaneSize::Word,
+        ] {
+            hammer_t32(&T::Vmov_Core_To_Scalar_T1(size, idx, d(idx), g(idx)));
+            hammer_t32(&T::Vmov_Scalar_To_Core_T1(
+                idx & 1 == 0,
+                size,
+                idx,
+                g(idx),
+                d(idx),
+            ));
+            hammer_a32(&A::Vmov_Core_To_Scalar_A1(
+                cond_a32(),
+                size,
+                idx,
+                d(idx),
+                g(idx),
+            ));
+            hammer_a32(&A::Vmov_Scalar_To_Core_A1(
+                cond_a32(),
+                idx & 1 == 0,
+                size,
+                idx,
+                g(idx),
+                d(idx),
+            ));
+        }
+    }
+
+    // The Phase-2 FP/MVE additions across their register spaces (registers auto-clamped by the closures).
+    for n in 0u8..32 {
+        for mode in [
+            Arm32DirectedRound::A,
+            Arm32DirectedRound::N,
+            Arm32DirectedRound::P,
+            Arm32DirectedRound::M,
+        ] {
+            hammer_t32(&T::Vcvt_Directed_FromSingle_T1(
+                mode,
+                s(n),
+                s(n ^ 3),
+                n & 1 == 0,
+            ));
+            hammer_t32(&T::Vcvt_Directed_FromDouble_T1(
+                mode,
+                s(n),
+                d(n),
+                n & 1 == 0,
+            ));
+        }
+        hammer_t32(&T::Vrintz_Single_T1(s(n), s(n ^ 5)));
+        hammer_t32(&T::Vrintz_Double_T1(d(n), d(n ^ 5)));
+        hammer_t32(&T::Vrintx_Single_T1(s(n), s(n ^ 5)));
+        hammer_t32(&T::Vrintx_Double_T1(d(n), d(n ^ 5)));
+        hammer_t32(&T::Vrintr_Single_T1(s(n), s(n ^ 5)));
+        hammer_t32(&T::Vrintr_Double_T1(d(n), d(n ^ 5)));
+        hammer_t32(&T::Vjcvt_T1(s(n), d(n)));
+        hammer_t32(&T::Vmaxnm_Single_T1(s(n), s(n ^ 1), s(n ^ 2)));
+        hammer_t32(&T::Vmaxnm_Double_T1(d(n), d(n ^ 1), d(n ^ 2)));
+        hammer_t32(&T::Vminnm_Single_T1(s(n), s(n ^ 1), s(n ^ 2)));
+        hammer_t32(&T::Vminnm_Double_T1(d(n), d(n ^ 1), d(n ^ 2)));
+        for cc in 0..4u8 {
+            hammer_t32(&T::Vsel_Single_T1(cc, s(n), s(n ^ 1), s(n ^ 2)));
+            hammer_t32(&T::Vsel_Double_T1(cc, d(n), d(n ^ 1), d(n ^ 2)));
+        }
+        for mode in [
+            Arm32DirectedRound::A,
+            Arm32DirectedRound::N,
+            Arm32DirectedRound::P,
+            Arm32DirectedRound::M,
+        ] {
+            hammer_t32(&T::Vrint_Directed_Single_T1(mode, s(n), s(n ^ 3)));
+            hammer_t32(&T::Vrint_Directed_Double_T1(mode, d(n), d(n ^ 3)));
+        }
+        hammer_t32(&T::MveVmaxaMina(
+            n & 1 == 0,
+            Arm32MveSize::I8,
+            q(n),
+            q(n ^ 1),
+        ));
+        hammer_t32(&T::MveVmaxnmaMinnma(
+            n & 1 == 0,
+            Arm32MveFloatSize::F16,
+            q(n),
+            q(n ^ 1),
+        ));
+        hammer_a32(&A::Vjcvt_A1(cond_a32(), s(n), d(n)));
+        hammer_a32(&A::Vcvt_HalfToDouble_A1(cond_a32(), d(n), s(n), n & 1 == 0));
+        hammer_a32(&A::Vcvt_DoubleToHalf_A1(cond_a32(), s(n), d(n), n & 1 == 0));
+    }
+    hammer_t32(&T::Sb_T1);
+    hammer_a32(&A::Sb_A1);
+}
+
+// A fixed A32 condition for the constructed-instruction sweep (the value is irrelevant to the never-panic
+// contract; only the field ranges matter).
+fn cond_a32() -> crate::enums::ArmT32InstructionCondition {
+    crate::enums::ArmT32InstructionCondition::AlwaysUnconditional
+}
+
