@@ -1051,3 +1051,145 @@ fn gating__dsp_instruction_requires_dsp_extension() {
     );
 }
 
+// VMOV core <-> scalar-lane (T32): VMOV.<size> Dd[x], Rt and VMOV.<dt> Rt, Dn[x]. The T32 word equals the A32
+// word with cond = AL. Every byte confirmed byte-identical against BOTH arm-none-eabi-as (-mthumb) AND llvm-mc
+// (-triple=thumbv8a). 4 bytes per instruction (two LE halfwords).
+#[test]
+fn t32_vmov_core_scalar_lane() {
+    use Arm32VmovLaneSize::{Byte, Half, Word};
+    // exact bytes
+    assert_eq!(
+        ArmT32Instruction::Vmov_Core_To_Scalar_T1(Word, 0, d(0), R::R1)
+            .encode()
+            .unwrap(),
+        vec![0x00, 0xee, 0x10, 0x1b]
+    ); // vmov.32 d0[0], r1
+    assert_eq!(
+        ArmT32Instruction::Vmov_Core_To_Scalar_T1(Word, 1, d(0), R::R1)
+            .encode()
+            .unwrap(),
+        vec![0x20, 0xee, 0x10, 0x1b]
+    ); // vmov.32 d0[1], r1
+    assert_eq!(
+        ArmT32Instruction::Vmov_Core_To_Scalar_T1(Byte, 7, d(0), R::R1)
+            .encode()
+            .unwrap(),
+        vec![0x60, 0xee, 0x70, 0x1b]
+    ); // vmov.8  d0[7], r1
+    assert_eq!(
+        ArmT32Instruction::Vmov_Core_To_Scalar_T1(Half, 3, d(0), R::R1)
+            .encode()
+            .unwrap(),
+        vec![0x20, 0xee, 0x70, 0x1b]
+    ); // vmov.16 d0[3], r1
+    assert_eq!(
+        ArmT32Instruction::Vmov_Scalar_To_Core_T1(false, Word, 0, R::R2, d(3))
+            .encode()
+            .unwrap(),
+        vec![0x13, 0xee, 0x10, 0x2b]
+    ); // vmov.32 r2, d3[0]
+    assert_eq!(
+        ArmT32Instruction::Vmov_Scalar_To_Core_T1(false, Byte, 5, R::R2, d(3))
+            .encode()
+            .unwrap(),
+        vec![0x73, 0xee, 0x30, 0x2b]
+    ); // vmov.s8  r2, d3[5]
+    assert_eq!(
+        ArmT32Instruction::Vmov_Scalar_To_Core_T1(true, Half, 2, R::R2, d(3))
+            .encode()
+            .unwrap(),
+        vec![0xb3, 0xee, 0x30, 0x2b]
+    ); // vmov.u16 r2, d3[2]
+    // emit (no condition in T32)
+    assert_eq!(
+        ArmT32Instruction::Vmov_Core_To_Scalar_T1(Word, 0, d(0), R::R1)
+            .to_assembly_string(crate::emit::ArmAssemblySyntax::Gnu),
+        "vmov.32 d0[0], r1"
+    );
+    assert_eq!(
+        ArmT32Instruction::Vmov_Scalar_To_Core_T1(false, Byte, 5, R::R2, d(3))
+            .to_assembly_string(crate::emit::ArmAssemblySyntax::Gnu),
+        "vmov.s8 r2, d3[5]"
+    );
+    // requirement: M-profile FP extension
+    assert_eq!(
+        ArmT32Instruction::Vmov_Core_To_Scalar_T1(Word, 0, d(0), R::R1).requirement(),
+        ArmInstructionRequirement::new(ArmIsaVersion::Armv7M, &[ArmCpuFeature::FloatingPoint])
+    );
+    // reject out-of-range lane
+    assert!(matches!(
+        ArmT32Instruction::Vmov_Core_To_Scalar_T1(Word, 2, d(0), R::R1).encode(),
+        Err(EncodeError::ImmediateOutOfRange { .. })
+    ));
+    // round-trip every width x lane x direction
+    for (size, lanes) in [(Byte, 8u8), (Half, 4), (Word, 2)] {
+        for index in 0..lanes {
+            round_trip(&ArmT32Instruction::Vmov_Core_To_Scalar_T1(
+                size,
+                index,
+                d(5),
+                R::R9,
+            ));
+            let signs: &[bool] = if matches!(size, Word) {
+                &[false]
+            } else {
+                &[false, true]
+            };
+            for &u in signs {
+                round_trip(&ArmT32Instruction::Vmov_Scalar_To_Core_T1(
+                    u,
+                    size,
+                    index,
+                    R::R9,
+                    d(5),
+                ));
+            }
+        }
+    }
+}
+
+// VMAXNM / VMINNM (T32) -- ARMv8-M scalar FP max/min. Bytes dual-oracle confirmed vs arm-none-eabi-as
+// (-march=armv8.1-m.main+fp.dp) AND llvm-mc (-triple=thumbv8a).
+#[test]
+fn t32_vmaxnm_vminnm() {
+    use ArmT32Instruction::*;
+    assert_eq!(
+        Vmaxnm_Single_T1(s(0), s(1), s(2)).encode().unwrap(),
+        vec![0x80, 0xfe, 0x81, 0x0a]
+    ); // vmaxnm.f32 s0, s1, s2
+    assert_eq!(
+        Vmaxnm_Double_T1(d(0), d(1), d(2)).encode().unwrap(),
+        vec![0x81, 0xfe, 0x02, 0x0b]
+    ); // vmaxnm.f64 d0, d1, d2
+    assert_eq!(
+        Vminnm_Single_T1(s(0), s(1), s(2)).encode().unwrap(),
+        vec![0x80, 0xfe, 0xc1, 0x0a]
+    ); // vminnm.f32 s0, s1, s2
+    assert_eq!(
+        Vminnm_Double_T1(d(0), d(1), d(2)).encode().unwrap(),
+        vec![0x81, 0xfe, 0x42, 0x0b]
+    ); // vminnm.f64 d0, d1, d2
+    assert_eq!(
+        Vmaxnm_Single_T1(s(0), s(1), s(2)).to_assembly_string(crate::emit::ArmAssemblySyntax::Gnu),
+        "vmaxnm.f32 s0, s1, s2"
+    );
+    assert_eq!(
+        Vminnm_Double_T1(d(3), d(4), d(5)).to_assembly_string(crate::emit::ArmAssemblySyntax::Gnu),
+        "vminnm.f64 d3, d4, d5"
+    );
+    assert_eq!(
+        Vmaxnm_Single_T1(s(0), s(1), s(2)).requirement(),
+        ArmInstructionRequirement::new(
+            ArmIsaVersion::Armv8MBaseline,
+            &[ArmCpuFeature::FloatingPoint]
+        )
+    );
+    // round-trip over a spread of registers (exercises the D/N/M extra bits + max/min + single/double decode)
+    for (sd, sn, sm) in [(0u8, 1, 2), (5, 20, 31), (31, 0, 15)] {
+        round_trip(&Vmaxnm_Single_T1(s(sd), s(sn), s(sm)));
+        round_trip(&Vminnm_Single_T1(s(sd), s(sn), s(sm)));
+        round_trip(&Vmaxnm_Double_T1(d(sd), d(sn), d(sm)));
+        round_trip(&Vminnm_Double_T1(d(sd), d(sn), d(sm)));
+    }
+}
+
