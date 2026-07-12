@@ -60,6 +60,399 @@ use crate::enums::{
     Arm32FpDataOperation2,
 };
 
+impl ArmA32Instruction {
+    /// Render this instruction as a UAL (Unified Assembly Language) string in the requested
+    /// [`ArmAssemblySyntax`] (LLVM or GNU). With no surrounding address context, PC-relative branch
+    /// operands are shown as signed offsets.
+    pub fn to_assembly_string(&self, syntax: ArmAssemblySyntax) -> String {
+        self.render(None, syntax)
+    }
+
+    // Address-aware UAL: PC-relative branch operands are resolved to absolute targets, given the address at
+    // which this instruction begins. Used by the disassembler.
+    pub fn to_assembly_string_at(&self, instruction_address: u32, syntax: ArmAssemblySyntax) -> String {
+        self.render(Some(instruction_address), syntax)
+    }
+
+    fn render(&self, instruction_address: Option<u32>, syntax: ArmAssemblySyntax) -> String {
+        use ArmA32Instruction::*;
+        match self {
+            // ---- data processing: Rd, Rn, op2 ----
+            And_Immediate_A1(c, s, rd, rn, imm32) => dp_imm("and", c, *s, rd, rn, *imm32, syntax),
+            And_Register_A1(c, s, rd, rn, rm, sh) => dp_reg("and", c, *s, rd, rn, rm, sh),
+            And_RegisterShiftedRegister_A1(c, s, rd, rn, rm, ty, rs) => dp_rsr("and", c, *s, rd, rn, rm, *ty, rs),
+            Eor_Immediate_A1(c, s, rd, rn, imm32) => dp_imm("eor", c, *s, rd, rn, *imm32, syntax),
+            Eor_Register_A1(c, s, rd, rn, rm, sh) => dp_reg("eor", c, *s, rd, rn, rm, sh),
+            Eor_RegisterShiftedRegister_A1(c, s, rd, rn, rm, ty, rs) => dp_rsr("eor", c, *s, rd, rn, rm, *ty, rs),
+            Sub_Immediate_A1(c, s, rd, rn, imm32) => dp_imm("sub", c, *s, rd, rn, *imm32, syntax),
+            Sub_Register_A1(c, s, rd, rn, rm, sh) => dp_reg("sub", c, *s, rd, rn, rm, sh),
+            Sub_RegisterShiftedRegister_A1(c, s, rd, rn, rm, ty, rs) => dp_rsr("sub", c, *s, rd, rn, rm, *ty, rs),
+            Rsb_Immediate_A1(c, s, rd, rn, imm32) => dp_imm("rsb", c, *s, rd, rn, *imm32, syntax),
+            Rsb_Register_A1(c, s, rd, rn, rm, sh) => dp_reg("rsb", c, *s, rd, rn, rm, sh),
+            Rsb_RegisterShiftedRegister_A1(c, s, rd, rn, rm, ty, rs) => dp_rsr("rsb", c, *s, rd, rn, rm, *ty, rs),
+            Add_Immediate_A1(c, s, rd, rn, imm32) => dp_imm("add", c, *s, rd, rn, *imm32, syntax),
+            Add_Register_A1(c, s, rd, rn, rm, sh) => dp_reg("add", c, *s, rd, rn, rm, sh),
+            Add_RegisterShiftedRegister_A1(c, s, rd, rn, rm, ty, rs) => dp_rsr("add", c, *s, rd, rn, rm, *ty, rs),
+            Adc_Immediate_A1(c, s, rd, rn, imm32) => dp_imm("adc", c, *s, rd, rn, *imm32, syntax),
+            Adc_Register_A1(c, s, rd, rn, rm, sh) => dp_reg("adc", c, *s, rd, rn, rm, sh),
+            Adc_RegisterShiftedRegister_A1(c, s, rd, rn, rm, ty, rs) => dp_rsr("adc", c, *s, rd, rn, rm, *ty, rs),
+            Sbc_Immediate_A1(c, s, rd, rn, imm32) => dp_imm("sbc", c, *s, rd, rn, *imm32, syntax),
+            Sbc_Register_A1(c, s, rd, rn, rm, sh) => dp_reg("sbc", c, *s, rd, rn, rm, sh),
+            Sbc_RegisterShiftedRegister_A1(c, s, rd, rn, rm, ty, rs) => dp_rsr("sbc", c, *s, rd, rn, rm, *ty, rs),
+            Rsc_Immediate_A1(c, s, rd, rn, imm32) => dp_imm("rsc", c, *s, rd, rn, *imm32, syntax),
+            Rsc_Register_A1(c, s, rd, rn, rm, sh) => dp_reg("rsc", c, *s, rd, rn, rm, sh),
+            Rsc_RegisterShiftedRegister_A1(c, s, rd, rn, rm, ty, rs) => dp_rsr("rsc", c, *s, rd, rn, rm, *ty, rs),
+            Orr_Immediate_A1(c, s, rd, rn, imm32) => dp_imm("orr", c, *s, rd, rn, *imm32, syntax),
+            Orr_Register_A1(c, s, rd, rn, rm, sh) => dp_reg("orr", c, *s, rd, rn, rm, sh),
+            Orr_RegisterShiftedRegister_A1(c, s, rd, rn, rm, ty, rs) => dp_rsr("orr", c, *s, rd, rn, rm, *ty, rs),
+            Bic_Immediate_A1(c, s, rd, rn, imm32) => dp_imm("bic", c, *s, rd, rn, *imm32, syntax),
+            Bic_Register_A1(c, s, rd, rn, rm, sh) => dp_reg("bic", c, *s, rd, rn, rm, sh),
+            Bic_RegisterShiftedRegister_A1(c, s, rd, rn, rm, ty, rs) => dp_rsr("bic", c, *s, rd, rn, rm, *ty, rs),
+
+            // ---- moves (Rd, op2) ----
+            Mov_Immediate_A1(c, s, rd, imm32) => format!("mov{}{} {}, {}", s_flag(*s), cc(c), gpr(rd), imm(syntax, *imm32 as i64)),
+            Mov_Register_A1(c, s, rd, rm, sh) => render_mov_shift(c, *s, rd, rm, sh),
+            Mov_RegisterShiftedRegister_A1(c, s, rd, rm, ty, rs) => format!("{}{}{} {}, {}, {}", shift_type_mnemonic(*ty), s_flag(*s), cc(c), gpr(rd), gpr(rm), gpr(rs)),
+            Mvn_Immediate_A1(c, s, rd, imm32) => format!("mvn{}{} {}, {}", s_flag(*s), cc(c), gpr(rd), imm(syntax, *imm32 as i64)),
+            Mvn_Register_A1(c, s, rd, rm, sh) => format!("mvn{}{} {}, {}{}", s_flag(*s), cc(c), gpr(rd), gpr(rm), shift_suffix(sh)),
+            Mvn_RegisterShiftedRegister_A1(c, s, rd, rm, ty, rs) => format!("mvn{}{} {}, {}, {} {}", s_flag(*s), cc(c), gpr(rd), gpr(rm), shift_type_mnemonic(*ty), gpr(rs)),
+
+            // ---- compares (Rn, op2): no Rd, always set flags ----
+            Tst_Immediate_A1(c, rn, imm32) => format!("tst{} {}, {}", cc(c), gpr(rn), imm(syntax, *imm32 as i64)),
+            Tst_Register_A1(c, rn, rm, sh) => format!("tst{} {}, {}{}", cc(c), gpr(rn), gpr(rm), shift_suffix(sh)),
+            Tst_RegisterShiftedRegister_A1(c, rn, rm, ty, rs) => format!("tst{} {}, {}, {} {}", cc(c), gpr(rn), gpr(rm), shift_type_mnemonic(*ty), gpr(rs)),
+            Teq_Immediate_A1(c, rn, imm32) => format!("teq{} {}, {}", cc(c), gpr(rn), imm(syntax, *imm32 as i64)),
+            Teq_Register_A1(c, rn, rm, sh) => format!("teq{} {}, {}{}", cc(c), gpr(rn), gpr(rm), shift_suffix(sh)),
+            Teq_RegisterShiftedRegister_A1(c, rn, rm, ty, rs) => format!("teq{} {}, {}, {} {}", cc(c), gpr(rn), gpr(rm), shift_type_mnemonic(*ty), gpr(rs)),
+            Cmp_Immediate_A1(c, rn, imm32) => format!("cmp{} {}, {}", cc(c), gpr(rn), imm(syntax, *imm32 as i64)),
+            Cmp_Register_A1(c, rn, rm, sh) => format!("cmp{} {}, {}{}", cc(c), gpr(rn), gpr(rm), shift_suffix(sh)),
+            Cmp_RegisterShiftedRegister_A1(c, rn, rm, ty, rs) => format!("cmp{} {}, {}, {} {}", cc(c), gpr(rn), gpr(rm), shift_type_mnemonic(*ty), gpr(rs)),
+            Cmn_Immediate_A1(c, rn, imm32) => format!("cmn{} {}, {}", cc(c), gpr(rn), imm(syntax, *imm32 as i64)),
+            Cmn_Register_A1(c, rn, rm, sh) => format!("cmn{} {}, {}{}", cc(c), gpr(rn), gpr(rm), shift_suffix(sh)),
+            Cmn_RegisterShiftedRegister_A1(c, rn, rm, ty, rs) => format!("cmn{} {}, {}, {} {}", cc(c), gpr(rn), gpr(rm), shift_type_mnemonic(*ty), gpr(rs)),
+
+            // ---- 16-bit immediate moves ----
+            Movw_A2(c, rd, imm16) => format!("movw{} {}, {}", cc(c), gpr(rd), imm(syntax, *imm16 as i64)),
+            Movt_A1(c, rd, imm16) => format!("movt{} {}, {}", cc(c), gpr(rd), imm(syntax, *imm16 as i64)),
+
+            // ---- multiply ----
+            Mul_A1(c, s, rd, rn, rm) => format!("mul{}{} {}, {}, {}", s_flag(*s), cc(c), gpr(rd), gpr(rn), gpr(rm)),
+            Mla_A1(c, s, rd, rn, rm, ra) => format!("mla{}{} {}, {}, {}, {}", s_flag(*s), cc(c), gpr(rd), gpr(rn), gpr(rm), gpr(ra)),
+            Mls_A1(c, rd, rn, rm, ra) => format!("mls{} {}, {}, {}, {}", cc(c), gpr(rd), gpr(rn), gpr(rm), gpr(ra)),
+            Umull_A1(c, s, lo, hi, rn, rm) => format!("umull{}{} {}, {}, {}, {}", s_flag(*s), cc(c), gpr(lo), gpr(hi), gpr(rn), gpr(rm)),
+            Umlal_A1(c, s, lo, hi, rn, rm) => format!("umlal{}{} {}, {}, {}, {}", s_flag(*s), cc(c), gpr(lo), gpr(hi), gpr(rn), gpr(rm)),
+            Smull_A1(c, s, lo, hi, rn, rm) => format!("smull{}{} {}, {}, {}, {}", s_flag(*s), cc(c), gpr(lo), gpr(hi), gpr(rn), gpr(rm)),
+            Smlal_A1(c, s, lo, hi, rn, rm) => format!("smlal{}{} {}, {}, {}, {}", s_flag(*s), cc(c), gpr(lo), gpr(hi), gpr(rn), gpr(rm)),
+            Umaal_A1(c, lo, hi, rn, rm) => format!("umaal{} {}, {}, {}, {}", cc(c), gpr(lo), gpr(hi), gpr(rn), gpr(rm)),
+
+            // ---- saturating arithmetic ----
+            Qadd_A1(c, rd, rm, rn) => format!("qadd{} {}, {}, {}", cc(c), gpr(rd), gpr(rm), gpr(rn)),
+            Qsub_A1(c, rd, rm, rn) => format!("qsub{} {}, {}, {}", cc(c), gpr(rd), gpr(rm), gpr(rn)),
+            Qdadd_A1(c, rd, rm, rn) => format!("qdadd{} {}, {}, {}", cc(c), gpr(rd), gpr(rm), gpr(rn)),
+            Qdsub_A1(c, rd, rm, rn) => format!("qdsub{} {}, {}, {}", cc(c), gpr(rd), gpr(rm), gpr(rn)),
+
+            // ---- signed multiplies ----
+            Smla_A1(c, rd, rn, rm, ra, n, m) => format!("smla{}{}{} {}, {}, {}, {}", tb(*n), tb(*m), cc(c), gpr(rd), gpr(rn), gpr(rm), gpr(ra)),
+            Smlaw_A1(c, rd, rn, rm, ra, m) => format!("smlaw{}{} {}, {}, {}, {}", tb(*m), cc(c), gpr(rd), gpr(rn), gpr(rm), gpr(ra)),
+            Smulw_A1(c, rd, rn, rm, m) => format!("smulw{}{} {}, {}, {}", tb(*m), cc(c), gpr(rd), gpr(rn), gpr(rm)),
+            Smlal_Halfword_A1(c, lo, hi, rn, rm, n, m) => format!("smlal{}{}{} {}, {}, {}, {}", tb(*n), tb(*m), cc(c), gpr(lo), gpr(hi), gpr(rn), gpr(rm)),
+            Smul_A1(c, rd, rn, rm, n, m) => format!("smul{}{}{} {}, {}, {}", tb(*n), tb(*m), cc(c), gpr(rd), gpr(rn), gpr(rm)),
+            Smlad_A1(c, rd, rn, rm, ra, x) => format!("smlad{}{} {}, {}, {}, {}", xx(*x), cc(c), gpr(rd), gpr(rn), gpr(rm), gpr(ra)),
+            Smuad_A1(c, rd, rn, rm, x) => format!("smuad{}{} {}, {}, {}", xx(*x), cc(c), gpr(rd), gpr(rn), gpr(rm)),
+            Smlsd_A1(c, rd, rn, rm, ra, x) => format!("smlsd{}{} {}, {}, {}, {}", xx(*x), cc(c), gpr(rd), gpr(rn), gpr(rm), gpr(ra)),
+            Smusd_A1(c, rd, rn, rm, x) => format!("smusd{}{} {}, {}, {}", xx(*x), cc(c), gpr(rd), gpr(rn), gpr(rm)),
+            Smmla_A1(c, rd, rn, rm, ra, r) => format!("smmla{}{} {}, {}, {}, {}", rr(*r), cc(c), gpr(rd), gpr(rn), gpr(rm), gpr(ra)),
+            Smmul_A1(c, rd, rn, rm, r) => format!("smmul{}{} {}, {}, {}", rr(*r), cc(c), gpr(rd), gpr(rn), gpr(rm)),
+            Smmls_A1(c, rd, rn, rm, ra, r) => format!("smmls{}{} {}, {}, {}, {}", rr(*r), cc(c), gpr(rd), gpr(rn), gpr(rm), gpr(ra)),
+            Smlald_A1(c, lo, hi, rn, rm, x) => format!("smlald{}{} {}, {}, {}, {}", xx(*x), cc(c), gpr(lo), gpr(hi), gpr(rn), gpr(rm)),
+            Smlsld_A1(c, lo, hi, rn, rm, x) => format!("smlsld{}{} {}, {}, {}, {}", xx(*x), cc(c), gpr(lo), gpr(hi), gpr(rn), gpr(rm)),
+
+            // ---- parallel add/sub + select ----
+            ParallelAddSub_A1(c, op, prefix, rd, rn, rm) => format!("{}{}{} {}, {}, {}", prefix.mnemonic(), op.mnemonic(), cc(c), gpr(rd), gpr(rn), gpr(rm)),
+            Sel_A1(c, rd, rn, rm) => format!("sel{} {}, {}, {}", cc(c), gpr(rd), gpr(rn), gpr(rm)),
+
+            // ---- extend / extend-and-add ----
+            Extend_A1(c, ty, rd, rm, rot) => format!("{}{} {}, {}{}", extend_mnemonic(*ty), cc(c), gpr(rd), gpr(rm), rotation(*rot)),
+            ExtendAndAdd_A1(c, ty, rd, rn, rm, rot) => format!("{}{} {}, {}, {}{}", extend_add_mnemonic(*ty), cc(c), gpr(rd), gpr(rn), gpr(rm), rotation(*rot)),
+
+            // ---- reverse / clz ----
+            Rev_A1(c, rd, rm) => format!("rev{} {}, {}", cc(c), gpr(rd), gpr(rm)),
+            Rev16_A1(c, rd, rm) => format!("rev16{} {}, {}", cc(c), gpr(rd), gpr(rm)),
+            Revsh_A1(c, rd, rm) => format!("revsh{} {}, {}", cc(c), gpr(rd), gpr(rm)),
+            Rbit_A1(c, rd, rm) => format!("rbit{} {}, {}", cc(c), gpr(rd), gpr(rm)),
+            Clz_A1(c, rd, rm) => format!("clz{} {}, {}", cc(c), gpr(rd), gpr(rm)),
+
+            // ---- pack / saturate / sad ----
+            Pkhbt_A1(c, rd, rn, rm, lsl) => if *lsl == 0 { format!("pkhbt{} {}, {}, {}", cc(c), gpr(rd), gpr(rn), gpr(rm)) } else { format!("pkhbt{} {}, {}, {}, lsl #{}", cc(c), gpr(rd), gpr(rn), gpr(rm), lsl) },
+            Pkhtb_A1(c, rd, rn, rm, asr) => format!("pkhtb{} {}, {}, {}, asr #{}", cc(c), gpr(rd), gpr(rn), gpr(rm), asr),
+            Ssat_A1(c, rd, sat, rm, sh) => format!("ssat{} {}, {}, {}{}", cc(c), gpr(rd), imm(syntax, *sat as i64), gpr(rm), shift_suffix(sh)),
+            Usat_A1(c, rd, sat, rm, sh) => format!("usat{} {}, {}, {}{}", cc(c), gpr(rd), imm(syntax, *sat as i64), gpr(rm), shift_suffix(sh)),
+            Ssat16_A1(c, rd, sat, rn) => format!("ssat16{} {}, {}, {}", cc(c), gpr(rd), imm(syntax, *sat as i64), gpr(rn)),
+            Usat16_A1(c, rd, sat, rn) => format!("usat16{} {}, {}, {}", cc(c), gpr(rd), imm(syntax, *sat as i64), gpr(rn)),
+            Usad8_A1(c, rd, rn, rm) => format!("usad8{} {}, {}, {}", cc(c), gpr(rd), gpr(rn), gpr(rm)),
+            Usada8_A1(c, rd, rn, rm, ra) => format!("usada8{} {}, {}, {}, {}", cc(c), gpr(rd), gpr(rn), gpr(rm), gpr(ra)),
+
+            // ---- bitfield ----
+            Bfc_A1(c, rd, lsb, width) => format!("bfc{} {}, {}, {}", cc(c), gpr(rd), imm(syntax, *lsb as i64), imm(syntax, *width as i64)),
+            Bfi_A1(c, rd, rn, lsb, width) => format!("bfi{} {}, {}, {}, {}", cc(c), gpr(rd), gpr(rn), imm(syntax, *lsb as i64), imm(syntax, *width as i64)),
+            Sbfx_A1(c, rd, rn, lsb, width) => format!("sbfx{} {}, {}, {}, {}", cc(c), gpr(rd), gpr(rn), imm(syntax, *lsb as i64), imm(syntax, *width as i64)),
+            Ubfx_A1(c, rd, rn, lsb, width) => format!("ubfx{} {}, {}, {}, {}", cc(c), gpr(rd), gpr(rn), imm(syntax, *lsb as i64), imm(syntax, *width as i64)),
+
+            // ---- load/store single ----
+            Ldr_A1(c, rt, rn, off, idx) => format!("ldr{} {}, {}", cc(c), gpr(rt), mem12(rn, off, *idx, syntax)),
+            Str_A1(c, rt, rn, off, idx) => format!("str{} {}, {}", cc(c), gpr(rt), mem12(rn, off, *idx, syntax)),
+            Ldrb_A1(c, rt, rn, off, idx) => format!("ldrb{} {}, {}", cc(c), gpr(rt), mem12(rn, off, *idx, syntax)),
+            Strb_A1(c, rt, rn, off, idx) => format!("strb{} {}, {}", cc(c), gpr(rt), mem12(rn, off, *idx, syntax)),
+            Ldrt_A1(c, rt, rn, off) => format!("ldrt{} {}, {}", cc(c), gpr(rt), mem12_post(rn, off, syntax)),
+            Strt_A1(c, rt, rn, off) => format!("strt{} {}, {}", cc(c), gpr(rt), mem12_post(rn, off, syntax)),
+            Ldrbt_A1(c, rt, rn, off) => format!("ldrbt{} {}, {}", cc(c), gpr(rt), mem12_post(rn, off, syntax)),
+            Strbt_A1(c, rt, rn, off) => format!("strbt{} {}, {}", cc(c), gpr(rt), mem12_post(rn, off, syntax)),
+
+            // ---- load/store halfword / dual / signed ----
+            Ldrh_A1(c, rt, rn, off, idx) => format!("ldrh{} {}, {}", cc(c), gpr(rt), mem8(rn, off, *idx, syntax)),
+            Strh_A1(c, rt, rn, off, idx) => format!("strh{} {}, {}", cc(c), gpr(rt), mem8(rn, off, *idx, syntax)),
+            Ldrsb_A1(c, rt, rn, off, idx) => format!("ldrsb{} {}, {}", cc(c), gpr(rt), mem8(rn, off, *idx, syntax)),
+            Ldrsh_A1(c, rt, rn, off, idx) => format!("ldrsh{} {}, {}", cc(c), gpr(rt), mem8(rn, off, *idx, syntax)),
+            Ldrd_A1(c, rt, rn, off, idx) => format!("ldrd{} {}, {}, {}", cc(c), gpr(rt), gpr(&next_reg(rt)), mem8(rn, off, *idx, syntax)),
+            Strd_A1(c, rt, rn, off, idx) => format!("strd{} {}, {}, {}", cc(c), gpr(rt), gpr(&next_reg(rt)), mem8(rn, off, *idx, syntax)),
+            Ldrht_A1(c, rt, rn, off) => format!("ldrht{} {}, {}", cc(c), gpr(rt), mem8_post(rn, off, syntax)),
+            Strht_A1(c, rt, rn, off) => format!("strht{} {}, {}", cc(c), gpr(rt), mem8_post(rn, off, syntax)),
+            Ldrsbt_A1(c, rt, rn, off) => format!("ldrsbt{} {}, {}", cc(c), gpr(rt), mem8_post(rn, off, syntax)),
+            Ldrsht_A1(c, rt, rn, off) => format!("ldrsht{} {}, {}", cc(c), gpr(rt), mem8_post(rn, off, syntax)),
+
+            // ---- load/store multiple (PUSH/POP spellings for sp! IA/DB) ----
+            Ldm_A1(c, mode, rn, wb, user, regs) => render_ldm_stm("ldm", c, *mode, rn, *wb, *user, regs),
+            Stm_A1(c, mode, rn, wb, user, regs) => render_ldm_stm("stm", c, *mode, rn, *wb, *user, regs),
+
+            // ---- synchronization ----
+            Ldrex_A1(c, rt, rn) => format!("ldrex{} {}, [{}]", cc(c), gpr(rt), gpr(rn)),
+            Strex_A1(c, rd, rt, rn) => format!("strex{} {}, {}, [{}]", cc(c), gpr(rd), gpr(rt), gpr(rn)),
+            Ldrexb_A1(c, rt, rn) => format!("ldrexb{} {}, [{}]", cc(c), gpr(rt), gpr(rn)),
+            Strexb_A1(c, rd, rt, rn) => format!("strexb{} {}, {}, [{}]", cc(c), gpr(rd), gpr(rt), gpr(rn)),
+            Ldrexh_A1(c, rt, rn) => format!("ldrexh{} {}, [{}]", cc(c), gpr(rt), gpr(rn)),
+            Strexh_A1(c, rd, rt, rn) => format!("strexh{} {}, {}, [{}]", cc(c), gpr(rd), gpr(rt), gpr(rn)),
+            Ldrexd_A1(c, rt, rn) => format!("ldrexd{} {}, {}, [{}]", cc(c), gpr(rt), gpr(&next_reg(rt)), gpr(rn)),
+            Strexd_A1(c, rd, rt, rn) => format!("strexd{} {}, {}, {}, [{}]", cc(c), gpr(rd), gpr(rt), gpr(&next_reg(rt)), gpr(rn)),
+            Clrex_A1 => "clrex".to_string(),
+            Swp_A1(c, rt, rt2, rn) => format!("swp{} {}, {}, [{}]", cc(c), gpr(rt), gpr(rt2), gpr(rn)),
+            Swpb_A1(c, rt, rt2, rn) => format!("swpb{} {}, {}, [{}]", cc(c), gpr(rt), gpr(rt2), gpr(rn)),
+
+            // ---- status / system ----
+            Mrs_A1(c, spsr, rd) => format!("mrs{} {}, {}", cc(c), gpr(rd), psr(*spsr)),
+            Msr_Register_A1(c, spsr, mask, rn) => format!("msr{} {}, {}", cc(c), psr_fields(*spsr, *mask), gpr(rn)),
+            Msr_Immediate_A1(c, spsr, mask, imm32) => format!("msr{} {}, {}", cc(c), psr_fields(*spsr, *mask), imm(syntax, *imm32 as i64)),
+            MrsBanked_A1(c, spsr, sysm, rd) => format!("mrs{} {}, {}", cc(c), gpr(rd), banked_reg(*spsr, *sysm)),
+            MsrBanked_A1(c, spsr, sysm, rn) => format!("msr{} {}, {}", cc(c), banked_reg(*spsr, *sysm), gpr(rn)),
+            Cps_A1(mode, a, i, f, new_mode) => render_cps(*mode, *a, *i, *f, *new_mode, syntax),
+            Setend_A1(big_endian) => format!("setend {}", if *big_endian { "be" } else { "le" }),
+
+            // ---- coprocessor ----
+            Mcr_A1(c, cp, opc1, rt, crn, crm, opc2) => render_mcr("mcr", cc(c), *cp, *opc1, gpr(rt), *crn, *crm, *opc2),
+            Mrc_A1(c, cp, opc1, rt, crn, crm, opc2) => render_mcr("mrc", cc(c), *cp, *opc1, gpr(rt), *crn, *crm, *opc2),
+            Mcr2_A1(cp, opc1, rt, crn, crm, opc2) => render_mcr("mcr2", "", *cp, *opc1, gpr(rt), *crn, *crm, *opc2),
+            Mrc2_A1(cp, opc1, rt, crn, crm, opc2) => render_mcr("mrc2", "", *cp, *opc1, gpr(rt), *crn, *crm, *opc2),
+            Cdp_A1(c, cp, opc1, crd, crn, crm, opc2) => format!("cdp{} p{}, {}, c{}, c{}, c{}, {}", cc(c), cp, opc1, crd, crn, crm, opc2),
+            Cdp2_A1(cp, opc1, crd, crn, crm, opc2) => format!("cdp2 p{}, {}, c{}, c{}, c{}, {}", cp, opc1, crd, crn, crm, opc2),
+            Mcrr_A1(c, cp, opc1, rt, rt2, crm) => format!("mcrr{} p{}, {}, {}, {}, c{}", cc(c), cp, opc1, gpr(rt), gpr(rt2), crm),
+            Mrrc_A1(c, cp, opc1, rt, rt2, crm) => format!("mrrc{} p{}, {}, {}, {}, c{}", cc(c), cp, opc1, gpr(rt), gpr(rt2), crm),
+            Mcrr2_A1(cp, opc1, rt, rt2, crm) => format!("mcrr2 p{}, {}, {}, {}, c{}", cp, opc1, gpr(rt), gpr(rt2), crm),
+            Mrrc2_A1(cp, opc1, rt, rt2, crm) => format!("mrrc2 p{}, {}, {}, {}, c{}", cp, opc1, gpr(rt), gpr(rt2), crm),
+            Ldc_A1(c, cp, long, crd, rn, add, imm8, idx) => render_ldc(&format!("ldc{}{}", long_suffix(*long), cc(c)), *cp, *crd, rn, *add, *imm8, *idx, syntax),
+            Stc_A1(c, cp, long, crd, rn, add, imm8, idx) => render_ldc(&format!("stc{}{}", long_suffix(*long), cc(c)), *cp, *crd, rn, *add, *imm8, *idx, syntax),
+            Ldc2_A1(cp, long, crd, rn, add, imm8, idx) => render_ldc(&format!("ldc2{}", long_suffix(*long)), *cp, *crd, rn, *add, *imm8, *idx, syntax),
+            Stc2_A1(cp, long, crd, rn, add, imm8, idx) => render_ldc(&format!("stc2{}", long_suffix(*long)), *cp, *crd, rn, *add, *imm8, *idx, syntax),
+
+            // ---- hints / barriers / exceptions ----
+            Nop_A1(c) => format!("nop{}", cc(c)),
+            Yield_A1(c) => format!("yield{}", cc(c)),
+            Wfe_A1(c) => format!("wfe{}", cc(c)),
+            Wfi_A1(c) => format!("wfi{}", cc(c)),
+            Sev_A1(c) => format!("sev{}", cc(c)),
+            Sevl_A1(c) => format!("sevl{}", cc(c)),
+            Csdb_A1(c) => format!("csdb{}", cc(c)),
+            Esb_A1(c) => format!("esb{}", cc(c)),
+            Dbg_A1(c, option) => format!("dbg{} {}", cc(c), imm(syntax, *option as i64)),
+            Dmb_A1(option) => format!("dmb {}", barrier(*option)),
+            Dsb_A1(option) => format!("dsb {}", barrier(*option)),
+            Isb_A1(option) => format!("isb {}", barrier(*option)),
+            Sb_A1 => "sb".to_string(),
+            Bkpt_A1(c, imm16) => format!("bkpt{} {}", cc(c), imm(syntax, *imm16 as i64)),
+            Hvc_A1(c, imm16) => format!("hvc{} {}", cc(c), imm(syntax, *imm16 as i64)),
+            Smc_A1(c, imm4) => format!("smc{} {}", cc(c), imm(syntax, *imm4 as i64)),
+            Udf_A1(c, imm16) => format!("udf{} {}", cc(c), imm(syntax, *imm16 as i64)),
+            Eret_A1(c) => format!("eret{}", cc(c)),
+            Svc_A1(c, imm24) => format!("svc{} {}", cc(c), imm(syntax, *imm24 as i64)),
+
+            // ---- CRC32 ----
+            Crc32b_A1(c, rd, rn, rm) => format!("crc32b{} {}, {}, {}", cc(c), gpr(rd), gpr(rn), gpr(rm)),
+            Crc32h_A1(c, rd, rn, rm) => format!("crc32h{} {}, {}, {}", cc(c), gpr(rd), gpr(rn), gpr(rm)),
+            Crc32w_A1(c, rd, rn, rm) => format!("crc32w{} {}, {}, {}", cc(c), gpr(rd), gpr(rn), gpr(rm)),
+            Crc32cb_A1(c, rd, rn, rm) => format!("crc32cb{} {}, {}, {}", cc(c), gpr(rd), gpr(rn), gpr(rm)),
+            Crc32ch_A1(c, rd, rn, rm) => format!("crc32ch{} {}, {}, {}", cc(c), gpr(rd), gpr(rn), gpr(rm)),
+            Crc32cw_A1(c, rd, rn, rm) => format!("crc32cw{} {}, {}, {}", cc(c), gpr(rd), gpr(rn), gpr(rm)),
+
+            // ---- load-acquire / store-release ----
+            Lda_A1(c, rt, rn) => format!("lda{} {}, [{}]", cc(c), gpr(rt), gpr(rn)),
+            Ldab_A1(c, rt, rn) => format!("ldab{} {}, [{}]", cc(c), gpr(rt), gpr(rn)),
+            Ldah_A1(c, rt, rn) => format!("ldah{} {}, [{}]", cc(c), gpr(rt), gpr(rn)),
+            Stl_A1(c, rt, rn) => format!("stl{} {}, [{}]", cc(c), gpr(rt), gpr(rn)),
+            Stlb_A1(c, rt, rn) => format!("stlb{} {}, [{}]", cc(c), gpr(rt), gpr(rn)),
+            Stlh_A1(c, rt, rn) => format!("stlh{} {}, [{}]", cc(c), gpr(rt), gpr(rn)),
+            Ldaex_A1(c, rt, rn) => format!("ldaex{} {}, [{}]", cc(c), gpr(rt), gpr(rn)),
+            Ldaexb_A1(c, rt, rn) => format!("ldaexb{} {}, [{}]", cc(c), gpr(rt), gpr(rn)),
+            Ldaexh_A1(c, rt, rn) => format!("ldaexh{} {}, [{}]", cc(c), gpr(rt), gpr(rn)),
+            Ldaexd_A1(c, rt, rn) => format!("ldaexd{} {}, {}, [{}]", cc(c), gpr(rt), gpr(&next_reg(rt)), gpr(rn)),
+            Stlex_A1(c, rd, rt, rn) => format!("stlex{} {}, {}, [{}]", cc(c), gpr(rd), gpr(rt), gpr(rn)),
+            Stlexb_A1(c, rd, rt, rn) => format!("stlexb{} {}, {}, [{}]", cc(c), gpr(rd), gpr(rt), gpr(rn)),
+            Stlexh_A1(c, rd, rt, rn) => format!("stlexh{} {}, {}, [{}]", cc(c), gpr(rd), gpr(rt), gpr(rn)),
+            Stlexd_A1(c, rd, rt, rn) => format!("stlexd{} {}, {}, {}, [{}]", cc(c), gpr(rd), gpr(rt), gpr(&next_reg(rt)), gpr(rn)),
+
+            // ---- VFP load/store ----
+            Vldr_Single_A1(c, sd, rn, off) => format!("vldr{} {}, {}", cc(c), single(sd), fp_mem(rn, *off as i64, syntax)),
+            Vstr_Single_A1(c, sd, rn, off) => format!("vstr{} {}, {}", cc(c), single(sd), fp_mem(rn, *off as i64, syntax)),
+            Vldr_Double_A1(c, dd, rn, off) => format!("vldr{} {}, {}", cc(c), double(dd), fp_mem(rn, *off as i64, syntax)),
+            Vstr_Double_A1(c, dd, rn, off) => format!("vstr{} {}, {}", cc(c), double(dd), fp_mem(rn, *off as i64, syntax)),
+            Vldm_Single_A1(c, rn, wb, db, first, count) => render_vldm("vldm", c, rn, *wb, *db, single_range(first, *count), true),
+            Vstm_Single_A1(c, rn, wb, db, first, count) => render_vldm("vstm", c, rn, *wb, *db, single_range(first, *count), false),
+            Vldm_Double_A1(c, rn, wb, db, first, count) => render_vldm("vldm", c, rn, *wb, *db, double_range(first, *count), true),
+            Vstm_Double_A1(c, rn, wb, db, first, count) => render_vldm("vstm", c, rn, *wb, *db, double_range(first, *count), false),
+
+            // ---- VFP data-processing ----
+            FpDataProcess3_Single_A1(c, op, sd, sn, sm) => format!("{}{}.f32 {}, {}, {}", fp3_mnemonic(*op), cc(c), single(sd), single(sn), single(sm)),
+            FpDataProcess3_Double_A1(c, op, dd, dn, dm) => format!("{}{}.f64 {}, {}, {}", fp3_mnemonic(*op), cc(c), double(dd), double(dn), double(dm)),
+            FpDataProcess2_Single_A1(c, op, sd, sm) => format!("{}{}.f32 {}, {}", fp2_mnemonic(*op), cc(c), single(sd), single(sm)),
+            FpDataProcess2_Double_A1(c, op, dd, dm) => format!("{}{}.f64 {}, {}", fp2_mnemonic(*op), cc(c), double(dd), double(dm)),
+
+            // ---- VFP compare / transfer / immediate ----
+            Vcmp_Single_A1(c, sd, sm, e) => format!("vcmp{}{}.f32 {}, {}", if *e { "e" } else { "" }, cc(c), single(sd), single(sm)),
+            Vcmp_Double_A1(c, dd, dm, e) => format!("vcmp{}{}.f64 {}, {}", if *e { "e" } else { "" }, cc(c), double(dd), double(dm)),
+            Vcmp_Zero_Single_A1(c, sd, e) => format!("vcmp{}{}.f32 {}, #0", if *e { "e" } else { "" }, cc(c), single(sd)),
+            Vcmp_Zero_Double_A1(c, dd, e) => format!("vcmp{}{}.f64 {}, #0", if *e { "e" } else { "" }, cc(c), double(dd)),
+            Vmrs_A1(c, rt) => format!("vmrs{} {}, fpscr", cc(c), gpr(rt)),
+            Vmrs_Apsr_Nzcv_A1(c) => format!("vmrs{} apsr_nzcv, fpscr", cc(c)),
+            Vmsr_A1(c, rt) => format!("vmsr{} fpscr, {}", cc(c), gpr(rt)),
+            Vmov_Core_To_Single_A1(c, sn, rt) => format!("vmov{} {}, {}", cc(c), single(sn), gpr(rt)),
+            Vmov_Single_To_Core_A1(c, rt, sn) => format!("vmov{} {}, {}", cc(c), gpr(rt), single(sn)),
+            Vmov_Core_To_Scalar_A1(c, size, index, dd, rt) => format!("vmov{}.{} {}[{}], {}", cc(c), size.suffix(), double(dd), index, gpr(rt)),
+            Vmov_Scalar_To_Core_A1(c, unsigned, size, index, rt, dn) => {
+                let dt = match size {
+                    Arm32VmovLaneSize::Word => "32".to_string(),
+                    s => format!("{}{}", if *unsigned { "u" } else { "s" }, s.suffix()),
+                };
+                format!("vmov{}.{} {}, {}[{}]", cc(c), dt, gpr(rt), double(dn), index)
+            },
+            Vmov_Immediate_Single_A1(c, sd, imm8) => format!("vmov{}.f32 {}, {}", cc(c), single(sd), fp_imm(*imm8)),
+            Vmov_Immediate_Double_A1(c, dd, imm8) => format!("vmov{}.f64 {}, {}", cc(c), double(dd), fp_imm(*imm8)),
+            Vmov_Double_To_CorePair_A1(c, rt, rt2, dm) => format!("vmov{} {}, {}, {}", cc(c), gpr(rt), gpr(rt2), double(dm)),
+            Vmov_CorePair_To_Double_A1(c, dm, rt, rt2) => format!("vmov{} {}, {}, {}", cc(c), double(dm), gpr(rt), gpr(rt2)),
+            Vmov_Singles_To_CorePair_A1(c, rt, rt2, sm) => format!("vmov{} {}, {}, {}, {}", cc(c), gpr(rt), gpr(rt2), single(sm), single(&single_next(sm))),
+            Vmov_CorePair_To_Singles_A1(c, sm, rt, rt2) => format!("vmov{} {}, {}, {}, {}", cc(c), single(sm), single(&single_next(sm)), gpr(rt), gpr(rt2)),
+
+            // ---- VFP conversions ----
+            Vcvt_FloatToInt_FromSingle_A1(c, sd, sm, signed, round) => format!("vcvt{}{}.{}.f32 {}, {}", if *round { "" } else { "r" }, cc(c), su32(*signed), single(sd), single(sm)),
+            Vcvt_FloatToInt_FromDouble_A1(c, sd, dm, signed, round) => format!("vcvt{}{}.{}.f64 {}, {}", if *round { "" } else { "r" }, cc(c), su32(*signed), single(sd), double(dm)),
+            Vcvt_IntToFloat_ToSingle_A1(c, sd, sm, signed) => format!("vcvt{}.f32.{} {}, {}", cc(c), su32(*signed), single(sd), single(sm)),
+            Vcvt_IntToFloat_ToDouble_A1(c, dd, sm, signed) => format!("vcvt{}.f64.{} {}, {}", cc(c), su32(*signed), double(dd), single(sm)),
+            Vcvt_Single_To_Double_A1(c, dd, sm) => format!("vcvt{}.f64.f32 {}, {}", cc(c), double(dd), single(sm)),
+            Vcvt_Double_To_Single_A1(c, sd, dm) => format!("vcvt{}.f32.f64 {}, {}", cc(c), single(sd), double(dm)),
+            Vcvt_HalfToSingle_A1(c, sd, sm, top) => format!("vcvt{}{}.f32.f16 {}, {}", if *top { "t" } else { "b" }, cc(c), single(sd), single(sm)),
+            Vcvt_SingleToHalf_A1(c, sd, sm, top) => format!("vcvt{}{}.f16.f32 {}, {}", if *top { "t" } else { "b" }, cc(c), single(sd), single(sm)),
+            Vcvt_HalfToDouble_A1(c, dd, sm, top) => format!("vcvt{}{}.f64.f16 {}, {}", if *top { "t" } else { "b" }, cc(c), double(dd), single(sm)),
+            Vcvt_DoubleToHalf_A1(c, sd, dm, top) => format!("vcvt{}{}.f16.f64 {}, {}", if *top { "t" } else { "b" }, cc(c), single(sd), double(dm)),
+            Vjcvt_A1(c, sd, dm) => format!("vjcvt{}.s32.f64 {}, {}", cc(c), single(sd), double(dm)),
+            Vcvt_FloatToFixed_Single_A1(c, sd, signed, bits32, frac) => format!("vcvt{}.{}.f32 {}, {}, #{}", cc(c), fixed_type(*signed, *bits32), single(sd), single(sd), frac),
+            Vcvt_FloatToFixed_Double_A1(c, dd, signed, bits32, frac) => format!("vcvt{}.{}.f64 {}, {}, #{}", cc(c), fixed_type(*signed, *bits32), double(dd), double(dd), frac),
+            Vcvt_FixedToFloat_Single_A1(c, sd, signed, bits32, frac) => format!("vcvt{}.f32.{} {}, {}, #{}", cc(c), fixed_type(*signed, *bits32), single(sd), single(sd), frac),
+            Vcvt_FixedToFloat_Double_A1(c, dd, signed, bits32, frac) => format!("vcvt{}.f64.{} {}, {}, #{}", cc(c), fixed_type(*signed, *bits32), double(dd), double(dd), frac),
+
+            // ---- ARMv8 FP additions ----
+            Vsel_Single_A1(cc_, sd, sn, sm) => format!("vsel{}.f32 {}, {}, {}", vsel_cond(*cc_), single(sd), single(sn), single(sm)),
+            Vsel_Double_A1(cc_, dd, dn, dm) => format!("vsel{}.f64 {}, {}, {}", vsel_cond(*cc_), double(dd), double(dn), double(dm)),
+            Vmaxnm_Single_A1(sd, sn, sm) => format!("vmaxnm.f32 {}, {}, {}", single(sd), single(sn), single(sm)),
+            Vmaxnm_Double_A1(dd, dn, dm) => format!("vmaxnm.f64 {}, {}, {}", double(dd), double(dn), double(dm)),
+            Vminnm_Single_A1(sd, sn, sm) => format!("vminnm.f32 {}, {}, {}", single(sd), single(sn), single(sm)),
+            Vminnm_Double_A1(dd, dn, dm) => format!("vminnm.f64 {}, {}, {}", double(dd), double(dn), double(dm)),
+            Vrint_Directed_Single_A1(mode, sd, sm) => format!("vrint{}.f32 {}, {}", directed_round(*mode), single(sd), single(sm)),
+            Vrint_Directed_Double_A1(mode, dd, dm) => format!("vrint{}.f64 {}, {}", directed_round(*mode), double(dd), double(dm)),
+            Vrint_Cond_Single_A1(c, mode, sd, sm) => format!("vrint{}{}.f32 {}, {}", vrint_mode(*mode), cc(c), single(sd), single(sm)),
+            Vrint_Cond_Double_A1(c, mode, dd, dm) => format!("vrint{}{}.f64 {}, {}", vrint_mode(*mode), cc(c), double(dd), double(dm)),
+            Vcvt_Directed_FromSingle_A1(mode, sd, sm, signed) => format!("vcvt{}.{}.f32 {}, {}", directed_round(*mode), su32(*signed), single(sd), single(sm)),
+            Vcvt_Directed_FromDouble_A1(mode, sd, dm, signed) => format!("vcvt{}.{}.f64 {}, {}", directed_round(*mode), su32(*signed), single(sd), double(dm)),
+
+            // ---- NEON 3-reg-same ----
+            NeonInt3Same_D_A1(op, size, dd, dn, dm) => format!("{} {}, {}, {}", neon_int_type(*op, *size), double(dd), double(dn), double(dm)),
+            NeonInt3Same_Q_A1(op, size, qd, qn, qm) => format!("{} {}, {}, {}", neon_int_type(*op, *size), quad(qd), quad(qn), quad(qm)),
+            NeonFloat3Same_D_A1(op, dd, dn, dm) => format!("{}.f32 {}, {}, {}", neon_float_mnemonic(*op), double(dd), double(dn), double(dm)),
+            NeonFloat3Same_Q_A1(op, qd, qn, qm) => format!("{}.f32 {}, {}, {}", neon_float_mnemonic(*op), quad(qd), quad(qn), quad(qm)),
+            NeonBitwise3Same_D_A1(op, dd, dn, dm) => format!("{} {}, {}, {}", neon_bitwise_mnemonic(*op), double(dd), double(dn), double(dm)),
+            NeonBitwise3Same_Q_A1(op, qd, qn, qm) => format!("{} {}, {}, {}", neon_bitwise_mnemonic(*op), quad(qd), quad(qn), quad(qm)),
+
+            // ---- NEON 2-reg-misc ----
+            NeonMisc2Sized_D_A1(op, size, dd, dm) => neon_misc2_sized(*op, *size, &double(dd), &double(dm)),
+            NeonMisc2Sized_Q_A1(op, size, qd, qm) => neon_misc2_sized(*op, *size, &quad(qd), &quad(qm)),
+            NeonMisc2Fixed_D_A1(op, dd, dm) => neon_misc2_fixed(*op, &double(dd), &double(dm)),
+            NeonMisc2Fixed_Q_A1(op, qd, qm) => neon_misc2_fixed(*op, &quad(qd), &quad(qm)),
+            NeonMisc2Narrow_A1(op, size, dd, qm) => format!("{} {}, {}", neon_narrow_type(*op, *size), double(dd), quad(qm)),
+            NeonShllMax_A1(size, qd, dm) => format!("vshll.i{} {}, {}, #{}", nbits(*size), quad(qd), double(dm), nbits(*size)),
+
+            // ---- NEON 3-reg-different ----
+            NeonDiffLong_A1(op, size, qd, dn, dm) => format!("{} {}, {}, {}", neon_difflong_type(*op, *size), quad(qd), double(dn), double(dm)),
+            NeonDiffWide_A1(op, size, qd, qn, dm) => format!("{} {}, {}, {}", neon_diffwide_type(*op, *size), quad(qd), quad(qn), double(dm)),
+            NeonDiffNarrow_A1(op, size, dd, qn, qm) => format!("{}.i{} {}, {}, {}", neon_diffnarrow_mnemonic(*op), nbits(*size), double(dd), quad(qn), quad(qm)),
+
+            // ---- NEON 2-reg-and-a-scalar ----
+            NeonScalar_D_A1(op, size, dd, dn, dm, idx) => format!("{} {}, {}, {}", neon_scalar_type(*op, *size), double(dd), double(dn), scalar(dm, *idx)),
+            NeonScalar_Q_A1(op, size, qd, qn, dm, idx) => format!("{} {}, {}, {}", neon_scalar_type(*op, *size), quad(qd), quad(qn), scalar(dm, *idx)),
+            NeonScalarLong_A1(op, size, qd, dn, dm, idx) => format!("{} {}, {}, {}", neon_scalarlong_type(*op, *size), quad(qd), double(dn), scalar(dm, *idx)),
+
+            // ---- NEON 2-reg-and-a-shift ----
+            NeonShift_D_A1(op, size, shift, dd, dm) => format!("{} {}, {}, #{}", neon_shift_type(*op, *size), double(dd), double(dm), shift),
+            NeonShift_Q_A1(op, size, shift, qd, qm) => format!("{} {}, {}, #{}", neon_shift_type(*op, *size), quad(qd), quad(qm), shift),
+            NeonShiftNarrow_A1(op, size, shift, dd, qm) => format!("{} {}, {}, #{}", neon_shiftnarrow_type(*op, *size), double(dd), quad(qm), shift),
+            // NB: the `signed` field is the raw U bit (U=1 is unsigned), so the type letter is inverted here.
+            NeonShiftLong_A1(signed, size, shift, qd, dm) => { let ty = if *signed { "u" } else { "s" }; if *shift == 0 { format!("vmovl.{}{} {}, {}", ty, nbits(*size), quad(qd), double(dm)) } else { format!("vshll.{}{} {}, {}, #{}", ty, nbits(*size), quad(qd), double(dm), shift) } },
+
+            // ---- NEON extract / table / duplicate / immediate ----
+            NeonExt_D_A1(off, dd, dn, dm) => format!("vext.8 {}, {}, {}, #{}", double(dd), double(dn), double(dm), off),
+            NeonExt_Q_A1(off, qd, qn, qm) => format!("vext.8 {}, {}, {}, #{}", quad(qd), quad(qn), quad(qm), off),
+            NeonTableLookup_A1(is_vtbx, length, dd, dn, dm) => format!("{} {}, {}, {}", if *is_vtbx { "vtbx.8" } else { "vtbl.8" }, double(dd), table_list(dn, *length), double(dm)),
+            NeonVdupScalar_D_A1(size, idx, dd, dm) => format!("vdup.{} {}, {}", nbits(*size), double(dd), scalar(dm, *idx)),
+            NeonVdupScalar_Q_A1(size, idx, qd, dm) => format!("vdup.{} {}, {}", nbits(*size), quad(qd), scalar(dm, *idx)),
+            NeonVdupCore_D_A1(c, size, dd, rt) => format!("vdup{}.{} {}, {}", cc(c), nbits(*size), double(dd), gpr(rt)),
+            NeonVdupCore_Q_A1(c, size, qd, rt) => format!("vdup{}.{} {}, {}", cc(c), nbits(*size), quad(qd), gpr(rt)),
+            NeonModifiedImmediate_D_A1(cmode, op, imm8, dd) => neon_modified_immediate(*cmode, *op, *imm8, &double(dd)),
+            NeonModifiedImmediate_Q_A1(cmode, op, imm8, qd) => neon_modified_immediate(*cmode, *op, *imm8, &quad(qd)),
+
+            // ---- NEON element/structure load/store ----
+            NeonLoadStoreMultiple_A1(is_load, type_bits, size, align, first, rn, address) => neon_ldst_multiple(*is_load, *type_bits, *size, *align, first, rn, *address),
+            NeonLoadStoreSingleLane_A1(is_load, n, size, index_align, first, rn, address) => neon_ldst_single_lane(*is_load, *n, *size, *index_align, first, rn, *address),
+            NeonLoadStoreAllLanes_A1(n, size, t, a, first, rn, address) => neon_ldst_all_lanes(*n, *size, *t, *a, first, rn, *address),
+
+            // ---- ARMv8 crypto ----
+            NeonAes_A1(op, qd, qm) => format!("{}.8 {}, {}", aes_mnemonic(*op), quad(qd), quad(qm)),
+            NeonSha3Reg_A1(op, qd, qn, qm) => format!("{}.32 {}, {}, {}", sha3_mnemonic(*op), quad(qd), quad(qn), quad(qm)),
+            NeonSha2Reg_A1(op, qd, qm) => format!("{}.32 {}, {}", sha2_mnemonic(*op), quad(qd), quad(qm)),
+
+            // ---- preload ----
+            Pld_A1(rn, offset) => format!("pld {}", preload_mem(rn, offset)),
+            Pldw_A1(rn, offset) => format!("pldw {}", preload_mem(rn, offset)),
+            Pli_A1(rn, offset) => format!("pli {}", preload_mem(rn, offset)),
+
+            // ---- exception save / return ----
+            Rfe_A1(mode, rn, wb) => format!("rfe{} {}{}", block_suffix(*mode), gpr(rn), if *wb { "!" } else { "" }),
+            Srs_A1(mode, wb, mode_num) => format!("srs{} sp{}, #{}", block_suffix(*mode), if *wb { "!" } else { "" }, mode_num),
+
+            // ---- branch / interwork ----
+            B_A1(c, offset) => render_branch(&format!("b{}", cc(c)), instruction_address, *offset as i64, syntax),
+            Bl_A1(c, offset) => render_branch(&format!("bl{}", cc(c)), instruction_address, *offset as i64, syntax),
+            Blx_Immediate_A1(offset) => render_branch("blx", instruction_address, *offset as i64, syntax),
+            Bx_A1(c, rm) => format!("bx{} {}", cc(c), gpr(rm)),
+            Blx_Register_A1(c, rm) => format!("blx{} {}", cc(c), gpr(rm)),
+            Bxj_A1(c, rm) => format!("bxj{} {}", cc(c), gpr(rm)),
+        }
+    }
+}
+
 // ================= condition / flag / register helpers =================
 
 // A32 condition suffix: AL (the "always" code) renders as nothing.

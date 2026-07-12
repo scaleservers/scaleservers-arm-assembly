@@ -12,6 +12,39 @@
 // Encode helpers take one argument per instruction field; >7 args is natural for an ISA codec, not a smell.
 #![allow(clippy::too_many_arguments)]
 
+//! ARM 32-bit assembly encode/decode library.
+//!
+//! There are two central models, kept as **separate types** so a compiler backend cannot mix the two
+//! instruction sets within one code stream: [`ArmT32Instruction`] (Thumb / T32 -- the full M-profile set:
+//! ARMv6-M, ARMv7-M, ARMv7E-M DSP + hardware floating point, the ARMv8-M Security Extension, and the complete
+//! ARMv8.1-M MVE/"Helium" vector extension) and [`ArmA32Instruction`] (ARM state / A32 -- the A/R-profile set
+//! including NEON + VFP). [`Arm32Instruction`] is the interworking union of both. Every instruction offers the
+//! family signatures: `encode` (model -> machine bytes), `decode` (bytes -> model, the exact inverse of
+//! `encode`), `encode_for_target(&ArmTargetProfile)` (target/ISA gating -- refuses forms the chosen CPU cannot
+//! run), and `to_assembly_string(syntax)` (model -> UAL text, in LLVM or GNU flavor). The console `arm32asm`
+//! (assembler) and `arm32dasm` (disassembler) are thin tools over this library.
+//!
+//! Decoding never panics on arbitrary input -- malformed bytes yield a [`DecodeError`], never a crash (a
+//! disassembler consumes untrusted binaries); this is enforced by deterministic robustness sweeps and a
+//! cargo-fuzz campaign.
+//!
+//! ```
+//! use scaleservers_arm32_assembly::{ArmT32Instruction, ArmAssemblySyntax};
+//!
+//! // model -> machine bytes (Thumb is little-endian; NOP is the halfword 0xBF00)
+//! let nop = ArmT32Instruction::Nop_T1;
+//! assert_eq!(nop.encode().unwrap(), [0x00, 0xbf]);
+//!
+//! // model -> UAL assembly text
+//! assert_eq!(nop.to_assembly_string(ArmAssemblySyntax::Gnu), "nop");
+//!
+//! // machine bytes -> model (decode is the exact inverse of encode)
+//! let bytes = [0x00u8, 0xbf];
+//! let mut offset = 0;
+//! let decoded = ArmT32Instruction::decode(&mut bytes.iter(), &mut offset).unwrap().unwrap();
+//! assert_eq!(decoded, nop);
+//! ```
+
 // `alloc` supplies the heap collections (`Vec`/`String`/`Box`) the codec returns under `no_std`; `#[macro_use]`
 // brings the `vec!`/`format!` macros into scope crate-wide so per-file imports stay minimal. (Placed after the
 // inner attributes / crate doc comment, since `extern crate` is an item and inner attributes must precede it.)
