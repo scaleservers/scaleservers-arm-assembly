@@ -188,3 +188,174 @@ fn encode__armv7m_batch4_modified_immediate_exact_bytes() {
     ); // tst.w  r2, #0x80000000
 }
 
+#[test]
+fn encode__armv7m_batch5_exact_bytes() {
+    // ADC/SBC/RSB/ORN immediate -- bytes verified against clang & GNU as
+    assert_eq!(
+        ArmT32Instruction::Adc_Immediate_T1(R::R0, R::R1, 0xFF, false)
+            .encode()
+            .unwrap(),
+        vec![0x41, 0xF1, 0xFF, 0x00]
+    ); // adc  r0, r1, #0xff
+    assert_eq!(
+        ArmT32Instruction::Adc_Immediate_T1(R::R2, R::R3, 0x100, true)
+            .encode()
+            .unwrap(),
+        vec![0x53, 0xF5, 0x80, 0x72]
+    ); // adcs r2, r3, #0x100
+    assert_eq!(
+        ArmT32Instruction::Sbc_Immediate_T1(R::R4, R::R5, 0xFF000000, false)
+            .encode()
+            .unwrap(),
+        vec![0x65, 0xF1, 0x7F, 0x44]
+    ); // sbc r4, r5, #0xff000000
+    assert_eq!(
+        ArmT32Instruction::Rsb_Immediate_T2(R::R6, R::R7, 0xAB00AB00, false)
+            .encode()
+            .unwrap(),
+        vec![0xC7, 0xF1, 0xAB, 0x26]
+    ); // rsb r6, r7, #0xab00ab00
+    assert_eq!(
+        ArmT32Instruction::Orn_Immediate_T1(R::R2, R::R3, 0xFF00FF00, false)
+            .encode()
+            .unwrap(),
+        vec![0x63, 0xF0, 0xFF, 0x22]
+    ); // orn r2, r3, #0xff00ff00
+    assert_eq!(
+        ArmT32Instruction::Orn_Immediate_T1(R::R4, R::R5, 0xFF, true)
+            .encode()
+            .unwrap(),
+        vec![0x75, 0xF0, 0xFF, 0x04]
+    ); // orns r4, r5, #0xff
+}
+
+#[test]
+fn encode__armv7m_batch6_shifted_register_exact_bytes() {
+    // bytes verified against `clang --target=thumbv7m-none-eabi`
+    assert_eq!(
+        ArmT32Instruction::Add_Register_T3(R::R0, R::R1, R::R2, Shift::Lsl(0), false)
+            .encode()
+            .unwrap(),
+        vec![0x01, 0xEB, 0x02, 0x00]
+    ); // add.w  r0, r1, r2
+    assert_eq!(
+        ArmT32Instruction::Add_Register_T3(R::R0, R::R1, R::R2, Shift::Lsl(3), false)
+            .encode()
+            .unwrap(),
+        vec![0x01, 0xEB, 0xC2, 0x00]
+    ); // add.w  r0, r1, r2, lsl #3
+    assert_eq!(
+        ArmT32Instruction::Sub_Register_T2(R::R3, R::R4, R::R5, Shift::Lsr(2), false)
+            .encode()
+            .unwrap(),
+        vec![0xA4, 0xEB, 0x95, 0x03]
+    ); // sub.w  r3, r4, r5, lsr #2
+    assert_eq!(
+        ArmT32Instruction::And_Register_T2(R::R6, R::R7, R::R8, Shift::Asr(1), false)
+            .encode()
+            .unwrap(),
+        vec![0x07, 0xEA, 0x68, 0x06]
+    ); // and.w  r6, r7, r8, asr #1
+    assert_eq!(
+        ArmT32Instruction::Orr_Register_T2(R::R0, R::R1, R::R2, Shift::Ror(4), false)
+            .encode()
+            .unwrap(),
+        vec![0x41, 0xEA, 0x32, 0x10]
+    ); // orr.w  r0, r1, r2, ror #4
+    assert_eq!(
+        ArmT32Instruction::Bic_Register_T2(R::R6, R::R7, R::R8, Shift::Lsl(5), false)
+            .encode()
+            .unwrap(),
+        vec![0x27, 0xEA, 0x48, 0x16]
+    ); // bic.w  r6, r7, r8, lsl #5
+    assert_eq!(
+        ArmT32Instruction::Add_Register_T3(R::R0, R::R8, R::R9, Shift::Lsl(0), true)
+            .encode()
+            .unwrap(),
+        vec![0x18, 0xEB, 0x09, 0x00]
+    ); // adds.w r0, r8, r9
+    assert_eq!(
+        ArmT32Instruction::Sub_Register_T2(R::R10, R::R11, R::R12, Shift::Asr(31), true)
+            .encode()
+            .unwrap(),
+        vec![0xBB, 0xEB, 0xEC, 0x7A]
+    ); // subs.w r10, r11, r12, asr #31
+}
+
+#[test]
+fn encode__armv7m_batch7_shifted_register_aliases_exact_bytes() {
+    // bytes verified against `clang --target=thumbv7m-none-eabi`
+    assert_eq!(
+        ArmT32Instruction::Adc_Register_T2(R::R0, R::R1, R::R2, Shift::Lsl(3), false)
+            .encode()
+            .unwrap(),
+        vec![0x41, 0xEB, 0xC2, 0x00]
+    ); // adc.w  r0, r1, r2, lsl #3
+    assert_eq!(
+        ArmT32Instruction::Sbc_Register_T2(R::R3, R::R4, R::R5, Shift::Asr(2), false)
+            .encode()
+            .unwrap(),
+        vec![0x64, 0xEB, 0xA5, 0x03]
+    ); // sbc.w  r3, r4, r5, asr #2
+    assert_eq!(
+        ArmT32Instruction::Rsb_Register_T1(R::R6, R::R7, R::R8, Shift::Lsr(1), false)
+            .encode()
+            .unwrap(),
+        vec![0xC7, 0xEB, 0x58, 0x06]
+    ); // rsb.w  r6, r7, r8, lsr #1
+    assert_eq!(
+        ArmT32Instruction::Orn_Register_T1(R::R0, R::R1, R::R2, Shift::Ror(4), false)
+            .encode()
+            .unwrap(),
+        vec![0x61, 0xEA, 0x32, 0x10]
+    ); // orn.w  r0, r1, r2, ror #4
+    assert_eq!(
+        ArmT32Instruction::Mov_Register_T3(R::R0, R::R1, Shift::Lsl(0), false)
+            .encode()
+            .unwrap(),
+        vec![0x4F, 0xEA, 0x01, 0x00]
+    ); // mov.w  r0, r1
+    assert_eq!(
+        ArmT32Instruction::Mov_Register_T3(R::R0, R::R1, Shift::Lsl(3), false)
+            .encode()
+            .unwrap(),
+        vec![0x4F, 0xEA, 0xC1, 0x00]
+    ); // lsl.w  r0, r1, #3
+    assert_eq!(
+        ArmT32Instruction::Mov_Register_T3(R::R4, R::R5, Shift::Asr(5), false)
+            .encode()
+            .unwrap(),
+        vec![0x4F, 0xEA, 0x65, 0x14]
+    ); // asr.w  r4, r5, #5
+    assert_eq!(
+        ArmT32Instruction::Mov_Register_T3(R::R0, R::R1, Shift::Rrx, false)
+            .encode()
+            .unwrap(),
+        vec![0x4F, 0xEA, 0x31, 0x00]
+    ); // rrx    r0, r1
+    assert_eq!(
+        ArmT32Instruction::Mvn_Register_T2(R::R0, R::R1, Shift::Lsl(2), true)
+            .encode()
+            .unwrap(),
+        vec![0x7F, 0xEA, 0x81, 0x00]
+    ); // mvns.w r0, r1, lsl #2
+    assert_eq!(
+        ArmT32Instruction::Tst_Register_T2(R::R0, R::R1, Shift::Lsl(3))
+            .encode()
+            .unwrap(),
+        vec![0x10, 0xEA, 0xC1, 0x0F]
+    ); // tst.w  r0, r1, lsl #3
+    assert_eq!(
+        ArmT32Instruction::Cmn_Register_T2(R::R4, R::R5, Shift::Asr(1))
+            .encode()
+            .unwrap(),
+        vec![0x14, 0xEB, 0x65, 0x0F]
+    ); // cmn.w  r4, r5, asr #1
+    assert_eq!(
+        ArmT32Instruction::Cmp_Register_T3(R::R6, R::R7, Shift::Lsl(2))
+            .encode()
+            .unwrap(),
+        vec![0xB6, 0xEB, 0x87, 0x0F]
+    ); // cmp.w  r6, r7, lsl #2
+}
+
