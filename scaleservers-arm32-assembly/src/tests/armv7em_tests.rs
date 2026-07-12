@@ -771,3 +771,283 @@ fn round_trip__m8i_fp_compare_move() {
     }
 }
 
+#[test]
+fn encode__m8i_vcvt_exact_bytes() {
+    // bytes verified against `clang --target=thumbv7em-none-eabi -mcpu=cortex-m7 -mfpu=fpv5-d16`
+    assert_eq!(
+        ArmT32Instruction::Vcvt_FloatToInt_FromSingle_T1(s(0), s(1), true, true)
+            .encode()
+            .unwrap(),
+        vec![0xBD, 0xEE, 0xE0, 0x0A]
+    ); // vcvt.s32.f32
+    assert_eq!(
+        ArmT32Instruction::Vcvt_FloatToInt_FromSingle_T1(s(2), s(3), false, true)
+            .encode()
+            .unwrap(),
+        vec![0xBC, 0xEE, 0xE1, 0x1A]
+    ); // vcvt.u32.f32
+    assert_eq!(
+        ArmT32Instruction::Vcvt_FloatToInt_FromSingle_T1(s(0), s(1), true, false)
+            .encode()
+            .unwrap(),
+        vec![0xBD, 0xEE, 0x60, 0x0A]
+    ); // vcvtr.s32.f32
+    assert_eq!(
+        ArmT32Instruction::Vcvt_IntToFloat_ToSingle_T1(s(4), s(5), true)
+            .encode()
+            .unwrap(),
+        vec![0xB8, 0xEE, 0xE2, 0x2A]
+    ); // vcvt.f32.s32
+    assert_eq!(
+        ArmT32Instruction::Vcvt_IntToFloat_ToSingle_T1(s(6), s(7), false)
+            .encode()
+            .unwrap(),
+        vec![0xB8, 0xEE, 0x63, 0x3A]
+    ); // vcvt.f32.u32
+    assert_eq!(
+        ArmT32Instruction::Vcvt_Single_To_Double_T1(d(0), s(2))
+            .encode()
+            .unwrap(),
+        vec![0xB7, 0xEE, 0xC1, 0x0A]
+    ); // vcvt.f64.f32
+    assert_eq!(
+        ArmT32Instruction::Vcvt_Double_To_Single_T1(s(3), d(4))
+            .encode()
+            .unwrap(),
+        vec![0xF7, 0xEE, 0xC4, 0x1B]
+    ); // vcvt.f32.f64
+    assert_eq!(
+        ArmT32Instruction::Vcvt_FloatToInt_FromDouble_T1(s(0), d(1), true, true)
+            .encode()
+            .unwrap(),
+        vec![0xBD, 0xEE, 0xC1, 0x0B]
+    ); // vcvt.s32.f64
+    assert_eq!(
+        ArmT32Instruction::Vcvt_IntToFloat_ToDouble_T1(d(2), s(3), true)
+            .encode()
+            .unwrap(),
+        vec![0xB8, 0xEE, 0xE1, 0x2B]
+    ); // vcvt.f64.s32
+}
+
+#[test]
+fn round_trip__m8i_vcvt() {
+    for signed in [false, true] {
+        for round in [false, true] {
+            round_trip(&ArmT32Instruction::Vcvt_FloatToInt_FromSingle_T1(
+                s(10),
+                s(20),
+                signed,
+                round,
+            ));
+            round_trip(&ArmT32Instruction::Vcvt_FloatToInt_FromDouble_T1(
+                s(5),
+                d(10),
+                signed,
+                round,
+            ));
+        }
+        round_trip(&ArmT32Instruction::Vcvt_IntToFloat_ToSingle_T1(
+            s(0),
+            s(31),
+            signed,
+        ));
+        round_trip(&ArmT32Instruction::Vcvt_IntToFloat_ToDouble_T1(
+            d(7),
+            s(15),
+            signed,
+        ));
+    }
+    round_trip(&ArmT32Instruction::Vcvt_Single_To_Double_T1(d(0), s(1)));
+    round_trip(&ArmT32Instruction::Vcvt_Double_To_Single_T1(s(2), d(3)));
+}
+
+#[test]
+fn encode__m8i_corners_exact_bytes() {
+    // bytes verified against `clang --target=thumbv7em-none-eabi -mcpu=cortex-m7 -mfpu=fpv5-d16`
+    // VMOV immediate (imm8 0x70 == 1.0)
+    assert_eq!(
+        ArmT32Instruction::Vmov_Immediate_Single_T1(s(0), 0x70)
+            .encode()
+            .unwrap(),
+        vec![0xB7, 0xEE, 0x00, 0x0A]
+    ); // vmov.f32 s0, #1.0
+    assert_eq!(
+        ArmT32Instruction::Vmov_Immediate_Double_T1(d(0), 0x70)
+            .encode()
+            .unwrap(),
+        vec![0xB7, 0xEE, 0x00, 0x0B]
+    ); // vmov.f64 d0, #1.0
+    // VMOV core pairs
+    assert_eq!(
+        ArmT32Instruction::Vmov_Double_To_CorePair_T1(R::R0, R::R1, d(2))
+            .encode()
+            .unwrap(),
+        vec![0x51, 0xEC, 0x12, 0x0B]
+    ); // vmov r0, r1, d2
+    assert_eq!(
+        ArmT32Instruction::Vmov_CorePair_To_Double_T1(d(3), R::R4, R::R5)
+            .encode()
+            .unwrap(),
+        vec![0x45, 0xEC, 0x13, 0x4B]
+    ); // vmov d3, r4, r5
+    assert_eq!(
+        ArmT32Instruction::Vmov_Singles_To_CorePair_T1(R::R6, R::R7, s(8))
+            .encode()
+            .unwrap(),
+        vec![0x57, 0xEC, 0x14, 0x6A]
+    ); // vmov r6, r7, s8, s9
+    assert_eq!(
+        ArmT32Instruction::Vmov_CorePair_To_Singles_T1(s(10), R::R2, R::R3)
+            .encode()
+            .unwrap(),
+        vec![0x43, 0xEC, 0x15, 0x2A]
+    ); // vmov s10, s11, r2, r3
+    // half-precision conversions
+    assert_eq!(
+        ArmT32Instruction::Vcvt_HalfToSingle_T1(s(0), s(1), false)
+            .encode()
+            .unwrap(),
+        vec![0xB2, 0xEE, 0x60, 0x0A]
+    ); // vcvtb.f32.f16 s0, s1
+    assert_eq!(
+        ArmT32Instruction::Vcvt_SingleToHalf_T1(s(4), s(5), false)
+            .encode()
+            .unwrap(),
+        vec![0xB3, 0xEE, 0x62, 0x2A]
+    ); // vcvtb.f16.f32 s4, s5
+    // fixed-point conversions
+    assert_eq!(
+        ArmT32Instruction::Vcvt_FloatToFixed_Single_T1(s(0), true, false, 1)
+            .encode()
+            .unwrap(),
+        vec![0xBE, 0xEE, 0x67, 0x0A]
+    ); // vcvt.s16.f32 s0, s0, #1
+    assert_eq!(
+        ArmT32Instruction::Vcvt_FixedToFloat_Single_T1(s(3), true, false, 3)
+            .encode()
+            .unwrap(),
+        vec![0xFA, 0xEE, 0x66, 0x1A]
+    ); // vcvt.f32.s16 s3, s3, #3
+}
+
+#[test]
+fn round_trip__m8i_corners() {
+    for imm8 in [0u8, 0x70, 0x00, 0x60, 0xF0, 0xFF] {
+        round_trip(&ArmT32Instruction::Vmov_Immediate_Single_T1(s(15), imm8));
+        round_trip(&ArmT32Instruction::Vmov_Immediate_Double_T1(d(7), imm8));
+    }
+    round_trip(&ArmT32Instruction::Vmov_Double_To_CorePair_T1(
+        R::R0,
+        R::R1,
+        d(15),
+    ));
+    round_trip(&ArmT32Instruction::Vmov_CorePair_To_Double_T1(
+        d(8),
+        R::R2,
+        R::R3,
+    ));
+    round_trip(&ArmT32Instruction::Vmov_Singles_To_CorePair_T1(
+        R::R4,
+        R::R5,
+        s(30),
+    ));
+    round_trip(&ArmT32Instruction::Vmov_CorePair_To_Singles_T1(
+        s(0),
+        R::R6,
+        R::R7,
+    ));
+    for top in [false, true] {
+        round_trip(&ArmT32Instruction::Vcvt_HalfToSingle_T1(s(10), s(20), top));
+        round_trip(&ArmT32Instruction::Vcvt_SingleToHalf_T1(s(31), s(0), top));
+    }
+    for signed in [false, true] {
+        round_trip(&ArmT32Instruction::Vcvt_FloatToFixed_Single_T1(
+            s(5),
+            signed,
+            false,
+            7,
+        ));
+        round_trip(&ArmT32Instruction::Vcvt_FloatToFixed_Double_T1(
+            d(5),
+            signed,
+            true,
+            20,
+        ));
+        round_trip(&ArmT32Instruction::Vcvt_FixedToFloat_Single_T1(
+            s(6),
+            signed,
+            true,
+            31,
+        ));
+        round_trip(&ArmT32Instruction::Vcvt_FixedToFloat_Double_T1(
+            d(6),
+            signed,
+            false,
+            16,
+        ));
+    }
+}
+
+#[test]
+fn vfp_immediate_codec__round_trips_representable_values() {
+    use crate::{vfp_encode_f64_to_imm8, vfp_expand_imm8_to_f32};
+    assert_eq!(vfp_expand_imm8_to_f32(0x70), 1.0);
+    assert_eq!(vfp_expand_imm8_to_f32(0x00), 2.0);
+    assert_eq!(vfp_expand_imm8_to_f32(0x60), 0.5);
+    assert_eq!(vfp_expand_imm8_to_f32(0xF0), -1.0);
+    assert_eq!(vfp_encode_f64_to_imm8(1.0), Some(0x70));
+    assert_eq!(vfp_encode_f64_to_imm8(0.5), Some(0x60));
+    assert_eq!(vfp_encode_f64_to_imm8(-1.0), Some(0xF0));
+    assert_eq!(vfp_encode_f64_to_imm8(0.123456), None); // not representable
+}
+
+#[test]
+fn gating__fp_instruction_requires_floating_point_feature() {
+    let instruction = ArmT32Instruction::Vldr_Single_T2(s(0), R::R0, 0);
+    assert_eq!(
+        instruction.requirement(),
+        ArmInstructionRequirement::new(ArmIsaVersion::Armv7M, &[ArmCpuFeature::FloatingPoint]),
+    );
+    // a plain ARMv7-M target (no FPU) refuses it
+    assert!(
+        instruction
+            .encode_for_target(&ArmTargetProfile::armv7m())
+            .is_err()
+    );
+    // the permissive profile (which has the FloatingPoint feature) accepts it
+    assert_eq!(
+        instruction.encode_for_target(&ArmTargetProfile::permissive()),
+        instruction.encode()
+    );
+}
+
+#[test]
+fn gating__dsp_instruction_requires_dsp_extension() {
+    let instruction = ArmT32Instruction::Qadd_T1(R::R0, R::R1, R::R2);
+
+    // a DSP instruction reports the DSP requirement
+    assert_eq!(
+        instruction.requirement(),
+        ArmInstructionRequirement::new(ArmIsaVersion::Armv7EM, &[ArmCpuFeature::DspExtension]),
+    );
+
+    // a plain ARMv7-M target (no DSP) refuses it
+    assert_eq!(
+        instruction.encode_for_target(&ArmTargetProfile::armv7m()),
+        Err(EncodeError::UnsupportedInstructionForTarget {
+            required: ArmInstructionRequirement::new(
+                ArmIsaVersion::Armv7EM,
+                &[ArmCpuFeature::DspExtension]
+            ),
+            target_isa_version: ArmIsaVersion::Armv7M,
+        }),
+    );
+
+    // an ARMv7E-M (Cortex-M4) target accepts it, and the bytes equal the target-independent encode()
+    assert_eq!(
+        instruction.encode_for_target(&ArmTargetProfile::armv7em()),
+        instruction.encode()
+    );
+}
+
