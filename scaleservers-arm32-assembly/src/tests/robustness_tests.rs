@@ -366,3 +366,92 @@ fn cond_a32() -> crate::enums::ArmT32InstructionCondition {
     crate::enums::ArmT32InstructionCondition::AlwaysUnconditional
 }
 
+// Every MVE op-enum exposes an `ALL` array; iterating each through its instruction variant renders every one
+// of that family's emit arms in BOTH flavors under `cargo test --lib`. The random-byte sweeps rarely reach the
+// rarer MVE/FP forms, so this closes the emit-coverage gap for them WITHOUT depending on the external-assembler
+// differential oracle (which validates the same renderings end-to-end, but only as an integration test). Each
+// rendering must be non-empty and, like everything else, never panic.
+#[test]
+fn every_mve_family_renders_in_both_flavors() {
+    use crate::enums::{
+        Arm32GeneralPurposeRegister, Arm32MveBitwiseOp, Arm32MveFloatArithOp,
+        Arm32MveFloatReduceOp, Arm32MveFloatSize as FSz, Arm32MveIntArithOp, Arm32MveMisc2FloatOp,
+        Arm32MveMisc2Op, Arm32MveReduceOp, Arm32MveSize as Sz, Arm32MveVecScalarFloatOp,
+        Arm32MveVecScalarIntOp, Arm32MveVectorRegister, Arm32MveVrintOp,
+    };
+    use ArmT32Instruction as T;
+    let q = |n: u8| Arm32MveVectorRegister::new(n % 8).unwrap();
+    let g = Arm32GeneralPurposeRegister::from_operand_bits;
+    let isizes = [Sz::I8, Sz::I16, Sz::I32];
+    let fsizes = [FSz::F16, FSz::F32];
+    let render = |i: &ArmT32Instruction| {
+        for flavor in [ArmAssemblySyntax::Gnu, ArmAssemblySyntax::Llvm] {
+            assert!(
+                !i.to_assembly_string(flavor).is_empty(),
+                "empty rendering for {i:?}"
+            );
+        }
+    };
+    for op in Arm32MveIntArithOp::ALL {
+        for sz in isizes {
+            render(&T::MveIntArith(op, sz, q(0), q(1), q(2)));
+        }
+    }
+    for op in Arm32MveBitwiseOp::ALL {
+        render(&T::MveBitwise(op, q(0), q(1), q(2)));
+    }
+    for op in Arm32MveFloatArithOp::ALL {
+        for sz in fsizes {
+            render(&T::MveFloatArith(op, sz, q(0), q(1), q(2)));
+        }
+    }
+    for op in Arm32MveMisc2Op::ALL {
+        for sz in isizes {
+            render(&T::MveMisc2(op, sz, q(0), q(1)));
+        }
+    }
+    for op in Arm32MveMisc2FloatOp::ALL {
+        for sz in fsizes {
+            render(&T::MveMisc2Float(op, sz, q(0), q(1)));
+        }
+    }
+    for op in Arm32MveReduceOp::ALL {
+        for sz in isizes {
+            render(&T::MveReduce(op, sz, g(0), q(1)));
+        }
+    }
+    for op in Arm32MveFloatReduceOp::ALL {
+        for sz in fsizes {
+            render(&T::MveFloatReduce(op, sz, g(0), q(1)));
+        }
+    }
+    for op in Arm32MveVrintOp::ALL {
+        for sz in fsizes {
+            render(&T::MveVrint(op, sz, q(0), q(1)));
+        }
+    }
+    for op in Arm32MveVecScalarIntOp::ALL {
+        for sz in isizes {
+            render(&T::MveVecScalarInt(op, sz, q(0), q(1), g(2)));
+        }
+    }
+    for op in Arm32MveVecScalarFloatOp::ALL {
+        for sz in fsizes {
+            render(&T::MveVecScalarFloat(op, sz, q(0), q(1), g(2)));
+        }
+    }
+    // the elementwise abs-min/max and two-lane VMOV families added in Phase 2
+    for is_min in [false, true] {
+        for sz in isizes {
+            render(&T::MveVmaxaMina(is_min, sz, q(0), q(1)));
+        }
+        for sz in fsizes {
+            render(&T::MveVmaxnmaMinnma(is_min, sz, q(0), q(1)));
+        }
+    }
+    for idx in [2u8, 3] {
+        for tv in [false, true] {
+            render(&T::MveVmovTwoLane(tv, idx, q(0), g(1), g(2)));
+        }
+    }
+}
