@@ -888,3 +888,141 @@ fn encode__modified_immediate_not_representable_errors() {
     );
 }
 
+#[test]
+fn round_trip__armv7m_batch() {
+    let instructions = [
+        ArmT32Instruction::Mov_Immediate_T3(R::R0, 0x1234),
+        ArmT32Instruction::Movt_T1(R::R1, 0xABCD),
+        ArmT32Instruction::Mul_T2(R::R3, R::R4, R::R5),
+        ArmT32Instruction::Mla_T1(R::R0, R::R1, R::R2, R::R3),
+        ArmT32Instruction::Mls_T1(R::R4, R::R5, R::R6, R::R7),
+        ArmT32Instruction::Sdiv_T1(R::R8, R::R9, R::R10),
+        ArmT32Instruction::Udiv_T1(R::R0, R::R1, R::R2),
+        ArmT32Instruction::Clz_T1(R::R11, R::R12),
+        // batch 2
+        ArmT32Instruction::Ubfx_T1(R::R0, R::R1, 4, 8),
+        ArmT32Instruction::Sbfx_T1(R::R2, R::R3, 0, 32),
+        ArmT32Instruction::Bfi_T1(R::R4, R::R5, 31, 1),
+        ArmT32Instruction::Bfc_T1(R::R6, 3, 9),
+        ArmT32Instruction::Rbit_T1(R::R7, R::R8),
+        ArmT32Instruction::Ldr_Immediate_T3(R::R0, R::R1, 4095),
+        ArmT32Instruction::Str_Immediate_T3(R::R2, R::R3, 0),
+        // batch 3
+        ArmT32Instruction::Ldrex_T1(R::R0, R::R1, 1020),
+        ArmT32Instruction::Strex_T1(R::R2, R::R3, R::R4, 0),
+        ArmT32Instruction::Ldrexb_T1(R::R5, R::R6),
+        ArmT32Instruction::Strexb_T1(R::R7, R::R8, R::R9),
+        ArmT32Instruction::Ldrexh_T1(R::R10, R::R11),
+        ArmT32Instruction::Strexh_T1(R::R0, R::R1, R::R2),
+        ArmT32Instruction::Clrex_T1,
+        ArmT32Instruction::Tbb_T1(R::R3, R::R4),
+        ArmT32Instruction::Tbh_T1(R::R5, R::R6),
+        // batch 4 (modified immediate)
+        ArmT32Instruction::Mov_Immediate_T2(R::R0, 0x00AB00AB, false),
+        ArmT32Instruction::Mov_Immediate_T2(R::R1, 0xFF00FF00, true),
+        ArmT32Instruction::Mvn_Immediate_T1(R::R3, 0xFF, false),
+        ArmT32Instruction::And_Immediate_T1(R::R0, R::R1, 0xABABABAB, false),
+        ArmT32Instruction::Bic_Immediate_T1(R::R6, R::R7, 0x00FF00FF, true),
+        ArmT32Instruction::Orr_Immediate_T1(R::R2, R::R3, 0xFF, false),
+        ArmT32Instruction::Eor_Immediate_T1(R::R4, R::R5, 0xFF, true),
+        ArmT32Instruction::Add_Immediate_T3(R::R0, R::R1, 0x100000, false),
+        ArmT32Instruction::Sub_Immediate_T3(R::R4, R::R5, 0xFF000000, true),
+        ArmT32Instruction::Tst_Immediate_T1(R::R2, 0x80000000),
+        ArmT32Instruction::Teq_Immediate_T1(R::R3, 0xFF000000),
+        ArmT32Instruction::Cmn_Immediate_T1(R::R1, 0x00010001),
+        ArmT32Instruction::Cmp_Immediate_T2(R::R0, 0x1000),
+        // batch 5 (rest of the modified-immediate family)
+        ArmT32Instruction::Adc_Immediate_T1(R::R0, R::R1, 0xFF, false),
+        ArmT32Instruction::Adc_Immediate_T1(R::R2, R::R3, 0x100, true),
+        ArmT32Instruction::Sbc_Immediate_T1(R::R4, R::R5, 0xFF000000, false),
+        ArmT32Instruction::Rsb_Immediate_T2(R::R6, R::R7, 0xAB00AB00, true),
+        ArmT32Instruction::Orn_Immediate_T1(R::R8, R::R9, 0xFF00FF00, false),
+        // batch 6 (shifted register)
+        ArmT32Instruction::Add_Register_T3(R::R0, R::R1, R::R2, Shift::Lsl(0), false),
+        ArmT32Instruction::Add_Register_T3(R::R3, R::R4, R::R5, Shift::Lsl(3), true),
+        ArmT32Instruction::Sub_Register_T2(R::R6, R::R7, R::R8, Shift::Lsr(32), false),
+        ArmT32Instruction::And_Register_T2(R::R9, R::R10, R::R11, Shift::Asr(1), true),
+        ArmT32Instruction::Orr_Register_T2(R::R12, R::R0, R::R1, Shift::Ror(31), false),
+        ArmT32Instruction::Eor_Register_T2(R::R2, R::R3, R::R4, Shift::Lsl(0), false),
+        ArmT32Instruction::Bic_Register_T2(R::R5, R::R6, R::R7, Shift::Asr(32), true),
+        // batch 7 (shifted-register alias forms)
+        ArmT32Instruction::Mov_Register_T3(R::R0, R::R1, Shift::Lsl(0), false),
+        ArmT32Instruction::Mov_Register_T3(R::R2, R::R3, Shift::Lsl(3), true),
+        ArmT32Instruction::Mov_Register_T3(R::R4, R::R5, Shift::Lsr(32), false),
+        ArmT32Instruction::Mov_Register_T3(R::R6, R::R7, Shift::Ror(8), false),
+        ArmT32Instruction::Mov_Register_T3(R::R8, R::R9, Shift::Rrx, true),
+        ArmT32Instruction::Mvn_Register_T2(R::R10, R::R11, Shift::Lsl(2), false),
+        ArmT32Instruction::Adc_Register_T2(R::R0, R::R1, R::R2, Shift::Lsl(0), true),
+        ArmT32Instruction::Sbc_Register_T2(R::R3, R::R4, R::R5, Shift::Asr(2), false),
+        ArmT32Instruction::Rsb_Register_T1(R::R6, R::R7, R::R8, Shift::Lsr(1), true),
+        ArmT32Instruction::Orn_Register_T1(R::R9, R::R10, R::R11, Shift::Ror(4), false),
+        ArmT32Instruction::Tst_Register_T2(R::R0, R::R1, Shift::Lsl(3)),
+        ArmT32Instruction::Teq_Register_T1(R::R2, R::R3, Shift::Lsl(0)),
+        ArmT32Instruction::Cmn_Register_T2(R::R4, R::R5, Shift::Asr(1)),
+        ArmT32Instruction::Cmp_Register_T3(R::R6, R::R7, Shift::Rrx),
+        // batch 8 (wide byte/half load/store + register offset)
+        ArmT32Instruction::Ldrb_Immediate_T2(R::R0, R::R1, 4095),
+        ArmT32Instruction::Strh_Immediate_T2(R::R2, R::R3, 0),
+        ArmT32Instruction::Ldrsb_Immediate_T1(R::R4, R::R5, 100),
+        ArmT32Instruction::Ldr_Register_T2(R::R6, R::R7, R::R8, 3),
+        ArmT32Instruction::Strb_Register_T2(R::R9, R::R10, R::R11, 0),
+        ArmT32Instruction::Ldrsh_Register_T2(R::R0, R::R1, R::R2, 1),
+        // batch 9 (long multiply)
+        ArmT32Instruction::Smull_T1(R::R0, R::R1, R::R2, R::R3),
+        ArmT32Instruction::Umull_T1(R::R4, R::R5, R::R6, R::R7),
+        ArmT32Instruction::Smlal_T1(R::R8, R::R9, R::R10, R::R11),
+        ArmT32Instruction::Umlal_T1(R::R0, R::R12, R::R1, R::R2),
+        // batch 10 (wide extend with ROR, wide byte-reverse, saturate)
+        ArmT32Instruction::Sxtb_T2(R::R0, R::R1, 0),
+        ArmT32Instruction::Uxtb_T2(R::R2, R::R3, 8),
+        ArmT32Instruction::Sxth_T2(R::R4, R::R5, 16),
+        ArmT32Instruction::Uxth_T2(R::R6, R::R7, 24),
+        ArmT32Instruction::Rev_T2(R::R8, R::R9),
+        ArmT32Instruction::Rev16_T2(R::R10, R::R11),
+        ArmT32Instruction::Revsh_T2(R::R12, R::R0),
+        ArmT32Instruction::Ssat_T1(R::R0, 1, R::R1, Shift::Lsl(0)),
+        ArmT32Instruction::Ssat_T1(R::R2, 32, R::R3, Shift::Lsl(31)),
+        ArmT32Instruction::Ssat_T1(R::R4, 16, R::R5, Shift::Asr(1)),
+        ArmT32Instruction::Usat_T1(R::R6, 0, R::R7, Shift::Lsl(0)),
+        ArmT32Instruction::Usat_T1(R::R8, 31, R::R9, Shift::Asr(31)),
+        // batch 11 (indexed / dual / literal / preload)
+        ArmT32Instruction::Ldr_Immediate_T4(R::R0, R::R1, -255, Mode::Offset),
+        ArmT32Instruction::Str_Immediate_T4(R::R2, R::R3, 255, Mode::PreIndex),
+        ArmT32Instruction::Ldrb_Immediate_T3(R::R4, R::R5, -16, Mode::PostIndex),
+        ArmT32Instruction::Strh_Immediate_T3(R::R6, R::R7, 8, Mode::PreIndex),
+        ArmT32Instruction::Ldrsb_Immediate_T2(R::R8, R::R9, -4, Mode::Offset),
+        ArmT32Instruction::Ldrsh_Immediate_T2(R::R10, R::R11, -2, Mode::PostIndex),
+        ArmT32Instruction::Ldrd_Immediate_T1(R::R0, R::R1, R::R2, 1020, Mode::Offset),
+        ArmT32Instruction::Ldrd_Immediate_T1(R::R3, R::R4, R::R5, -1020, Mode::PreIndex),
+        ArmT32Instruction::Strd_Immediate_T1(R::R6, R::R7, R::R8, 0, Mode::PostIndex),
+        ArmT32Instruction::Ldr_Literal_T2(R::R0, 4095),
+        ArmT32Instruction::Ldr_Literal_T2(R::R1, -4095),
+        ArmT32Instruction::Ldrb_Literal_T1(R::R2, 0),
+        ArmT32Instruction::Ldrsh_Literal_T1(R::R3, -123),
+        ArmT32Instruction::Pld_Immediate_T1(R::R0, 4095),
+        ArmT32Instruction::Pld_Immediate_T1(R::R1, -255),
+        ArmT32Instruction::Pli_Immediate_T1(R::R2, 8),
+        // batch 12 (wide load/store multiple; register lists ascending so decode reproduces them)
+        ArmT32Instruction::Ldmia_T2(R::R0, false, vec![R::R1, R::R2, R::R3]),
+        ArmT32Instruction::Ldmia_T2(R::R7, true, vec![R::R0, R::R8, R::R15]),
+        ArmT32Instruction::Stmia_T2(R::R1, true, vec![R::R2, R::R3, R::R14]),
+        ArmT32Instruction::Ldmdb_T1(R::R2, false, vec![R::R4, R::R5]),
+        ArmT32Instruction::Stmdb_T1(R::R3, true, vec![R::R6, R::R7, R::R12]),
+        ArmT32Instruction::Stmdb_T1(R::R13, true, vec![R::R4, R::R5, R::R14]),
+        ArmT32Instruction::Ldmia_T2(R::R13, true, vec![R::R0, R::R1, R::R15]),
+    ];
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        assert_eq!(bytes.len(), 4, "all v7-M batch forms are 32-bit");
+        let mut offset = 0;
+        let decoded = ArmT32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4);
+        assert_eq!(
+            decoded, instruction,
+            "decode did not reproduce the encoded instruction"
+        );
+    }
+}
+
