@@ -1026,3 +1026,65 @@ fn round_trip__armv7m_batch() {
     }
 }
 
+#[test]
+fn encode__armv7m_rejects_sp_and_pc_operands() {
+    assert_eq!(
+        ArmT32Instruction::Mul_T2(R::R0, R::R13, R::R2).encode(),
+        Err(EncodeError::RegisterNotEncodable {
+            field: "rn",
+            detail: "SP (R13) is not permitted in this ARMv7-M operand"
+        })
+    );
+    assert_eq!(
+        ArmT32Instruction::Clz_T1(R::R15, R::R0).encode(),
+        Err(EncodeError::RegisterNotEncodable {
+            field: "rd",
+            detail: "PC (R15) is not permitted in this ARMv7-M operand"
+        })
+    );
+}
+
+#[test]
+fn requirement__armv7m_batch_reports_armv7m() {
+    assert_eq!(
+        ArmT32Instruction::Sdiv_T1(R::R0, R::R1, R::R2).requirement(),
+        ArmInstructionRequirement::new(ArmIsaVersion::Armv7M, &[])
+    );
+    // a v6-M instruction stays at the baseline
+    assert_eq!(
+        ArmT32Instruction::Mul_T1(
+            crate::enums::Arm32LowGeneralPurposeRegister::R0,
+            crate::enums::Arm32LowGeneralPurposeRegister::R1
+        )
+        .requirement(),
+        ArmInstructionRequirement::baseline()
+    );
+}
+
+#[test]
+fn encode_for_target__armv6m_target_refuses_armv7m_instruction() {
+    let instruction = ArmT32Instruction::Sdiv_T1(R::R0, R::R1, R::R2);
+
+    // the backend targets ARMv6-M and gets a precise error for a v7-M instruction
+    assert_eq!(
+        instruction.encode_for_target(&ArmTargetProfile::armv6m()),
+        Err(EncodeError::UnsupportedInstructionForTarget {
+            required: ArmInstructionRequirement::new(ArmIsaVersion::Armv7M, &[]),
+            target_isa_version: ArmIsaVersion::Armv6M,
+        })
+    );
+
+    // an ARMv7-M target accepts it, and the bytes equal the target-independent encode()
+    assert_eq!(
+        instruction.encode_for_target(&ArmTargetProfile::armv7m()),
+        instruction.encode()
+    );
+
+    // a v6-M instruction is still emittable under a v6-M target
+    let v6_instruction =
+        ArmT32Instruction::Add_Immediate_T2(crate::enums::Arm32LowGeneralPurposeRegister::R0, 5);
+    assert_eq!(
+        v6_instruction.encode_for_target(&ArmTargetProfile::armv6m()),
+        v6_instruction.encode()
+    );
+}
