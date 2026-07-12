@@ -2191,7 +2191,7 @@ impl ArmT32Instruction {
 
             // Data processing (modified immediate): `11110 i 0 op4 S Rn 0 imm3 Rd imm8` (bit 25 = 0,
             // bit 15 = 0). The op4 field selects the operation, with Rn==PC / Rd==PC selecting the
-            // MOV/MVN and TST/TEQ/CMN/CMP aliases. (ADC/SBC/RSB/ORN are not modeled yet -> fall through.)
+            // MOV/MVN and TST/TEQ/CMN/CMP aliases; unallocated op4 values fall through to InvalidOpcode.
             if word & 0b1111_1010_0000_0000_1000_0000_0000_0000 == 0b1111_0000_0000_0000_0000_0000_0000_0000 {
                 let op4 = (word >> 21) & 0b1111;
                 let set_flags = ((word >> 20) & 0b1) == 1;
@@ -2452,7 +2452,7 @@ impl ArmT32Instruction {
             }
 
             // M8g FP load/store multiple -- reached only after VLDR (P=1,W=0) above, so the remaining FP
-            // load/store words are the multiple forms. Guard PU != 00 (00 is the VMOV core-pair, not modeled).
+            // load/store words are the multiple forms. Guard PU != 00 (PU==00 is the VMOV core-pair, decoded below).
             match word & 0b1111_1110_0001_0000_0000_1111_0000_0000 {
                 0xEC10_0A00 if ((word >> 23) & 1) | ((word >> 24) & 1) == 1 => { let (rn, wb, db, vf, d, imm8) = decode_word_fp_load_store_multiple(word); return Ok(Some(Self::Vldm_Single_T2(g(rn), wb, db, Arm32SinglePrecisionRegister::from_field_and_bit(vf, d), imm8))); },
                 0xEC00_0A00 if ((word >> 23) & 1) | ((word >> 24) & 1) == 1 => { let (rn, wb, db, vf, d, imm8) = decode_word_fp_load_store_multiple(word); return Ok(Some(Self::Vstm_Single_T2(g(rn), wb, db, Arm32SinglePrecisionRegister::from_field_and_bit(vf, d), imm8))); },

@@ -71,8 +71,8 @@ use crate::targets::{
 pub enum ArmA32Instruction {
     // ======================= data processing =======================
     // The three operand forms of each data-processing opcode: immediate (ARM modified immediate),
-    // register (Rm with an immediate barrel shift), and -- added in a later batch -- register-shifted
-    // register. MOV/MVN take no Rn; the compares (TST/TEQ/CMP/CMN) take no Rd and always set flags.
+    // register (Rm with an immediate barrel shift), and register-shifted register. MOV/MVN take no Rn;
+    // the compares (TST/TEQ/CMP/CMN) take no Rd and always set flags.
 
     // -- ops producing Rd from (Rn, operand2) --  opcode AND=0 EOR=1 SUB=2 RSB=3 ADD=4 ADC=5 SBC=6 RSC=7 ORR=12 BIC=14
     And_Immediate_A1(/*cond*/ Arm32Condition, /*S*/ bool, /*rd*/ Arm32GeneralPurposeRegister, /*rn*/ Arm32GeneralPurposeRegister, /*imm32*/ u32),
@@ -996,6 +996,1343 @@ impl ArmA32Instruction {
                 Ok(cond_bits(c) | 0x0F00_0000 | (*imm24 & 0x00FF_FFFF)) // cccc 1111 imm24
             },
         }
+    }
+
+    /// Decode one A32 (ARM-state) instruction -- a single little-endian 32-bit word -- from a byte iterator,
+    /// advancing `iter_offset` by 4. Returns `Ok(None)` at a clean end of input, `Ok(Some(_))` for a
+    /// decoded instruction, or a [`DecodeError`] for malformed or unknown bytes. Never panics on arbitrary
+    /// input.
+    pub fn decode<'a, I>(iter: &mut I, iter_offset: &mut usize) -> Result<Option<Self>, DecodeError> where I: Iterator<Item = &'a u8> {
+        let word = match next_u32le_from_iter(iter, iter_offset)? {
+            Some(value) => value,
+            None => return Ok(None), // EOF; nothing to decode
+        };
+
+        let cond = Arm32Condition::from_operand_bits(((word >> 28) & 0b1111) as u8);
+
+        // Specific (fixed-pattern) encodings are tested before the generic data-processing masks they sit
+        // inside. The cond==0b1111 "unconditional" group (CLREX, memory barriers, PLD/PLI/PLDW,
+        // BLX-immediate) and the misc-instruction space (MRS/MSR and the multiply families) are decoded by
+        // the dedicated arms below.
+
+        // CLREX (unconditional) : 1111 0101 0111 1111 0000 0000 0001 1111
+        if word == 0xF57F_F01F {
+            return Ok(Some(Self::Clrex_A1));
+        }
+        // memory barriers (unconditional) : 1111 0101 0111 1111 0000 0000 op4 option
+        if word & 0xFFFF_FF00 == 0xF57F_F000 {
+            let option = (word & 0xF) as u8;
+            return Ok(Some(match (word >> 4) & 0xF {
+                0b0100 => Self::Dsb_A1(option),
+                0b0101 => Self::Dmb_A1(option),
+                0b0110 => Self::Isb_A1(option),
+                0b0111 => Self::Sb_A1, // SB (option field reads as 0)
+                _ => return Err(DecodeError::InvalidOpcode),
+            }));
+        }
+        // SETEND (unconditional) : 1111 00010000 0001 0000 00 E 0 0000 0000
+        if word & 0xFFFF_FDFF == 0xF101_0000 {
+            return Ok(Some(Self::Setend_A1((word >> 9) & 1 == 1)));
+        }
+        // CPS (unconditional) : 1111 00010000 imod M 0 ... A I F 0 mode
+        if word & 0xFFF1_0020 == 0xF100_0000
+            && let Some(mode) = Arm32CpsMode::from_imod_bits((word >> 18) & 0b11) {
+                let new_mode = if (word >> 17) & 1 == 1 { Some((word & 0x1F) as u8) } else { None };
+                return Ok(Some(Self::Cps_A1(mode, (word >> 8) & 1 == 1, (word >> 7) & 1 == 1, (word >> 6) & 1 == 1, new_mode)));
+            }
+        // ARMv8-A unconditional FP additions (VSEL / VMAXNM / VMINNM / VRINT{A,N,P,M} / VCVT{A,N,P,M}) all sit
+        // in the 1111 1110 ... 101 sz ... space; decoded before the coproc group (which skips coproc 1010/1011).
+        if word & 0xFF00_0E00 == 0xFE00_0A00 {
+            let double = (word >> 8) & 1 == 1;
+            let d_bit = (word >> 22) & 1;
+            let vd_field = (word >> 12) & 0b1111;
+            let vn_field = (word >> 16) & 0b1111;
+            let n_bit = (word >> 7) & 1;
+            let vm_field = word & 0b1111;
+            let m_bit = (word >> 5) & 1;
+            if (word >> 23) & 1 == 0 {
+                // VSEL : cc = bits[21:20]
+                let cc = Arm32VselCondition::from_cc_bits((word >> 20) & 0b11);
+                return Ok(Some(if double {
+                    Self::Vsel_Double_A1(cc, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vn_field, n_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                } else {
+                    Self::Vsel_Single_A1(cc, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vn_field, n_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                }));
+            }
+            // bit23 == 1: VMAXNM/VMINNM ([21:20]=00, op6 picks min) or VRINT/VCVT directed ([21:20]=11).
+            if (word >> 20) & 0b11 == 0b00 {
+                let is_min = (word >> 6) & 1 == 1;
+                return Ok(Some(match (is_min, double) {
+                    (false, false) => Self::Vmaxnm_Single_A1(Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vn_field, n_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit)),
+                    (false, true) => Self::Vmaxnm_Double_A1(Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vn_field, n_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit)),
+                    (true, false) => Self::Vminnm_Single_A1(Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vn_field, n_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit)),
+                    (true, true) => Self::Vminnm_Double_A1(Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vn_field, n_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit)),
+                }));
+            }
+            if (word >> 20) & 0b11 == 0b11 {
+                let rm = Arm32DirectedRound::from_rm_bits((word >> 16) & 0b11);
+                if (word >> 18) & 1 == 0 {
+                    // VRINT{A,N,P,M} (round float to integral float)
+                    return Ok(Some(if double {
+                        Self::Vrint_Directed_Double_A1(rm, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                    } else {
+                        Self::Vrint_Directed_Single_A1(rm, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                    }));
+                } else {
+                    // VCVT{A,N,P,M} (float -> integer in a single register; bit7 = signed)
+                    let signed = (word >> 7) & 1 == 1;
+                    return Ok(Some(if double {
+                        Self::Vcvt_Directed_FromDouble_A1(rm, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit), signed)
+                    } else {
+                        Self::Vcvt_Directed_FromSingle_A1(rm, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit), signed)
+                    }));
+                }
+            }
+            // [21:20] = 01/10 with bit23=1 is unallocated here; fall through to the remaining decoders.
+        }
+        // NEON (Advanced SIMD) three-registers-of-the-same-length : 1111 001 U 0 D size Vn Vd opc N Q M op Vm.
+        // Within the 1111001 space, bit[23]=0 uniquely marks this format (shifts/VEXT/misc/imm/diff/scalar all
+        // set bit[23]=1). The opc routes the family: opc>=1100 float, opc==0001 & op==1 bitwise, else integer.
+        if word & 0xFE80_0000 == 0xF200_0000 {
+            let u = (word >> 24) & 1;
+            let size = (word >> 20) & 0b11;
+            let opc = (word >> 8) & 0b1111;
+            let op = (word >> 4) & 1;
+            let q = (word >> 6) & 1 == 1;
+            let d_bit = (word >> 22) & 1;
+            let n_bit = (word >> 7) & 1;
+            let m_bit = (word >> 5) & 1;
+            let vd_field = (word >> 12) & 0b1111;
+            let vn_field = (word >> 16) & 0b1111;
+            let vm_field = word & 0b1111;
+            if opc >= 0b1100 {
+                if let Some(op_f) = Arm32NeonFloatOp::from_fields(u, opc, op, size) {
+                    return Ok(Some(if q {
+                        Self::NeonFloat3Same_Q_A1(op_f, Arm32QuadwordRegister::from_field_and_bit(vd_field, d_bit), Arm32QuadwordRegister::from_field_and_bit(vn_field, n_bit), Arm32QuadwordRegister::from_field_and_bit(vm_field, m_bit))
+                    } else {
+                        Self::NeonFloat3Same_D_A1(op_f, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vn_field, n_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                    }));
+                }
+            } else if opc == 0b0001 && op == 1 {
+                let op_b = Arm32NeonBitwiseOp::from_fields(u, size);
+                return Ok(Some(if q {
+                    Self::NeonBitwise3Same_Q_A1(op_b, Arm32QuadwordRegister::from_field_and_bit(vd_field, d_bit), Arm32QuadwordRegister::from_field_and_bit(vn_field, n_bit), Arm32QuadwordRegister::from_field_and_bit(vm_field, m_bit))
+                } else {
+                    Self::NeonBitwise3Same_D_A1(op_b, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vn_field, n_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                }));
+            } else if let Some(op_i) = Arm32NeonIntegerOp::from_fields(u, opc, op) {
+                let sz = Arm32NeonSize::from_size_bits(size);
+                return Ok(Some(if q {
+                    Self::NeonInt3Same_Q_A1(op_i, sz, Arm32QuadwordRegister::from_field_and_bit(vd_field, d_bit), Arm32QuadwordRegister::from_field_and_bit(vn_field, n_bit), Arm32QuadwordRegister::from_field_and_bit(vm_field, m_bit))
+                } else {
+                    Self::NeonInt3Same_D_A1(op_i, sz, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vn_field, n_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                }));
+            }
+            // unrecognized 3-reg-same encoding: fall through.
+        }
+        // ARMv8 cryptography extension (NEON). Decoded before the generic 2-reg-misc / (after) 3-reg-same blocks
+        // they nominally sit in, since those op tables intentionally exclude these opcodes.
+        // AES : 1111 0011 1 D 11 00 00 Vd 0011 op M 0 Vm.
+        if word & 0xFFFF_0F10 == 0xF3B0_0300 {
+            let op = Arm32NeonAesOp::from_op_bits((word >> 6) & 0b11);
+            let qd = Arm32QuadwordRegister::from_field_and_bit((word >> 12) & 0b1111, (word >> 22) & 1);
+            let qm = Arm32QuadwordRegister::from_field_and_bit(word & 0b1111, (word >> 5) & 1);
+            return Ok(Some(Self::NeonAes_A1(op, qd, qm)));
+        }
+        // SHA1/SHA256 two-register ops (each a fixed base word).
+        if let Some(op) = Arm32NeonSha2Op::from_base(word & 0xFFFF_0FD0) {
+            let qd = Arm32QuadwordRegister::from_field_and_bit((word >> 12) & 0b1111, (word >> 22) & 1);
+            let qm = Arm32QuadwordRegister::from_field_and_bit(word & 0b1111, (word >> 5) & 1);
+            return Ok(Some(Self::NeonSha2Reg_A1(op, qd, qm)));
+        }
+        // SHA1/SHA256 three-register ops : 1111 001 U 0 D size Vn Vd 1100 N 1 M 0 Vm (opc=1100, op=0, Q=1).
+        if word & 0xFE80_0F50 == 0xF200_0C40
+            && let Some(op) = Arm32NeonSha3Op::from_fields((word >> 24) & 1, (word >> 20) & 0b11) {
+                let qd = Arm32QuadwordRegister::from_field_and_bit((word >> 12) & 0b1111, (word >> 22) & 1);
+                let qn = Arm32QuadwordRegister::from_field_and_bit((word >> 16) & 0b1111, (word >> 7) & 1);
+                let qm = Arm32QuadwordRegister::from_field_and_bit(word & 0b1111, (word >> 5) & 1);
+                return Ok(Some(Self::NeonSha3Reg_A1(op, qd, qn, qm)));
+            }
+        // NEON two-registers-miscellaneous : 1111 0011 1 D 11 size a Vd opc2 bit6 M 0 Vm. Identified by
+        // [24:23,21:20]=(1,1,11) with size=11 and [4]=0 -- the [4]=0 keeps a shift-immediate word whose imm6
+        // top bits read as [21:20]=11 (it has [4]=1) from being mis-claimed here.
+        if word & 0xFFB0_0010 == 0xF3B0_0000 {
+            let d_bit = (word >> 22) & 1;
+            let size_field = (word >> 18) & 0b11;
+            let a = (word >> 16) & 0b11;
+            let vd = (word >> 12) & 0b1111;
+            let opc2 = (word >> 7) & 0b11111;
+            let bit6 = (word >> 6) & 1;
+            let m_bit = (word >> 5) & 1;
+            let vm = word & 0b1111;
+            let q = bit6 == 1;
+            // narrowing (a=10, opc2 00100/00101): Qm -> Dd; bit6 is a sub-opcode, not Q.
+            if a == 0b10 && (opc2 == 0b00100 || opc2 == 0b00101)
+                && let Some(op) = Arm32NeonNarrowOp::from_fields(opc2, bit6) {
+                    let src_size = Arm32NeonSize::from_size_bits((size_field + 1) & 0b11);
+                    return Ok(Some(Self::NeonMisc2Narrow_A1(op, src_size, Arm32DoublePrecisionRegister::from_field_and_bit(vd, d_bit), Arm32QuadwordRegister::from_field_and_bit(vm, m_bit))));
+                }
+            // VSHLL by element size (a=10, opc2 00110): Dm -> Qd.
+            if a == 0b10 && opc2 == 0b00110 {
+                let size = Arm32NeonSize::from_size_bits(size_field);
+                return Ok(Some(Self::NeonShllMax_A1(size, Arm32QuadwordRegister::from_field_and_bit(vd, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm, m_bit))));
+            }
+            // same-width ops: element-sized first, then fixed-size (their (a,opc2) sets are disjoint).
+            if let Some(op) = Arm32NeonMisc2SizedOp::from_fields(a, opc2) {
+                let size = Arm32NeonSize::from_size_bits(size_field);
+                return Ok(Some(if q {
+                    Self::NeonMisc2Sized_Q_A1(op, size, Arm32QuadwordRegister::from_field_and_bit(vd, d_bit), Arm32QuadwordRegister::from_field_and_bit(vm, m_bit))
+                } else {
+                    Self::NeonMisc2Sized_D_A1(op, size, Arm32DoublePrecisionRegister::from_field_and_bit(vd, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm, m_bit))
+                }));
+            }
+            if let Some(op) = Arm32NeonMisc2FixedOp::from_fields(a, opc2) {
+                return Ok(Some(if q {
+                    Self::NeonMisc2Fixed_Q_A1(op, Arm32QuadwordRegister::from_field_and_bit(vd, d_bit), Arm32QuadwordRegister::from_field_and_bit(vm, m_bit))
+                } else {
+                    Self::NeonMisc2Fixed_D_A1(op, Arm32DoublePrecisionRegister::from_field_and_bit(vd, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm, m_bit))
+                }));
+            }
+            // unrecognized (e.g. VDUP-scalar opc2=11xxx, handled elsewhere): fall through.
+        }
+        // NEON three-registers-of-different-lengths : 1111 001 U 1 D size Vn Vd opc N 0 M 0 Vm. [23]=1, [6]=0,
+        // [4]=0; size != 11 (size==11 is the 2-reg-misc/VEXT space, already handled above). opc=[11:8] -> shape.
+        if word & 0xFE80_0050 == 0xF280_0000 && (word >> 20) & 0b11 != 0b11 {
+            let u = (word >> 24) & 1;
+            let size = (word >> 20) & 0b11;
+            let opc = (word >> 8) & 0b1111;
+            let d_bit = (word >> 22) & 1;
+            let n_bit = (word >> 7) & 1;
+            let m_bit = (word >> 5) & 1;
+            let vd = (word >> 12) & 0b1111;
+            let vn = (word >> 16) & 0b1111;
+            let vm = word & 0b1111;
+            if let Some(op) = Arm32NeonDiffWideOp::from_fields(u, opc) {
+                let sz = Arm32NeonSize::from_size_bits(size);
+                return Ok(Some(Self::NeonDiffWide_A1(op, sz, Arm32QuadwordRegister::from_field_and_bit(vd, d_bit), Arm32QuadwordRegister::from_field_and_bit(vn, n_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm, m_bit))));
+            }
+            if let Some(op) = Arm32NeonDiffNarrowOp::from_fields(u, opc) {
+                let sz = Arm32NeonSize::from_size_bits((size + 1) & 0b11);
+                return Ok(Some(Self::NeonDiffNarrow_A1(op, sz, Arm32DoublePrecisionRegister::from_field_and_bit(vd, d_bit), Arm32QuadwordRegister::from_field_and_bit(vn, n_bit), Arm32QuadwordRegister::from_field_and_bit(vm, m_bit))));
+            }
+            if let Some(op) = Arm32NeonDiffLongOp::from_fields(u, opc) {
+                let sz = Arm32NeonSize::from_size_bits(size);
+                return Ok(Some(Self::NeonDiffLong_A1(op, sz, Arm32QuadwordRegister::from_field_and_bit(vd, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vn, n_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm, m_bit))));
+            }
+            // unrecognized opc: fall through.
+        }
+        // NEON two-registers-and-a-scalar : 1111 001 X 1 D size Vn Vd opc N 1 M 0 Vm. [23]=1, [6]=1, [4]=0,
+        // size != 11. opc[1] (bit 9): 0 = same-length (bit24 = Q), 1 = long (bit24 = U). Scalar is Dm[index].
+        if word & 0xFE80_0050 == 0xF280_0040 && (word >> 20) & 0b11 != 0b11 {
+            let bit24 = (word >> 24) & 1;
+            let size = (word >> 20) & 0b11;
+            let opc = (word >> 8) & 0b1111;
+            let d_bit = (word >> 22) & 1;
+            let n_bit = (word >> 7) & 1;
+            let m_bit = (word >> 5) & 1;
+            let vd = (word >> 12) & 0b1111;
+            let vn = (word >> 16) & 0b1111;
+            let vm = word & 0b1111;
+            let (dm_num, index) = neon_scalar_decode(size, vm, m_bit);
+            // dm_num is <= 15 (vm & 0xF); use the total constructor (no unwrap in the decode path).
+            let dm = Arm32DoublePrecisionRegister::from_field_and_bit(dm_num as u32, 0);
+            let sz = Arm32NeonSize::from_size_bits(size);
+            if (opc >> 1) & 1 == 0 {
+                // same-length (opc[1]=0): bit24 = Q
+                if let Some(op) = Arm32NeonScalarOp::from_opc(opc) {
+                    return Ok(Some(if bit24 == 1 {
+                        Self::NeonScalar_Q_A1(op, sz, Arm32QuadwordRegister::from_field_and_bit(vd, d_bit), Arm32QuadwordRegister::from_field_and_bit(vn, n_bit), dm, index)
+                    } else {
+                        Self::NeonScalar_D_A1(op, sz, Arm32DoublePrecisionRegister::from_field_and_bit(vd, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vn, n_bit), dm, index)
+                    }));
+                }
+            } else if let Some(op) = Arm32NeonScalarLongOp::from_fields(bit24, opc) {
+                // long (opc[1]=1): bit24 = U
+                return Ok(Some(Self::NeonScalarLong_A1(op, sz, Arm32QuadwordRegister::from_field_and_bit(vd, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vn, n_bit), dm, index)));
+            }
+            // unrecognized opc: fall through.
+        }
+        // NEON two-registers-and-a-shift-amount : 1111 001 U 1 D imm6 Vd opc L Q M 1 Vm. [23]=1, [4]=1. The
+        // L:imm6 field is < 8 only for the modified-immediate format (its [21:19]=000, L=0) -- guard on that.
+        if word & 0xFE80_0010 == 0xF280_0010 {
+            let u = (word >> 24) & 1;
+            let imm6 = (word >> 16) & 0x3F;
+            let opc = (word >> 8) & 0b1111;
+            let l = (word >> 7) & 1;
+            let bit6 = (word >> 6) & 1;
+            let d_bit = (word >> 22) & 1;
+            let m_bit = (word >> 5) & 1;
+            let vd = (word >> 12) & 0b1111;
+            let vm = word & 0b1111;
+            if ((l << 6) | imm6) >= 8 {
+                if opc <= 0b0111 {
+                    // same-width (bit6 = Q)
+                    if let Some(op) = Arm32NeonShiftOp::from_fields(u, opc)
+                        && let Some((size, shift)) = decode_neon_shift_amount(l, imm6, op.is_left()) {
+                            return Ok(Some(if bit6 == 1 {
+                                Self::NeonShift_Q_A1(op, size, shift, Arm32QuadwordRegister::from_field_and_bit(vd, d_bit), Arm32QuadwordRegister::from_field_and_bit(vm, m_bit))
+                            } else {
+                                Self::NeonShift_D_A1(op, size, shift, Arm32DoublePrecisionRegister::from_field_and_bit(vd, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm, m_bit))
+                            }));
+                        }
+                } else if opc == 0b1000 || opc == 0b1001 {
+                    // narrowing (bit6 = rounding); Qm -> Dd
+                    if let Some(op) = Arm32NeonShiftNarrowOp::from_fields(u, opc, bit6)
+                        && let Some((size, shift)) = decode_neon_narrow_shift(imm6) {
+                        return Ok(Some(Self::NeonShiftNarrow_A1(op, size, shift, Arm32DoublePrecisionRegister::from_field_and_bit(vd, d_bit), Arm32QuadwordRegister::from_field_and_bit(vm, m_bit))));
+                    }
+                } else if opc == 0b1010 && let Some((size, shift)) = decode_neon_widen_shift(imm6) {
+                    // widening VSHLL / VMOVL; Dm -> Qd (imm6 < esize is rejected by the helper)
+                    return Ok(Some(Self::NeonShiftLong_A1(u == 1, size, shift, Arm32QuadwordRegister::from_field_and_bit(vd, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm, m_bit))));
+                }
+            }
+            // L:imm6 < 8 (modified-immediate) or unrecognized opc: fall through.
+        }
+        // NEON VEXT (byte extract) : 1111 0010 1 D 11 Vn Vd imm4 N Q M 0 Vm (U=0, [21:20]=11, [4]=0).
+        if word & 0xFFB0_0010 == 0xF2B0_0000 {
+            let imm4 = ((word >> 8) & 0b1111) as u8;
+            let d_bit = (word >> 22) & 1;
+            let n_bit = (word >> 7) & 1;
+            let m_bit = (word >> 5) & 1;
+            let vd = (word >> 12) & 0b1111;
+            let vn = (word >> 16) & 0b1111;
+            let vm = word & 0b1111;
+            return Ok(Some(if (word >> 6) & 1 == 1 {
+                Self::NeonExt_Q_A1(imm4, Arm32QuadwordRegister::from_field_and_bit(vd, d_bit), Arm32QuadwordRegister::from_field_and_bit(vn, n_bit), Arm32QuadwordRegister::from_field_and_bit(vm, m_bit))
+            } else {
+                Self::NeonExt_D_A1(imm4, Arm32DoublePrecisionRegister::from_field_and_bit(vd, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vn, n_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm, m_bit))
+            }));
+        }
+        // NEON VTBL / VTBX : 1111 0011 1 D 11 Vn Vd 10 len N op M 0 Vm ([11:10]=10).
+        if word & 0xFFB0_0C10 == 0xF3B0_0800 {
+            let length = (((word >> 8) & 0b11) + 1) as u8;
+            let is_vtbx = (word >> 6) & 1 == 1;
+            let d_bit = (word >> 22) & 1;
+            let n_bit = (word >> 7) & 1;
+            let m_bit = (word >> 5) & 1;
+            let vd = (word >> 12) & 0b1111;
+            let vn = (word >> 16) & 0b1111;
+            let vm = word & 0b1111;
+            return Ok(Some(Self::NeonTableLookup_A1(is_vtbx, length, Arm32DoublePrecisionRegister::from_field_and_bit(vd, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vn, n_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm, m_bit))));
+        }
+        // NEON VDUP (scalar) : 1111 0011 1 D 11 imm4 Vd 11000 Q M 0 Vm ([11:7]=11000).
+        if word & 0xFFF0_0F90 == 0xF3B0_0C00
+            && let Some((size, index)) = decode_vdup_scalar_imm4((word >> 16) & 0b1111) {
+                let d_bit = (word >> 22) & 1;
+                let m_bit = (word >> 5) & 1;
+                let vd = (word >> 12) & 0b1111;
+                let vm = word & 0b1111;
+                let dm = Arm32DoublePrecisionRegister::from_field_and_bit(vm, m_bit);
+                return Ok(Some(if (word >> 6) & 1 == 1 {
+                    Self::NeonVdupScalar_Q_A1(size, index, Arm32QuadwordRegister::from_field_and_bit(vd, d_bit), dm)
+                } else {
+                    Self::NeonVdupScalar_D_A1(size, index, Arm32DoublePrecisionRegister::from_field_and_bit(vd, d_bit), dm)
+                }));
+            }
+        // NEON VMOV/VMVN/VORR/VBIC (modified immediate) : 1111 001 i 1 D 000 imm3 Vd cmode 0 Q op 1 imm4.
+        // [21:19]=000 and [7]=0 keep this disjoint from the shift-immediate format above (which has L:imm6 >= 8).
+        if word & 0xFEB8_0090 == 0xF280_0010 {
+            let imm8 = ((((word >> 24) & 1) << 7) | (((word >> 16) & 0b111) << 4) | (word & 0xF)) as u8;
+            let cmode = ((word >> 8) & 0b1111) as u8;
+            let op = (word >> 5) & 1 == 1;
+            let d_bit = (word >> 22) & 1;
+            let vd = (word >> 12) & 0b1111;
+            return Ok(Some(if (word >> 6) & 1 == 1 {
+                Self::NeonModifiedImmediate_Q_A1(cmode, op, imm8, Arm32QuadwordRegister::from_field_and_bit(vd, d_bit))
+            } else {
+                Self::NeonModifiedImmediate_D_A1(cmode, op, imm8, Arm32DoublePrecisionRegister::from_field_and_bit(vd, d_bit))
+            }));
+        }
+        // NEON element/structure load & store (VLD1-4 / VST1-4) : 1111 0100 ... with [20]=0. [23]=0 multiple,
+        // [23]=1 single-element (then [11:10]=11 is all-lanes, else single-lane). Disjoint from PLD/PLI ([20]=1).
+        if word & 0xFF10_0000 == 0xF400_0000 {
+            let d_bit = (word >> 22) & 1;
+            let is_load = (word >> 21) & 1 == 1;
+            let rn = gpr((word >> 16) & 0b1111);
+            let first = Arm32DoublePrecisionRegister::from_field_and_bit((word >> 12) & 0b1111, d_bit);
+            let address = Arm32NeonLoadStoreAddress::from_rm_bits(word & 0b1111);
+            if (word >> 23) & 1 == 0 {
+                let type_bits = ((word >> 8) & 0b1111) as u8;
+                let size = Arm32NeonSize::from_size_bits((word >> 6) & 0b11);
+                let align = ((word >> 4) & 0b11) as u8;
+                return Ok(Some(Self::NeonLoadStoreMultiple_A1(is_load, type_bits, size, align, first, rn, address)));
+            } else if (word >> 10) & 0b11 == 0b11 {
+                let struct_count = (((word >> 8) & 0b11) + 1) as u8;
+                let size = ((word >> 6) & 0b11) as u8;
+                return Ok(Some(Self::NeonLoadStoreAllLanes_A1(struct_count, size, (word >> 5) & 1 == 1, (word >> 4) & 1 == 1, first, rn, address)));
+            } else {
+                let struct_count = (((word >> 8) & 0b11) + 1) as u8;
+                let size = ((word >> 10) & 0b11) as u8;
+                let index_align = ((word >> 4) & 0b1111) as u8;
+                return Ok(Some(Self::NeonLoadStoreSingleLane_A1(is_load, struct_count, size, index_align, first, rn, address)));
+            }
+        }
+        // preload + exception save/return are unconditional (cond=1111) and must precede the cond-agnostic blocks
+        // PLI (immediate / register) : 1111 0100/0110 U 101 Rn 1111 ...
+        if word & 0xFF70_F000 == 0xF450_F000 {
+            return Ok(Some(Self::Pli_A1(gpr((word >> 16) & 0b1111), preload_imm_offset(word))));
+        }
+        if word & 0xFF70_F010 == 0xF650_F000 {
+            return Ok(Some(Self::Pli_A1(gpr((word >> 16) & 0b1111), preload_reg_offset(word))));
+        }
+        // PLD / PLDW (immediate / register) : 1111 0101/0111 U R 01 Rn 1111 ...  (R=1 PLD, R=0 PLDW)
+        if word & 0xFF30_F000 == 0xF510_F000 {
+            let rn = gpr((word >> 16) & 0b1111);
+            let offset = preload_imm_offset(word);
+            return Ok(Some(if (word >> 22) & 1 == 1 { Self::Pld_A1(rn, offset) } else { Self::Pldw_A1(rn, offset) }));
+        }
+        if word & 0xFF30_F010 == 0xF710_F000 {
+            let rn = gpr((word >> 16) & 0b1111);
+            let offset = preload_reg_offset(word);
+            return Ok(Some(if (word >> 22) & 1 == 1 { Self::Pld_A1(rn, offset) } else { Self::Pldw_A1(rn, offset) }));
+        }
+        // RFE : 1111 100 P U 0 W 1 Rn 0000 1010 0000 0000
+        if word & 0xFE50_FFFF == 0xF810_0A00 {
+            let mode = Arm32BlockAddressMode::from_p_u_bits((word >> 24) & 1, (word >> 23) & 1);
+            return Ok(Some(Self::Rfe_A1(mode, gpr((word >> 16) & 0b1111), (word >> 21) & 1 == 1)));
+        }
+        // SRS : 1111 100 P U 1 W 0 1101 0000 0101 mode
+        if word & 0xFE4F_FFE0 == 0xF84D_0500 {
+            let mode = Arm32BlockAddressMode::from_p_u_bits((word >> 24) & 1, (word >> 23) & 1);
+            return Ok(Some(Self::Srs_A1(mode, (word >> 21) & 1 == 1, (word & 0x1F) as u8)));
+        }
+        // A32 reserves bits[31:28]==0b1111 for the UNCONDITIONAL-instruction space -- it is not a condition.
+        // Every modeled unconditional encoding above has been tried; the decoders below are conditional and
+        // their masks deliberately do not pin the condition field, so a leftover 0b1111 word would be
+        // mis-claimed as a bogus `Undefined(0b1111)`-conditioned instruction (which then re-encodes into a
+        // different, genuinely-unconditional word -- a decode/encode asymmetry the robustness sweep flags).
+        // Stop here for any such word EXCEPT the two unconditional forms still decoded below: BLX (immediate)
+        // at bits[27:25]==0b101, and the coprocessor `...2` encodings at bits[27:26]==0b11 (whose decoders
+        // read the condition field themselves and emit the correct unconditional variant).
+        if (word >> 28) == 0b1111 && (word >> 26) & 0b11 != 0b11 && (word >> 25) & 0b111 != 0b101 {
+            return Err(DecodeError::InvalidOpcode);
+        }
+        // hints : cccc 0011 0010 0000 1111 0000 0000 hint8
+        if word & 0x0FFF_FF00 == 0x0320_F000 {
+            return Ok(Some(match word & 0xFF {
+                0x00 => Self::Nop_A1(cond),
+                0x01 => Self::Yield_A1(cond),
+                0x02 => Self::Wfe_A1(cond),
+                0x03 => Self::Wfi_A1(cond),
+                0x04 => Self::Sev_A1(cond),
+                0x05 => Self::Sevl_A1(cond),
+                0x10 => Self::Esb_A1(cond),
+                0x14 => Self::Csdb_A1(cond),
+                hint if hint & 0xF0 == 0xF0 => Self::Dbg_A1(cond, (hint & 0xF) as u8),
+                _ => return Err(DecodeError::InvalidOpcode),
+            }));
+        }
+        // BX / BLX (register) / BXJ : cccc 0001 0010 1111 1111 1111 0001/0011/0010 Rm
+        if word & 0x0FFF_FFF0 == 0x012F_FF10 {
+            return Ok(Some(Self::Bx_A1(cond, gpr(word & 0b1111))));
+        }
+        if word & 0x0FFF_FFF0 == 0x012F_FF30 {
+            return Ok(Some(Self::Blx_Register_A1(cond, gpr(word & 0b1111))));
+        }
+        if word & 0x0FFF_FFF0 == 0x012F_FF20 {
+            return Ok(Some(Self::Bxj_A1(cond, gpr(word & 0b1111))));
+        }
+        // MOVW : cccc 0011 0000 imm4 Rd imm12      MOVT : cccc 0011 0100 imm4 Rd imm12
+        if word & 0x0FF0_0000 == 0x0300_0000 {
+            return Ok(Some(Self::Movw_A2(cond, gpr((word >> 12) & 0b1111), decode_movw_imm16(word))));
+        }
+        if word & 0x0FF0_0000 == 0x0340_0000 {
+            return Ok(Some(Self::Movt_A1(cond, gpr((word >> 12) & 0b1111), decode_movw_imm16(word))));
+        }
+        // SVC : cccc 1111 imm24
+        if word & 0x0F00_0000 == 0x0F00_0000 {
+            return Ok(Some(Self::Svc_A1(cond, word & 0x00FF_FFFF)));
+        }
+
+        // saturating add/sub : cccc 00010 op 0 Rn Rd 0000 0101 Rm   (must precede the generic DP blocks: the
+        // op bits alias the AND/SUB/ADD/SBC opcodes and bit4=1,bit7=0 would otherwise match register-shifted)
+        if word & 0x0F90_00F0 == 0x0100_0050 {
+            let rn = gpr((word >> 16) & 0b1111);
+            let rd = gpr((word >> 12) & 0b1111);
+            let rm = gpr(word & 0b1111);
+            return Ok(Some(match (word >> 21) & 0b11 {
+                0b00 => Self::Qadd_A1(cond, rd, rm, rn),
+                0b01 => Self::Qsub_A1(cond, rd, rm, rn),
+                0b10 => Self::Qdadd_A1(cond, rd, rm, rn),
+                _ => Self::Qdsub_A1(cond, rd, rm, rn),
+            }));
+        }
+        // signed multiply (halfword, type 1) : cccc 00010 op 0 .. 1 M N 0 ..   ([27:23]=00010, [7]=1, [4]=0)
+        if word & 0x0F90_0090 == 0x0100_0080 {
+            let op = (word >> 21) & 0b11;
+            let high = gpr((word >> 16) & 0b1111);
+            let low = gpr((word >> 12) & 0b1111);
+            let rm = gpr((word >> 8) & 0b1111);
+            let rn = gpr(word & 0b1111);
+            let m = (word >> 6) & 1 == 1;
+            let n = (word >> 5) & 1 == 1;
+            return Ok(Some(match op {
+                0b00 => Self::Smla_A1(cond, high, rn, rm, low, n, m),
+                0b01 => if (word >> 5) & 1 == 0 { Self::Smlaw_A1(cond, high, rn, rm, low, m) } else { Self::Smulw_A1(cond, high, rn, rm, m) },
+                0b10 => Self::Smlal_Halfword_A1(cond, low, high, rn, rm, n, m),
+                _ => Self::Smul_A1(cond, high, rn, rm, n, m),
+            }));
+        }
+        // signed multiply (dual / most-significant word, type 2) : cccc 0111 0xx .. .. .. R/x 1 ..   ([27:24]=0111, bit23=0, [4]=1)
+        if word & 0x0F80_0010 == 0x0700_0010 {
+            let op1 = (word >> 20) & 0b111;
+            let high = gpr((word >> 16) & 0b1111);
+            let accum_bits = (word >> 12) & 0b1111;
+            let accum = gpr(accum_bits);
+            let rm = gpr((word >> 8) & 0b1111);
+            let rn = gpr(word & 0b1111);
+            let bit5 = (word >> 5) & 1 == 1; // x / round
+            let bit6 = (word >> 6) & 1;
+            let bit7 = (word >> 7) & 1;
+            match op1 {
+                0b000 if bit7 == 0 => {
+                    return Ok(Some(if bit6 == 0 {
+                        if accum_bits == 0b1111 { Self::Smuad_A1(cond, high, rn, rm, bit5) } else { Self::Smlad_A1(cond, high, rn, rm, accum, bit5) }
+                    } else {
+                        if accum_bits == 0b1111 { Self::Smusd_A1(cond, high, rn, rm, bit5) } else { Self::Smlsd_A1(cond, high, rn, rm, accum, bit5) }
+                    }));
+                },
+                0b100 if bit7 == 0 => {
+                    return Ok(Some(if bit6 == 0 { Self::Smlald_A1(cond, accum, high, rn, rm, bit5) } else { Self::Smlsld_A1(cond, accum, high, rn, rm, bit5) }));
+                },
+                0b101 => {
+                    if bit7 == 0 && bit6 == 0 {
+                        return Ok(Some(if accum_bits == 0b1111 { Self::Smmul_A1(cond, high, rn, rm, bit5) } else { Self::Smmla_A1(cond, high, rn, rm, accum, bit5) }));
+                    } else if bit7 == 1 && bit6 == 1 {
+                        return Ok(Some(Self::Smmls_A1(cond, high, rn, rm, accum, bit5)));
+                    }
+                },
+                _ => {}
+            }
+        }
+        // SEL : cccc 01101000 Rn Rd 1111 1011 Rm
+        if word & 0x0FF0_0FF0 == 0x0680_0FB0 {
+            return Ok(Some(Self::Sel_A1(cond, gpr((word >> 12) & 0b1111), gpr((word >> 16) & 0b1111), gpr(word & 0b1111))));
+        }
+        // parallel (packed SIMD) add/sub : cccc 01100 prefix Rn Rd 1111 op 1 Rm   ([27:23]=01100, [11:8]=1111, [4]=1)
+        if word & 0x0F80_0F10 == 0x0600_0F10
+            && let (Some(prefix), Some(op)) = (a32_parallel_prefix_from_bits((word >> 20) & 0b111), a32_parallel_op_from_bits((word >> 4) & 0b1111)) {
+                return Ok(Some(Self::ParallelAddSub_A1(cond, op, prefix, gpr((word >> 12) & 0b1111), gpr((word >> 16) & 0b1111), gpr(word & 0b1111))));
+            }
+        // CLZ : cccc 00010110 1111 Rd 1111 0001 Rm
+        if word & 0x0FFF_0FF0 == 0x016F_0F10 {
+            return Ok(Some(Self::Clz_A1(cond, gpr((word >> 12) & 0b1111), gpr(word & 0b1111))));
+        }
+        // REV / REV16 / RBIT / REVSH : cccc 0110 10/11 11 1111 Rd 1111 op Rm
+        if word & 0x0FFF_0FF0 == 0x06BF_0F30 { return Ok(Some(Self::Rev_A1(cond, gpr((word >> 12) & 0b1111), gpr(word & 0b1111)))); }
+        if word & 0x0FFF_0FF0 == 0x06BF_0FB0 { return Ok(Some(Self::Rev16_A1(cond, gpr((word >> 12) & 0b1111), gpr(word & 0b1111)))); }
+        if word & 0x0FFF_0FF0 == 0x06FF_0F30 { return Ok(Some(Self::Rbit_A1(cond, gpr((word >> 12) & 0b1111), gpr(word & 0b1111)))); }
+        if word & 0x0FFF_0FF0 == 0x06FF_0FB0 { return Ok(Some(Self::Revsh_A1(cond, gpr((word >> 12) & 0b1111), gpr(word & 0b1111)))); }
+        // extend / extend-and-add : cccc 0110 1xxx Rn Rd rotate 00 0111 Rm  (Rn=1111 => plain extend)
+        if word & 0x0F00_03F0 == 0x0600_0070
+            && let Some(extend_type) = Arm32ExtendType::from_opcode_byte((word >> 20) & 0xFF) {
+                let rotation = decode_rotation((word >> 10) & 0b11);
+                let rd = gpr((word >> 12) & 0b1111);
+                let rm = gpr(word & 0b1111);
+                let rn_bits = (word >> 16) & 0b1111;
+                return Ok(Some(if rn_bits == 0b1111 {
+                    Self::Extend_A1(cond, extend_type, rd, rm, rotation)
+                } else {
+                    Self::ExtendAndAdd_A1(cond, extend_type, rd, gpr(rn_bits), rm, rotation)
+                }));
+            }
+        // PKHBT / PKHTB : cccc 01101000 Rn Rd imm5 tb 01 Rm  (only [5:4]=01 is fixed in the low nibble;
+        // bit7 is the LSB of imm5 and bit6 is tb, so they must NOT be masked)
+        if word & 0x0FF0_0030 == 0x0680_0010 {
+            let imm5 = ((word >> 7) & 0b1_1111) as u8;
+            let rn = gpr((word >> 16) & 0b1111);
+            let rd = gpr((word >> 12) & 0b1111);
+            let rm = gpr(word & 0b1111);
+            return Ok(Some(if (word >> 6) & 1 == 0 {
+                Self::Pkhbt_A1(cond, rd, rn, rm, imm5)
+            } else {
+                Self::Pkhtb_A1(cond, rd, rn, rm, if imm5 == 0 { 32 } else { imm5 })
+            }));
+        }
+        // SSAT16 / USAT16 : cccc 0110 1010/1110 sat_imm Rd 1111 0011 Rm
+        if word & 0x0FB0_0FF0 == 0x06A0_0F30 {
+            let is_usat = (word >> 22) & 1 == 1;
+            let sat_imm = ((word >> 16) & 0b1111) as u8;
+            let rd = gpr((word >> 12) & 0b1111);
+            let rm = gpr(word & 0b1111);
+            return Ok(Some(if is_usat { Self::Usat16_A1(cond, rd, sat_imm, rm) } else { Self::Ssat16_A1(cond, rd, sat_imm + 1, rm) }));
+        }
+        // SSAT / USAT : cccc 0110 101/111 sat_imm Rd imm5 sh 01 Rm
+        if word & 0x0FA0_0030 == 0x06A0_0010 {
+            let is_usat = (word >> 22) & 1 == 1;
+            let sat_imm = ((word >> 16) & 0b1_1111) as u8;
+            let rd = gpr((word >> 12) & 0b1111);
+            let imm5 = ((word >> 7) & 0b1_1111) as u8;
+            let shift = if (word >> 6) & 1 == 1 { Arm32RegisterShift::Asr(if imm5 == 0 { 32 } else { imm5 }) } else { Arm32RegisterShift::Lsl(imm5) };
+            let rm = gpr(word & 0b1111);
+            return Ok(Some(if is_usat { Self::Usat_A1(cond, rd, sat_imm, rm, shift) } else { Self::Ssat_A1(cond, rd, sat_imm + 1, rm, shift) }));
+        }
+        // USAD8 / USADA8 : cccc 01111000 Rd Ra Rm 0001 Rn  (Ra=1111 => USAD8)
+        if word & 0x0FF0_00F0 == 0x0780_0010 {
+            let rd = gpr((word >> 16) & 0b1111);
+            let ra_bits = (word >> 12) & 0b1111;
+            let rm = gpr((word >> 8) & 0b1111);
+            let rn = gpr(word & 0b1111);
+            return Ok(Some(if ra_bits == 0b1111 { Self::Usad8_A1(cond, rd, rn, rm) } else { Self::Usada8_A1(cond, rd, rn, rm, gpr(ra_bits)) }));
+        }
+        // BFC / BFI : cccc 0111110 msb Rd lsb 001 Rn  (Rn=1111 => BFC)
+        if word & 0x0FE0_0070 == 0x07C0_0010 {
+            let msb = ((word >> 16) & 0b1_1111) as u8;
+            let lsb = ((word >> 7) & 0b1_1111) as u8;
+            let rd = gpr((word >> 12) & 0b1111);
+            let width = msb.saturating_sub(lsb) + 1;
+            let rn_bits = word & 0b1111;
+            return Ok(Some(if rn_bits == 0b1111 { Self::Bfc_A1(cond, rd, lsb, width) } else { Self::Bfi_A1(cond, rd, gpr(rn_bits), lsb, width) }));
+        }
+        // SBFX : cccc 0111101 widthm1 Rd lsb 101 Rn
+        if word & 0x0FE0_0070 == 0x07A0_0050 {
+            let widthm1 = ((word >> 16) & 0b1_1111) as u8;
+            let lsb = ((word >> 7) & 0b1_1111) as u8;
+            return Ok(Some(Self::Sbfx_A1(cond, gpr((word >> 12) & 0b1111), gpr(word & 0b1111), lsb, widthm1 + 1)));
+        }
+        // UBFX : cccc 0111111 widthm1 Rd lsb 101 Rn
+        if word & 0x0FE0_0070 == 0x07E0_0050 {
+            let widthm1 = ((word >> 16) & 0b1_1111) as u8;
+            let lsb = ((word >> 7) & 0b1_1111) as u8;
+            return Ok(Some(Self::Ubfx_A1(cond, gpr((word >> 12) & 0b1111), gpr(word & 0b1111), lsb, widthm1 + 1)));
+        }
+        // MRS (banked) : cccc 00010 R 00 m1 Rd 001 m 0 0000  ([11:9]=001 distinguishes it from the plain MRS below)
+        if word & 0x0FB0_0EFF == 0x0100_0200 {
+            let sysm = (((word >> 8) & 1) << 4) | ((word >> 16) & 0xF);
+            return Ok(Some(Self::MrsBanked_A1(cond, (word >> 22) & 1 == 1, sysm as u8, gpr((word >> 12) & 0b1111))));
+        }
+        // MSR (banked) : cccc 00010 R 10 m1 1111 001 m 0000 Rn
+        if word & 0x0FB0_FEF0 == 0x0120_F200 {
+            let sysm = (((word >> 8) & 1) << 4) | ((word >> 16) & 0xF);
+            return Ok(Some(Self::MsrBanked_A1(cond, (word >> 22) & 1 == 1, sysm as u8, gpr(word & 0b1111))));
+        }
+        // MRS : cccc 00010 R 00 1111 Rd 0000 0000 0000
+        if word & 0x0FBF_0FFF == 0x010F_0000 {
+            return Ok(Some(Self::Mrs_A1(cond, (word >> 22) & 1 == 1, gpr((word >> 12) & 0b1111))));
+        }
+        // MSR (register) : cccc 00010 R 10 mask 1111 0000 0000 Rn
+        if word & 0x0FB0_FFF0 == 0x0120_F000 {
+            return Ok(Some(Self::Msr_Register_A1(cond, (word >> 22) & 1 == 1, ((word >> 16) & 0xF) as u8, gpr(word & 0b1111))));
+        }
+        // MSR (immediate) : cccc 00110 R 10 mask 1111 imm12  (mask != 0000; mask==0 is the hints space)
+        if word & 0x0FB0_F000 == 0x0320_F000 && (word >> 16) & 0xF != 0 {
+            let value = decode_a32_modified_immediate((word & 0x0FFF) as u16);
+            return Ok(Some(Self::Msr_Immediate_A1(cond, (word >> 22) & 1 == 1, ((word >> 16) & 0xF) as u8, value)));
+        }
+        // BKPT / HVC : cccc 0001 0010/0100 imm12 0111 imm4
+        if word & 0x0FF0_00F0 == 0x0120_0070 {
+            return Ok(Some(Self::Bkpt_A1(cond, imm16_join(word))));
+        }
+        if word & 0x0FF0_00F0 == 0x0140_0070 {
+            return Ok(Some(Self::Hvc_A1(cond, imm16_join(word))));
+        }
+        // ERET : cccc 0001 0110 0000 0000 0000 0110 1110  (precedes SMC: both [27:20]=00010110)
+        if word & 0x0FFF_FFFF == 0x0160_006E {
+            return Ok(Some(Self::Eret_A1(cond)));
+        }
+        // SMC : cccc 0001 0110 0000 0000 0000 0111 imm4
+        if word & 0x0FF0_00F0 == 0x0160_0070 {
+            return Ok(Some(Self::Smc_A1(cond, (word & 0xF) as u8)));
+        }
+        // UDF : cccc 0111 1111 imm12 1111 imm4
+        if word & 0x0FF0_00F0 == 0x07F0_00F0 {
+            return Ok(Some(Self::Udf_A1(cond, imm16_join(word))));
+        }
+        // CRC32 (ARMv8-A) : cccc 00010 sz 0 Rn Rd 0000 0 C 00 0100 Rm
+        if word & 0x0F90_0DF0 == 0x0100_0040 {
+            let rd = gpr((word >> 12) & 0b1111);
+            let rn = gpr((word >> 16) & 0b1111);
+            let rm = gpr(word & 0b1111);
+            return Ok(Some(match ((word >> 21) & 0b11, (word >> 9) & 1 == 1) {
+                (0b00, false) => Self::Crc32b_A1(cond, rd, rn, rm),
+                (0b01, false) => Self::Crc32h_A1(cond, rd, rn, rm),
+                (0b10, false) => Self::Crc32w_A1(cond, rd, rn, rm),
+                (0b00, true) => Self::Crc32cb_A1(cond, rd, rn, rm),
+                (0b01, true) => Self::Crc32ch_A1(cond, rd, rn, rm),
+                (0b10, true) => Self::Crc32cw_A1(cond, rd, rn, rm),
+                _ => return Err(DecodeError::InvalidOpcode), // sz=11 is unallocated
+            }));
+        }
+        // load-acquire / store-release (ARMv8-A), non-exclusive : cccc 00011 sz L Rn (Rt) 1100 1001 (1111|Rt)
+        if word & 0x0F80_0FF0 == 0x0180_0C90 {
+            let l = (word >> 20) & 1 == 1;
+            let rn = gpr((word >> 16) & 0b1111);
+            return Ok(Some(match ((word >> 21) & 0b11, l) {
+                (0b00, true) => Self::Lda_A1(cond, gpr((word >> 12) & 0b1111), rn),
+                (0b10, true) => Self::Ldab_A1(cond, gpr((word >> 12) & 0b1111), rn),
+                (0b11, true) => Self::Ldah_A1(cond, gpr((word >> 12) & 0b1111), rn),
+                (0b00, false) => Self::Stl_A1(cond, gpr(word & 0b1111), rn),
+                (0b10, false) => Self::Stlb_A1(cond, gpr(word & 0b1111), rn),
+                (0b11, false) => Self::Stlh_A1(cond, gpr(word & 0b1111), rn),
+                _ => return Err(DecodeError::InvalidOpcode),
+            }));
+        }
+        // load-acquire-exclusive / store-release-exclusive (ARMv8-A) : cccc 00011 sz L Rn (Rt|Rd) 1110 1001 (1111|Rt)
+        if word & 0x0F80_0FF0 == 0x0180_0E90 {
+            let l = (word >> 20) & 1 == 1;
+            let rn = gpr((word >> 16) & 0b1111);
+            let high = gpr((word >> 12) & 0b1111);
+            let low = gpr(word & 0b1111);
+            return Ok(Some(match ((word >> 21) & 0b11, l) {
+                (0b00, true) => Self::Ldaex_A1(cond, high, rn),
+                (0b01, true) => Self::Ldaexd_A1(cond, high, rn),
+                (0b10, true) => Self::Ldaexb_A1(cond, high, rn),
+                (0b11, true) => Self::Ldaexh_A1(cond, high, rn),
+                (0b00, false) => Self::Stlex_A1(cond, high, low, rn),
+                (0b01, false) => Self::Stlexd_A1(cond, high, low, rn),
+                (0b10, false) => Self::Stlexb_A1(cond, high, low, rn),
+                (0b11, false) => Self::Stlexh_A1(cond, high, low, rn),
+                _ => return Err(DecodeError::InvalidOpcode),
+            }));
+        }
+        // exclusive access : cccc 00011 type L Rn (Rt|Rd) 1111 1001 (1111|Rt)
+        if word & 0x0F80_0FF0 == 0x0180_0F90 {
+            let is_load = (word >> 20) & 1 == 1;
+            let rn = gpr((word >> 16) & 0b1111);
+            let high = gpr((word >> 12) & 0b1111); // Rt (load) or Rd (store)
+            let rt_store = gpr(word & 0b1111);
+            return Ok(Some(match ((word >> 21) & 0b11, is_load) {
+                (0b00, true) => Self::Ldrex_A1(cond, high, rn),
+                (0b00, false) => Self::Strex_A1(cond, high, rt_store, rn),
+                (0b01, true) => Self::Ldrexd_A1(cond, high, rn),
+                (0b01, false) => Self::Strexd_A1(cond, high, rt_store, rn),
+                (0b10, true) => Self::Ldrexb_A1(cond, high, rn),
+                (0b10, false) => Self::Strexb_A1(cond, high, rt_store, rn),
+                (_, true) => Self::Ldrexh_A1(cond, high, rn),
+                (_, false) => Self::Strexh_A1(cond, high, rt_store, rn),
+            }));
+        }
+        // SWP / SWPB (deprecated) : cccc 00010 B 00 Rn Rt 0000 1001 Rt2
+        if word & 0x0FB0_0FF0 == 0x0100_0090 {
+            let rn = gpr((word >> 16) & 0b1111);
+            let rt = gpr((word >> 12) & 0b1111);
+            let rt2 = gpr(word & 0b1111);
+            return Ok(Some(if (word >> 22) & 1 == 1 { Self::Swpb_A1(cond, rt, rt2, rn) } else { Self::Swp_A1(cond, rt, rt2, rn) }));
+        }
+        // multiply / long multiply : cccc 0000 op 1001 ....   ([27:24]=0000, [7:4]=1001)
+        if word & 0x0F00_00F0 == 0x0000_0090 {
+            let op3 = (word >> 21) & 0b111;
+            let set_flags = (word >> 20) & 1 == 1;
+            let high = gpr((word >> 16) & 0b1111); // Rd (MUL/MLA/MLS) or RdHi (long)
+            let low = gpr((word >> 12) & 0b1111);  // Ra (MUL/MLA/MLS) or RdLo (long)
+            let rm = gpr((word >> 8) & 0b1111);
+            let rn = gpr(word & 0b1111);
+            match op3 {
+                0b000 => return Ok(Some(Self::Mul_A1(cond, set_flags, high, rn, rm))),
+                0b001 => return Ok(Some(Self::Mla_A1(cond, set_flags, high, rn, rm, low))),
+                0b010 if !set_flags => return Ok(Some(Self::Umaal_A1(cond, low, high, rn, rm))),
+                0b011 if !set_flags => return Ok(Some(Self::Mls_A1(cond, high, rn, rm, low))),
+                0b100 => return Ok(Some(Self::Umull_A1(cond, set_flags, low, high, rn, rm))),
+                0b101 => return Ok(Some(Self::Umlal_A1(cond, set_flags, low, high, rn, rm))),
+                0b110 => return Ok(Some(Self::Smull_A1(cond, set_flags, low, high, rn, rm))),
+                0b111 => return Ok(Some(Self::Smlal_A1(cond, set_flags, low, high, rn, rm))),
+                _ => {} // op3 010/011 with S=1 is unallocated -- fall through
+            }
+        }
+        // extra load/store (halfword / signed byte / signed halfword / dual) : cccc 000 P U I W L Rn Rt H4 1 S H 1 L4
+        // ([27:25]=000, [7]=1, [4]=1; (S,H)=(0,0) is the multiply / sync space and is excluded)
+        if word & 0x0E00_0090 == 0x0000_0090 {
+            let s = (word >> 6) & 1;
+            let h = (word >> 5) & 1;
+            if !(s == 0 && h == 0) {
+                let p = (word >> 24) & 1;
+                let add = (word >> 23) & 1 == 1;
+                let i_bit = (word >> 22) & 1;
+                let w = (word >> 21) & 1;
+                let is_load = (word >> 20) & 1 == 1;
+                let rn = gpr((word >> 16) & 0b1111);
+                let rt = gpr((word >> 12) & 0b1111);
+                let offset = if i_bit == 1 {
+                    let imm8 = ((((word >> 8) & 0b1111) << 4) | (word & 0b1111)) as u8;
+                    Arm32MemoryOffset8::Immediate { add, imm8 }
+                } else {
+                    Arm32MemoryOffset8::Register { add, rm: gpr(word & 0b1111) }
+                };
+                let index = index_from_p_w(p, w);
+                let is_t = p == 0 && w == 1;
+                return Ok(Some(match (s, h, is_load) {
+                    (0, 1, true)  => if is_t { Self::Ldrht_A1(cond, rt, rn, offset) } else { Self::Ldrh_A1(cond, rt, rn, offset, index) },
+                    (0, 1, false) => if is_t { Self::Strht_A1(cond, rt, rn, offset) } else { Self::Strh_A1(cond, rt, rn, offset, index) },
+                    (1, 0, true)  => if is_t { Self::Ldrsbt_A1(cond, rt, rn, offset) } else { Self::Ldrsb_A1(cond, rt, rn, offset, index) },
+                    (1, 1, true)  => if is_t { Self::Ldrsht_A1(cond, rt, rn, offset) } else { Self::Ldrsh_A1(cond, rt, rn, offset, index) },
+                    (1, 0, false) => Self::Ldrd_A1(cond, rt, rn, offset, index), // LDRD (no T form)
+                    _             => Self::Strd_A1(cond, rt, rn, offset, index), // (1,1,false) STRD
+                }));
+            }
+        }
+        // data processing (register, immediate shift) : cccc 000 opcode S Rn Rd imm5 type 0 Rm   (bit25=0, bit4=0)
+        if word & 0x0E00_0010 == 0x0000_0000 {
+            let opcode = (word >> 21) & 0b1111;
+            let set_flags = (word >> 20) & 1 == 1;
+            let rn = (word >> 16) & 0b1111;
+            let rd = (word >> 12) & 0b1111;
+            let rm = word & 0b1111;
+            let shift = decode_a32_shift(((word >> 7) & 0b1_1111) as u8, ((word >> 5) & 0b11) as u8);
+            if let Some(instruction) = decode_dp_register(cond, opcode, set_flags, rn, rd, rm, shift) {
+                return Ok(Some(instruction));
+            }
+        }
+        // data processing (register-shifted register) : cccc 000 opcode S Rn Rd Rs 0 type 1 Rm  (bit25=0, bit7=0, bit4=1)
+        if word & 0x0E00_0090 == 0x0000_0010 {
+            let opcode = (word >> 21) & 0b1111;
+            let set_flags = (word >> 20) & 1 == 1;
+            let rn = (word >> 16) & 0b1111;
+            let rd = (word >> 12) & 0b1111;
+            let rs = (word >> 8) & 0b1111;
+            let rm = word & 0b1111;
+            let shift_type = Arm32ShiftType::from_type_bits((word >> 5) & 0b11);
+            if let Some(instruction) = decode_dp_register_shifted(cond, opcode, set_flags, rn, rd, rm, shift_type, rs) {
+                return Ok(Some(instruction));
+            }
+        }
+        // data processing (immediate) : cccc 001 opcode S Rn Rd imm12   (bit25=1)
+        if word & 0x0E00_0000 == 0x0200_0000 {
+            let opcode = (word >> 21) & 0b1111;
+            let set_flags = (word >> 20) & 1 == 1;
+            let rn = (word >> 16) & 0b1111;
+            let rd = (word >> 12) & 0b1111;
+            let value = decode_a32_modified_immediate((word & 0x0FFF) as u16);
+            if let Some(instruction) = decode_dp_immediate(cond, opcode, set_flags, rn, rd, value) {
+                return Ok(Some(instruction));
+            }
+        }
+        // load/store single (word/byte) : cccc 01 I P U B W L Rn Rt <offset>
+        if word & 0x0C00_0000 == 0x0400_0000 {
+            let is_register = (word >> 25) & 1 == 1;
+            // a register offset with bit4=1 is the media-instruction space (handled earlier), not a load/store
+            if !(is_register && (word >> 4) & 1 == 1) {
+                let p = (word >> 24) & 1;
+                let add = (word >> 23) & 1 == 1;
+                let is_byte = (word >> 22) & 1 == 1;
+                let w = (word >> 21) & 1;
+                let is_load = (word >> 20) & 1 == 1;
+                let rn = gpr((word >> 16) & 0b1111);
+                let rt = gpr((word >> 12) & 0b1111);
+                let offset = if is_register {
+                    let shift = decode_a32_shift(((word >> 7) & 0b1_1111) as u8, ((word >> 5) & 0b11) as u8);
+                    Arm32MemoryOffset::Register { add, rm: gpr(word & 0b1111), shift }
+                } else {
+                    Arm32MemoryOffset::Immediate { add, imm12: (word & 0x0FFF) as u16 }
+                };
+                if p == 0 && w == 1 {
+                    // unprivileged "T" forms
+                    return Ok(Some(match (is_load, is_byte) {
+                        (true, false) => Self::Ldrt_A1(cond, rt, rn, offset),
+                        (false, false) => Self::Strt_A1(cond, rt, rn, offset),
+                        (true, true) => Self::Ldrbt_A1(cond, rt, rn, offset),
+                        (false, true) => Self::Strbt_A1(cond, rt, rn, offset),
+                    }));
+                }
+                let index = match (p, w) {
+                    (1, 0) => Arm32IndexMode::Offset,
+                    (1, 1) => Arm32IndexMode::PreIndex,
+                    _ => Arm32IndexMode::PostIndex, // (0, 0)
+                };
+                return Ok(Some(match (is_load, is_byte) {
+                    (true, false) => Self::Ldr_A1(cond, rt, rn, offset, index),
+                    (false, false) => Self::Str_A1(cond, rt, rn, offset, index),
+                    (true, true) => Self::Ldrb_A1(cond, rt, rn, offset, index),
+                    (false, true) => Self::Strb_A1(cond, rt, rn, offset, index),
+                }));
+            }
+        }
+        // load/store multiple : cccc 100 P U S W L Rn register_list  (cond=1111 in this space is RFE/SRS, handled above)
+        if word & 0x0E00_0000 == 0x0800_0000 && (word >> 28) != 0xF {
+            let p = (word >> 24) & 1;
+            let u = (word >> 23) & 1;
+            let user_mode = (word >> 22) & 1 == 1;
+            let writeback = (word >> 21) & 1 == 1;
+            let is_load = (word >> 20) & 1 == 1;
+            let rn = gpr((word >> 16) & 0b1111);
+            let registers = decode_register_list((word & 0xFFFF) as u16);
+            let mode = Arm32BlockAddressMode::from_p_u_bits(p, u);
+            return Ok(Some(if is_load {
+                Self::Ldm_A1(cond, mode, rn, writeback, user_mode, registers)
+            } else {
+                Self::Stm_A1(cond, mode, rn, writeback, user_mode, registers)
+            }));
+        }
+        // BLX (immediate, unconditional) : 1111 101 H imm24  (precedes B/BL -- it shares [27:25]=101 with cond=1111)
+        if word & 0xFE00_0000 == 0xFA00_0000 {
+            let h = ((word >> 24) & 1) as i32;
+            let offset = (sign_extend_24(word & 0x00FF_FFFF) << 2) | (h << 1);
+            return Ok(Some(Self::Blx_Immediate_A1(offset)));
+        }
+        // B / BL : cccc 1010/1011 imm24
+        if word & 0x0F00_0000 == 0x0A00_0000 {
+            return Ok(Some(Self::B_A1(cond, sign_extend_24(word & 0x00FF_FFFF) << 2)));
+        }
+        if word & 0x0F00_0000 == 0x0B00_0000 {
+            return Ok(Some(Self::Bl_A1(cond, sign_extend_24(word & 0x00FF_FFFF) << 2)));
+        }
+        // VFP data-processing : cccc 1110 ... 101 sz ... 0 ...  (3-operand + the 2-operand "other" group)
+        if word & 0x0F00_0E10 == 0x0E00_0A00 {
+            let double = (word >> 8) & 1 == 1;
+            let top = (word >> 23) & 1;
+            let middle = (word >> 20) & 0b11;
+            let vd_field = (word >> 12) & 0b1111;
+            let d_bit = (word >> 22) & 1;
+            let vm_field = word & 0b1111;
+            let m_bit = (word >> 5) & 1;
+            if top == 1 && middle == 0b11 {
+                let opc2 = (word >> 16) & 0b1111;
+                let op7 = (word >> 7) & 1;
+                // the 2-operand "other" group. bit6=0 is VMOV (immediate); bit6=1 selects by opc2.
+                if (word >> 6) & 1 == 0 {
+                    let imm8 = ((((word >> 16) & 0xF) << 4) | (word & 0xF)) as u8;
+                    return Ok(Some(if double {
+                        Self::Vmov_Immediate_Double_A1(cond, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), imm8)
+                    } else {
+                        Self::Vmov_Immediate_Single_A1(cond, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), imm8)
+                    }));
+                }
+                if let Some(op) = Arm32FpDataOperation2::from_bits(opc2, op7) {
+                    return Ok(Some(if double {
+                        Self::FpDataProcess2_Double_A1(cond, op, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                    } else {
+                        Self::FpDataProcess2_Single_A1(cond, op, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                    }));
+                }
+                if opc2 == 0b0100 {
+                    return Ok(Some(if double {
+                        Self::Vcmp_Double_A1(cond, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit), op7 == 1)
+                    } else {
+                        Self::Vcmp_Single_A1(cond, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit), op7 == 1)
+                    }));
+                }
+                if opc2 == 0b0101 {
+                    return Ok(Some(if double {
+                        Self::Vcmp_Zero_Double_A1(cond, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), op7 == 1)
+                    } else {
+                        Self::Vcmp_Zero_Single_A1(cond, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), op7 == 1)
+                    }));
+                }
+                // VCVT half-precision: opc2 0010 = f16->wide, 0011 = wide->f16 (op7 = which half-word). The
+                // wide operand is single when `double`=0 and double (FEAT_FP16) when `double`=1.
+                if opc2 == 0b0010 {
+                    return Ok(Some(if double {
+                        Self::Vcvt_HalfToDouble_A1(cond, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit), op7 == 1)
+                    } else {
+                        Self::Vcvt_HalfToSingle_A1(cond, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit), op7 == 1)
+                    }));
+                }
+                if opc2 == 0b0011 {
+                    return Ok(Some(if double {
+                        Self::Vcvt_DoubleToHalf_A1(cond, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit), op7 == 1)
+                    } else {
+                        Self::Vcvt_SingleToHalf_A1(cond, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit), op7 == 1)
+                    }));
+                }
+                // VJCVT (VJCVTZS): opc2=1001, op7=1 -- JS double -> s32. Sd (result) at Vd:D, Dm (source) at Vm:M.
+                if opc2 == 0b1001 && op7 == 1 {
+                    return Ok(Some(Self::Vjcvt_A1(cond, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit))));
+                }
+                // VCVT fixed-point: opc2 = 1:op:1:U (1010/1011/1110/1111); op[18] = to_fixed, op[16] = unsigned.
+                if opc2 & 0b1010 == 0b1010 && let Some((signed, bits32, frac)) = decode_a32_vcvt_fixed(word) {
+                    let to_fixed = (opc2 >> 2) & 1 == 1;
+                    return Ok(Some(match (to_fixed, double) {
+                        (true, false) => Self::Vcvt_FloatToFixed_Single_A1(cond, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), signed, bits32, frac),
+                        (true, true) => Self::Vcvt_FloatToFixed_Double_A1(cond, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), signed, bits32, frac),
+                        (false, false) => Self::Vcvt_FixedToFloat_Single_A1(cond, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), signed, bits32, frac),
+                        (false, true) => Self::Vcvt_FixedToFloat_Double_A1(cond, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), signed, bits32, frac),
+                    }));
+                }
+                // Conditional VRINT{R,Z,X} (ARMv8): opc2=0110 is VRINTR (op7=0) / VRINTZ (op7=1); opc2=0111
+                // with op7=0 is VRINTX. opc2=0111 with op7=1 is the VCVT f32<->f64 below, so guard on op7.
+                if opc2 == 0b0110 {
+                    let mode = if op7 == 0 { Arm32VrintMode::R } else { Arm32VrintMode::Z };
+                    return Ok(Some(if double {
+                        Self::Vrint_Cond_Double_A1(cond, mode, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                    } else {
+                        Self::Vrint_Cond_Single_A1(cond, mode, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                    }));
+                }
+                if opc2 == 0b0111 && op7 == 0 {
+                    return Ok(Some(if double {
+                        Self::Vrint_Cond_Double_A1(cond, Arm32VrintMode::X, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                    } else {
+                        Self::Vrint_Cond_Single_A1(cond, Arm32VrintMode::X, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                    }));
+                }
+                // VCVT: 0111 = f32<->f64 (op7=1), 1000 = int->float, 110x = float->int. `double` (bit8) is the
+                // SOURCE precision for float<->int and float-narrow, the DEST precision for int->float.
+                match opc2 {
+                    0b0111 => return Ok(Some(if double {
+                        Self::Vcvt_Double_To_Single_A1(cond, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                    } else {
+                        Self::Vcvt_Single_To_Double_A1(cond, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                    })),
+                    0b1000 => return Ok(Some(if double {
+                        Self::Vcvt_IntToFloat_ToDouble_A1(cond, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit), op7 == 1)
+                    } else {
+                        Self::Vcvt_IntToFloat_ToSingle_A1(cond, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit), op7 == 1)
+                    })),
+                    0b1100 | 0b1101 => return Ok(Some(if double {
+                        Self::Vcvt_FloatToInt_FromDouble_A1(cond, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit), opc2 & 1 == 1, op7 == 1)
+                    } else {
+                        Self::Vcvt_FloatToInt_FromSingle_A1(cond, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit), opc2 & 1 == 1, op7 == 1)
+                    })),
+                    _ => {},
+                }
+            } else if let Some(op) = Arm32FpDataOperation3::from_bits(top, middle, (word >> 6) & 1) {
+                let vn_field = (word >> 16) & 0b1111;
+                let n_bit = (word >> 7) & 1;
+                return Ok(Some(if double {
+                    Self::FpDataProcess3_Double_A1(cond, op, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vn_field, n_bit), Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                } else {
+                    Self::FpDataProcess3_Single_A1(cond, op, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vn_field, n_bit), Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit))
+                }));
+            }
+        }
+        // VMRS / VMSR (FPSCR transfer); VMRS with Rt=1111 is the APSR_nzcv (vcmp-flags) form
+        if word & 0x0FFF_0FFF == 0x0EF1_0A10 {
+            let rt_bits = (word >> 12) & 0b1111;
+            return Ok(Some(if rt_bits == 0b1111 { Self::Vmrs_Apsr_Nzcv_A1(cond) } else { Self::Vmrs_A1(cond, gpr(rt_bits)) }));
+        }
+        if word & 0x0FFF_0FFF == 0x0EE1_0A10 {
+            return Ok(Some(Self::Vmsr_A1(cond, gpr((word >> 12) & 0b1111))));
+        }
+        // VMOV core <-> single (op[20]: 0 = Rt->Sn, 1 = Sn->Rt)
+        if word & 0x0FF0_0F7F == 0x0E00_0A10 {
+            let sn = Arm32SinglePrecisionRegister::from_field_and_bit((word >> 16) & 0b1111, (word >> 7) & 1);
+            return Ok(Some(Self::Vmov_Core_To_Single_A1(cond, sn, gpr((word >> 12) & 0b1111))));
+        }
+        if word & 0x0FF0_0F7F == 0x0E10_0A10 {
+            let sn = Arm32SinglePrecisionRegister::from_field_and_bit((word >> 16) & 0b1111, (word >> 7) & 1);
+            return Ok(Some(Self::Vmov_Single_To_Core_A1(cond, gpr((word >> 12) & 0b1111), sn)));
+        }
+        // VMOV (general-purpose register to scalar): Rt -> Dd[x]. [11:8]=1011 distinguishes it from VMOV-single
+        // ([11:8]=1010); [20]=0 to-scalar, [23]=0; size+lane pack into opc1[22:21]/opc2[6:5].
+        if word & 0x0F90_0F1F == 0x0E00_0B10 {
+            let (size, index) = Arm32VmovLaneSize::from_opc_fields((word >> 21) & 0b11, (word >> 5) & 0b11);
+            let dd = Arm32DoublePrecisionRegister::from_field_and_bit((word >> 16) & 0b1111, (word >> 7) & 1);
+            return Ok(Some(Self::Vmov_Core_To_Scalar_A1(cond, size, index, dd, gpr((word >> 12) & 0b1111))));
+        }
+        // VMOV (scalar to general-purpose register): Dn[x] -> Rt. [20]=1; U=[23] (sign-extend for .8/.16).
+        if word & 0x0F10_0F1F == 0x0E10_0B10 {
+            let (size, index) = Arm32VmovLaneSize::from_opc_fields((word >> 21) & 0b11, (word >> 5) & 0b11);
+            let dn = Arm32DoublePrecisionRegister::from_field_and_bit((word >> 16) & 0b1111, (word >> 7) & 1);
+            // .32 carries no sign bit (U is 0); only .8/.16 use U[23] as signed/unsigned.
+            let unsigned = !matches!(size, Arm32VmovLaneSize::Word) && (word >> 23) & 1 == 1;
+            return Ok(Some(Self::Vmov_Scalar_To_Core_A1(cond, unsigned, size, index, gpr((word >> 12) & 0b1111), dn)));
+        }
+        // VMOV core-pair <-> double / two-singles : cccc 1100 010 op Rt2 Rt 101 sz M 1 Vm
+        if word & 0x0FE0_0ED0 == 0x0C40_0A10 {
+            let fp_to_core = (word >> 20) & 1 == 1;
+            let is_double = (word >> 8) & 1 == 1;
+            let rt2 = gpr((word >> 16) & 0b1111);
+            let rt = gpr((word >> 12) & 0b1111);
+            let vm_field = word & 0b1111;
+            let m_bit = (word >> 5) & 1;
+            return Ok(Some(if is_double {
+                let dm = Arm32DoublePrecisionRegister::from_field_and_bit(vm_field, m_bit);
+                if fp_to_core { Self::Vmov_Double_To_CorePair_A1(cond, rt, rt2, dm) } else { Self::Vmov_CorePair_To_Double_A1(cond, dm, rt, rt2) }
+            } else {
+                let sm = Arm32SinglePrecisionRegister::from_field_and_bit(vm_field, m_bit);
+                if fp_to_core { Self::Vmov_Singles_To_CorePair_A1(cond, rt, rt2, sm) } else { Self::Vmov_CorePair_To_Singles_A1(cond, sm, rt, rt2) }
+            }));
+        }
+        // VFP scalar load/store : cccc 110 P U D W L Rn Vd 101 sz imm8  (coproc = 1010 single / 1011 double).
+        // VLDR/VSTR are conditional-only; a cond=0b1111 word in this space is not VLDR (it is the LDC2/STC2
+        // or an undefined encoding), so it must not be claimed here with a bogus `Undefined` condition.
+        if (word >> 28) != 0b1111 && word & 0x0E00_0E00 == 0x0C00_0A00 {
+            let p = (word >> 24) & 1;
+            let w = (word >> 21) & 1;
+            let is_load = (word >> 20) & 1 == 1;
+            let is_double = (word >> 8) & 1 == 1;
+            let d_bit = (word >> 22) & 1;
+            let rn = gpr((word >> 16) & 0b1111);
+            let vd_field = (word >> 12) & 0b1111;
+            if p == 1 && w == 0 {
+                // VLDR / VSTR (single transfer)
+                let imm8 = (word & 0xFF) as i32;
+                let offset = if (word >> 23) & 1 == 1 { imm8 * 4 } else { -imm8 * 4 };
+                return Ok(Some(match (is_load, is_double) {
+                    (true, false) => Self::Vldr_Single_A1(cond, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), rn, offset),
+                    (false, false) => Self::Vstr_Single_A1(cond, Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit), rn, offset),
+                    (true, true) => Self::Vldr_Double_A1(cond, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), rn, offset),
+                    (false, true) => Self::Vstr_Double_A1(cond, Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit), rn, offset),
+                }));
+            } else {
+                // VLDM / VSTM
+                let writeback = w == 1;
+                let decrement_before = p == 1;
+                let imm8 = (word & 0xFF) as u8;
+                return Ok(Some(if is_double {
+                    let first = Arm32DoublePrecisionRegister::from_field_and_bit(vd_field, d_bit);
+                    if is_load { Self::Vldm_Double_A1(cond, rn, writeback, decrement_before, first, imm8 / 2) } else { Self::Vstm_Double_A1(cond, rn, writeback, decrement_before, first, imm8 / 2) }
+                } else {
+                    let first = Arm32SinglePrecisionRegister::from_field_and_bit(vd_field, d_bit);
+                    if is_load { Self::Vldm_Single_A1(cond, rn, writeback, decrement_before, first, imm8) } else { Self::Vstm_Single_A1(cond, rn, writeback, decrement_before, first, imm8) }
+                }));
+            }
+        }
+        // NEON VDUP (from an ARM core register) : cccc 1110 1 B Q 0 Vd Rt 1011 D 0 E 1 0000. Conditional, and
+        // it lives in the coproc-1011 space, so it is decoded before the (coproc-1011-skipping) MCR/CDP group.
+        if word & 0x0F90_0F5F == 0x0E80_0B10 {
+            let b = (word >> 22) & 1;
+            let e = (word >> 5) & 1;
+            let size = match (b, e) {
+                (1, 0) => Arm32NeonSize::I8,
+                (0, 1) => Arm32NeonSize::I16,
+                _ => Arm32NeonSize::I32, // (0,0); (1,1) is unallocated
+            };
+            let vd = (word >> 16) & 0b1111;
+            let d_bit = (word >> 7) & 1;
+            let rt = gpr((word >> 12) & 0b1111);
+            return Ok(Some(if (word >> 21) & 1 == 1 {
+                Self::NeonVdupCore_Q_A1(cond, size, Arm32QuadwordRegister::from_field_and_bit(vd, d_bit), rt)
+            } else {
+                Self::NeonVdupCore_D_A1(cond, size, Arm32DoublePrecisionRegister::from_field_and_bit(vd, d_bit), rt)
+            }));
+        }
+        // coprocessor MCRR / MRRC : cccc 1100 010 L Rt2 Rt coproc opc1 CRm  (decode before LDC/STC -- both [27:25]=110)
+        if word & 0x0FE0_0000 == 0x0C40_0000 && !is_fp_coproc(word) {
+            let uncond = (word >> 28) == 0xF;
+            let is_load = (word >> 20) & 1 == 1;
+            let coproc = ((word >> 8) & 0xF) as u8;
+            let opc1 = ((word >> 4) & 0xF) as u8;
+            let crm = (word & 0xF) as u8;
+            let rt2 = gpr((word >> 16) & 0b1111);
+            let rt = gpr((word >> 12) & 0b1111);
+            return Ok(Some(match (is_load, uncond) {
+                (false, false) => Self::Mcrr_A1(cond, coproc, opc1, rt, rt2, crm),
+                (true, false) => Self::Mrrc_A1(cond, coproc, opc1, rt, rt2, crm),
+                (false, true) => Self::Mcrr2_A1(coproc, opc1, rt, rt2, crm),
+                (true, true) => Self::Mrrc2_A1(coproc, opc1, rt, rt2, crm),
+            }));
+        }
+        // MCR / MRC : cccc 1110 opc1 L CRn Rt coproc opc2 1 CRm
+        if word & 0x0F00_0010 == 0x0E00_0010 && !is_fp_coproc(word) {
+            let uncond = (word >> 28) == 0xF;
+            let is_load = (word >> 20) & 1 == 1;
+            let opc1 = ((word >> 21) & 0b111) as u8;
+            let crn = ((word >> 16) & 0xF) as u8;
+            let rt = gpr((word >> 12) & 0b1111);
+            let coproc = ((word >> 8) & 0xF) as u8;
+            let opc2 = ((word >> 5) & 0b111) as u8;
+            let crm = (word & 0xF) as u8;
+            return Ok(Some(match (is_load, uncond) {
+                (false, false) => Self::Mcr_A1(cond, coproc, opc1, rt, crn, crm, opc2),
+                (true, false) => Self::Mrc_A1(cond, coproc, opc1, rt, crn, crm, opc2),
+                (false, true) => Self::Mcr2_A1(coproc, opc1, rt, crn, crm, opc2),
+                (true, true) => Self::Mrc2_A1(coproc, opc1, rt, crn, crm, opc2),
+            }));
+        }
+        // CDP : cccc 1110 opc1 CRn CRd coproc opc2 0 CRm
+        if word & 0x0F00_0010 == 0x0E00_0000 && !is_fp_coproc(word) {
+            let uncond = (word >> 28) == 0xF;
+            let opc1 = ((word >> 20) & 0xF) as u8;
+            let crn = ((word >> 16) & 0xF) as u8;
+            let crd = ((word >> 12) & 0xF) as u8;
+            let coproc = ((word >> 8) & 0xF) as u8;
+            let opc2 = ((word >> 5) & 0b111) as u8;
+            let crm = (word & 0xF) as u8;
+            return Ok(Some(if uncond {
+                Self::Cdp2_A1(coproc, opc1, crd, crn, crm, opc2)
+            } else {
+                Self::Cdp_A1(cond, coproc, opc1, crd, crn, crm, opc2)
+            }));
+        }
+        // LDC / STC : cccc 110 P U N W L Rn CRd coproc imm8
+        if word & 0x0E00_0000 == 0x0C00_0000 && !is_fp_coproc(word) {
+            let uncond = (word >> 28) == 0xF;
+            let p = (word >> 24) & 1;
+            let add = (word >> 23) & 1 == 1;
+            let long = (word >> 22) & 1 == 1;
+            let w = (word >> 21) & 1;
+            let is_load = (word >> 20) & 1 == 1;
+            let rn = gpr((word >> 16) & 0b1111);
+            let crd = ((word >> 12) & 0xF) as u8;
+            let coproc = ((word >> 8) & 0xF) as u8;
+            let imm8 = (word & 0xFF) as u8;
+            let index = ldc_index_from_p_w(p, w);
+            return Ok(Some(match (is_load, uncond) {
+                (true, false) => Self::Ldc_A1(cond, coproc, long, crd, rn, add, imm8, index),
+                (false, false) => Self::Stc_A1(cond, coproc, long, crd, rn, add, imm8, index),
+                (true, true) => Self::Ldc2_A1(coproc, long, crd, rn, add, imm8, index),
+                (false, true) => Self::Stc2_A1(coproc, long, crd, rn, add, imm8, index),
+            }));
+        }
+
+        Err(DecodeError::InvalidOpcode)
+    }
+
+    // ---- target gating ----
+    pub fn requirement(&self) -> ArmInstructionRequirement {
+        match self {
+            // MOVW/MOVT are ARMv6T2/ARMv7 (we floor them at the A/R v7 baseline).
+            Self::Movw_A2(..) | Self::Movt_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv7AR, &[]),
+            // the architectural NOP hint (distinct from `mov r0, r0`) is ARMv6K / ARMv6T2 onwards.
+            Self::Nop_A1(..) | Self::Yield_A1(..) | Self::Wfe_A1(..) | Self::Wfi_A1(..) | Self::Sev_A1(..) | Self::Dbg_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv6, &[]),
+            Self::Csdb_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv7AR, &[]),
+            Self::Esb_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv8A, &[]),
+            Self::Sb_A1 => ArmInstructionRequirement::new(ArmIsaVersion::Armv8A, &[]), // FEAT_SB
+            // memory barriers are ARMv7; BKPT is ARMv5T; SMC/UDF are ARMv6; HVC/ERET are ARMv7VE.
+            Self::Dmb_A1(..) | Self::Dsb_A1(..) | Self::Isb_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv7AR, &[]),
+            Self::Bkpt_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv5TE, &[]),
+            Self::Smc_A1(..) | Self::Udf_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv6, &[]),
+            Self::Hvc_A1(..) | Self::Eret_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv7AR, &[]),
+            // PLD is ARMv5TE; PLI and PLDW are ARMv7; RFE/SRS are ARMv6.
+            Self::Pld_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv5TE, &[]),
+            Self::Pli_A1(..) | Self::Pldw_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv7AR, &[]),
+            Self::Rfe_A1(..) | Self::Srs_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv6, &[]),
+            // ARMv8-A AArch32 additions: CRC32, the load-acquire/store-release family, and SEVL.
+            Self::Sevl_A1(..)
+            | Self::Crc32b_A1(..) | Self::Crc32h_A1(..) | Self::Crc32w_A1(..)
+            | Self::Crc32cb_A1(..) | Self::Crc32ch_A1(..) | Self::Crc32cw_A1(..)
+            | Self::Lda_A1(..) | Self::Ldab_A1(..) | Self::Ldah_A1(..)
+            | Self::Stl_A1(..) | Self::Stlb_A1(..) | Self::Stlh_A1(..)
+            | Self::Ldaex_A1(..) | Self::Ldaexb_A1(..) | Self::Ldaexh_A1(..) | Self::Ldaexd_A1(..)
+            | Self::Stlex_A1(..) | Self::Stlexb_A1(..) | Self::Stlexh_A1(..) | Self::Stlexd_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv8A, &[]),
+            // VFP (hardware floating-point) requires the FloatingPoint extension feature.
+            Self::Vldr_Single_A1(..) | Self::Vstr_Single_A1(..) | Self::Vldr_Double_A1(..) | Self::Vstr_Double_A1(..)
+            | Self::Vldm_Single_A1(..) | Self::Vstm_Single_A1(..) | Self::Vldm_Double_A1(..) | Self::Vstm_Double_A1(..)
+            | Self::FpDataProcess3_Single_A1(..) | Self::FpDataProcess3_Double_A1(..)
+            | Self::FpDataProcess2_Single_A1(..) | Self::FpDataProcess2_Double_A1(..)
+            | Self::Vcmp_Single_A1(..) | Self::Vcmp_Double_A1(..) | Self::Vcmp_Zero_Single_A1(..) | Self::Vcmp_Zero_Double_A1(..)
+            | Self::Vmrs_A1(..) | Self::Vmrs_Apsr_Nzcv_A1(..) | Self::Vmsr_A1(..)
+            | Self::Vmov_Core_To_Single_A1(..) | Self::Vmov_Single_To_Core_A1(..)
+            | Self::Vmov_Immediate_Single_A1(..) | Self::Vmov_Immediate_Double_A1(..)
+            | Self::Vmov_Double_To_CorePair_A1(..) | Self::Vmov_CorePair_To_Double_A1(..)
+            | Self::Vmov_Singles_To_CorePair_A1(..) | Self::Vmov_CorePair_To_Singles_A1(..)
+            | Self::Vcvt_FloatToInt_FromSingle_A1(..) | Self::Vcvt_FloatToInt_FromDouble_A1(..)
+            | Self::Vcvt_IntToFloat_ToSingle_A1(..) | Self::Vcvt_IntToFloat_ToDouble_A1(..)
+            | Self::Vcvt_Single_To_Double_A1(..) | Self::Vcvt_Double_To_Single_A1(..)
+            | Self::Vcvt_HalfToSingle_A1(..) | Self::Vcvt_SingleToHalf_A1(..)
+            | Self::Vcvt_FloatToFixed_Single_A1(..) | Self::Vcvt_FloatToFixed_Double_A1(..)
+            | Self::Vcvt_FixedToFloat_Single_A1(..) | Self::Vcvt_FixedToFloat_Double_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv7AR, &[ArmCpuFeature::FloatingPoint]),
+
+            // ARMv8-A floating-point additions require the v8 baseline (plus an FPU).
+            Self::Vsel_Single_A1(..) | Self::Vsel_Double_A1(..)
+            | Self::Vmaxnm_Single_A1(..) | Self::Vmaxnm_Double_A1(..)
+            | Self::Vminnm_Single_A1(..) | Self::Vminnm_Double_A1(..)
+            | Self::Vrint_Directed_Single_A1(..) | Self::Vrint_Directed_Double_A1(..)
+            | Self::Vrint_Cond_Single_A1(..) | Self::Vrint_Cond_Double_A1(..)
+            | Self::Vcvt_Directed_FromSingle_A1(..) | Self::Vcvt_Directed_FromDouble_A1(..)
+            // half <-> double needs FEAT_FP16 (Armv8.2-A); VJCVT needs FEAT_JSCVT (Armv8.3-A); the model has no
+            // finer gate than the v8-A FP group.
+            | Self::Vcvt_HalfToDouble_A1(..) | Self::Vcvt_DoubleToHalf_A1(..)
+            | Self::Vjcvt_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv8A, &[ArmCpuFeature::FloatingPoint]),
+
+            // NEON Advanced SIMD -- available from ARMv7-A/R with the Advanced SIMD extension.
+            Self::NeonInt3Same_D_A1(..) | Self::NeonInt3Same_Q_A1(..)
+            | Self::NeonFloat3Same_D_A1(..) | Self::NeonFloat3Same_Q_A1(..)
+            | Self::NeonBitwise3Same_D_A1(..) | Self::NeonBitwise3Same_Q_A1(..)
+            | Self::NeonMisc2Sized_D_A1(..) | Self::NeonMisc2Sized_Q_A1(..)
+            | Self::NeonMisc2Narrow_A1(..) | Self::NeonShllMax_A1(..)
+            | Self::NeonDiffLong_A1(..) | Self::NeonDiffWide_A1(..) | Self::NeonDiffNarrow_A1(..)
+            | Self::NeonScalar_D_A1(..) | Self::NeonScalar_Q_A1(..) | Self::NeonScalarLong_A1(..)
+            | Self::NeonShift_D_A1(..) | Self::NeonShift_Q_A1(..) | Self::NeonShiftNarrow_A1(..) | Self::NeonShiftLong_A1(..)
+            | Self::NeonExt_D_A1(..) | Self::NeonExt_Q_A1(..) | Self::NeonTableLookup_A1(..)
+            | Self::NeonVdupScalar_D_A1(..) | Self::NeonVdupScalar_Q_A1(..)
+            | Self::NeonVdupCore_D_A1(..) | Self::NeonVdupCore_Q_A1(..)
+            | Self::NeonModifiedImmediate_D_A1(..) | Self::NeonModifiedImmediate_Q_A1(..)
+            | Self::NeonLoadStoreMultiple_A1(..) | Self::NeonLoadStoreSingleLane_A1(..) | Self::NeonLoadStoreAllLanes_A1(..)
+            | Self::Vmov_Core_To_Scalar_A1(..) | Self::Vmov_Scalar_To_Core_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv7AR, &[ArmCpuFeature::AdvancedSimd]),
+
+            // ARMv8 cryptography extension: the v8 baseline plus NEON plus the crypto feature.
+            Self::NeonAes_A1(..) | Self::NeonSha3Reg_A1(..) | Self::NeonSha2Reg_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv8A, &[ArmCpuFeature::AdvancedSimd, ArmCpuFeature::Crypto]),
+            // the fixed-size 2-reg-misc group mixes v7 ops with the v8 rounding/anchored-convert members.
+            Self::NeonMisc2Fixed_D_A1(op, ..) | Self::NeonMisc2Fixed_Q_A1(op, ..) => {
+                let isa = if op.is_armv8() { ArmIsaVersion::Armv8A } else { ArmIsaVersion::Armv7AR };
+                ArmInstructionRequirement::new(isa, &[ArmCpuFeature::AdvancedSimd])
+            },
+            // multiply: MUL/MLA and the 32x32->64 long multiplies are the A32 baseline; UMAAL is ARMv6; MLS is ARMv6T2/v7.
+            Self::Mul_A1(..) | Self::Mla_A1(..)
+            | Self::Umull_A1(..) | Self::Umlal_A1(..) | Self::Smull_A1(..) | Self::Smlal_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv4T, &[]),
+            Self::Umaal_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv6, &[]),
+            Self::Mls_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv7AR, &[]),
+            // saturating arithmetic is the ARMv5TE "E" (DSP) extension (baseline from ARMv6).
+            Self::Qadd_A1(..) | Self::Qsub_A1(..) | Self::Qdadd_A1(..) | Self::Qdsub_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv5TE, &[]),
+            // signed-multiply halfword forms are ARMv5TE; the dual / most-significant-word forms are ARMv6.
+            Self::Smla_A1(..) | Self::Smlaw_A1(..) | Self::Smulw_A1(..) | Self::Smlal_Halfword_A1(..) | Self::Smul_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv5TE, &[]),
+            Self::Smlad_A1(..) | Self::Smuad_A1(..) | Self::Smlsd_A1(..) | Self::Smusd_A1(..)
+            | Self::Smmla_A1(..) | Self::Smmul_A1(..) | Self::Smmls_A1(..)
+            | Self::Smlald_A1(..) | Self::Smlsld_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv6, &[]),
+            // the packed-SIMD (parallel) add/subtracts and SEL are the ARMv6 media instructions.
+            Self::ParallelAddSub_A1(..) | Self::Sel_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv6, &[]),
+            // extend, extend-and-add and the byte-reverses are ARMv6; RBIT is ARMv6T2/v7; CLZ is ARMv5T.
+            Self::Extend_A1(..) | Self::ExtendAndAdd_A1(..)
+            | Self::Rev_A1(..) | Self::Rev16_A1(..) | Self::Revsh_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv6, &[]),
+            Self::Rbit_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv7AR, &[]),
+            Self::Clz_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv5TE, &[]),
+            // pack-halfword, the saturates and the sum-of-absolute-differences are ARMv6 media instructions.
+            Self::Pkhbt_A1(..) | Self::Pkhtb_A1(..)
+            | Self::Ssat_A1(..) | Self::Usat_A1(..) | Self::Ssat16_A1(..) | Self::Usat16_A1(..)
+            | Self::Usad8_A1(..) | Self::Usada8_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv6, &[]),
+            // the bitfield instructions are ARMv6T2 / ARMv7.
+            Self::Bfc_A1(..) | Self::Bfi_A1(..) | Self::Sbfx_A1(..) | Self::Ubfx_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv7AR, &[]),
+            // single word/byte load/store (and the unprivileged T forms) are the A32 baseline.
+            Self::Ldr_A1(..) | Self::Str_A1(..) | Self::Ldrb_A1(..) | Self::Strb_A1(..)
+            | Self::Ldrt_A1(..) | Self::Strt_A1(..) | Self::Ldrbt_A1(..) | Self::Strbt_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv4T, &[]),
+            // halfword/signed load/store are ARMv4T; LDRD/STRD are ARMv5TE; the H/SB/SH unprivileged T forms are ARMv6T2/v7.
+            Self::Ldrh_A1(..) | Self::Strh_A1(..) | Self::Ldrsb_A1(..) | Self::Ldrsh_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv4T, &[]),
+            Self::Ldrd_A1(..) | Self::Strd_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv5TE, &[]),
+            Self::Ldrht_A1(..) | Self::Strht_A1(..) | Self::Ldrsbt_A1(..) | Self::Ldrsht_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv7AR, &[]),
+            // load/store-multiple (incl. PUSH/POP spellings and the user-mode `^` forms) are the A32 baseline.
+            Self::Ldm_A1(..) | Self::Stm_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv4T, &[]),
+            // SWP/SWPB are the (deprecated) ARMv4T swap; the exclusive-access family and CLREX are ARMv6/ARMv6K.
+            Self::Swp_A1(..) | Self::Swpb_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv4T, &[]),
+            Self::Ldrex_A1(..) | Self::Strex_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv6, &[]),
+            Self::Ldrexb_A1(..) | Self::Strexb_A1(..) | Self::Ldrexh_A1(..) | Self::Strexh_A1(..)
+            | Self::Ldrexd_A1(..) | Self::Strexd_A1(..) | Self::Clrex_A1 => ArmInstructionRequirement::new(ArmIsaVersion::Armv6, &[]),
+            // everything else here (the data-processing family, BX, SVC) is the A32 baseline.
+            Self::And_Immediate_A1(..) | Self::And_Register_A1(..)
+            | Self::Eor_Immediate_A1(..) | Self::Eor_Register_A1(..)
+            | Self::Sub_Immediate_A1(..) | Self::Sub_Register_A1(..)
+            | Self::Rsb_Immediate_A1(..) | Self::Rsb_Register_A1(..)
+            | Self::Add_Immediate_A1(..) | Self::Add_Register_A1(..)
+            | Self::Adc_Immediate_A1(..) | Self::Adc_Register_A1(..)
+            | Self::Sbc_Immediate_A1(..) | Self::Sbc_Register_A1(..)
+            | Self::Rsc_Immediate_A1(..) | Self::Rsc_Register_A1(..)
+            | Self::Orr_Immediate_A1(..) | Self::Orr_Register_A1(..)
+            | Self::Bic_Immediate_A1(..) | Self::Bic_Register_A1(..)
+            | Self::Mov_Immediate_A1(..) | Self::Mov_Register_A1(..)
+            | Self::Mvn_Immediate_A1(..) | Self::Mvn_Register_A1(..)
+            | Self::Tst_Immediate_A1(..) | Self::Tst_Register_A1(..)
+            | Self::Teq_Immediate_A1(..) | Self::Teq_Register_A1(..)
+            | Self::Cmp_Immediate_A1(..) | Self::Cmp_Register_A1(..)
+            | Self::Cmn_Immediate_A1(..) | Self::Cmn_Register_A1(..)
+            | Self::And_RegisterShiftedRegister_A1(..) | Self::Eor_RegisterShiftedRegister_A1(..)
+            | Self::Sub_RegisterShiftedRegister_A1(..) | Self::Rsb_RegisterShiftedRegister_A1(..)
+            | Self::Add_RegisterShiftedRegister_A1(..) | Self::Adc_RegisterShiftedRegister_A1(..)
+            | Self::Sbc_RegisterShiftedRegister_A1(..) | Self::Rsc_RegisterShiftedRegister_A1(..)
+            | Self::Orr_RegisterShiftedRegister_A1(..) | Self::Bic_RegisterShiftedRegister_A1(..)
+            | Self::Mov_RegisterShiftedRegister_A1(..) | Self::Mvn_RegisterShiftedRegister_A1(..)
+            | Self::Tst_RegisterShiftedRegister_A1(..) | Self::Teq_RegisterShiftedRegister_A1(..)
+            | Self::Cmp_RegisterShiftedRegister_A1(..) | Self::Cmn_RegisterShiftedRegister_A1(..)
+            | Self::Bx_A1(..)
+            | Self::Svc_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv4T, &[]),
+            // B/BL are the A32 baseline; BLX (imm/reg) is ARMv5T; BXJ is ARMv5TEJ/ARMv6.
+            Self::B_A1(..) | Self::Bl_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv4T, &[]),
+            Self::Blx_Immediate_A1(..) | Self::Blx_Register_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv5TE, &[]),
+            Self::Bxj_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv6, &[]),
+            // MRS/MSR (CPSR/SPSR access) are the A32 baseline; CPS and SETEND are ARMv6.
+            Self::Mrs_A1(..) | Self::Msr_Register_A1(..) | Self::Msr_Immediate_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv4T, &[]),
+            // banked register transfer is an ARMv7VE (Virtualization) addition -- gated at the A/R baseline here.
+            Self::MrsBanked_A1(..) | Self::MsrBanked_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv7AR, &[]),
+            Self::Cps_A1(..) | Self::Setend_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv6, &[]),
+            // coprocessor: CDP/LDC/STC/MCR/MRC are the A32 baseline; MCRR/MRRC + the "2" forms are ARMv5TE; MCRR2/MRRC2 ARMv6.
+            Self::Mcr_A1(..) | Self::Mrc_A1(..) | Self::Cdp_A1(..) | Self::Ldc_A1(..) | Self::Stc_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv4T, &[]),
+            Self::Mcr2_A1(..) | Self::Mrc2_A1(..) | Self::Cdp2_A1(..) | Self::Ldc2_A1(..) | Self::Stc2_A1(..)
+            | Self::Mcrr_A1(..) | Self::Mrrc_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv5TE, &[]),
+            Self::Mcrr2_A1(..) | Self::Mrrc2_A1(..) => ArmInstructionRequirement::new(ArmIsaVersion::Armv6, &[]),
+        }
+    }
+
+    /// Encode this instruction only if `target_profile` supports it. A Thumb-only M-profile target has no
+    /// ARM state, so its profile rejects every A32 form (A32 requires the A/R lineage). Returns
+    /// [`EncodeError`] if the target lacks ARM state or the required extension.
+    pub fn encode_for_target(&self, target_profile: &ArmTargetProfile) -> Result<Vec<u8>, EncodeError> {
+        let requirement = self.requirement();
+        if !target_profile.supports(&requirement) {
+            return Err(EncodeError::UnsupportedInstructionForTarget {
+                required: requirement,
+                target_isa_version: target_profile.isa_version(),
+            });
+        }
+        self.encode()
     }
 }
 
