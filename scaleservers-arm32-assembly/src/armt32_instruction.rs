@@ -2949,6 +2949,1654 @@ impl ArmT32Instruction {
         Err(DecodeError::InvalidOpcode)
     }
 }
+impl ArmT32Instruction {
+
+    /// Encode this instruction to its little-endian machine-code bytes -- 2 bytes for a 16-bit Thumb
+    /// encoding, 4 for a 32-bit one. Returns [`EncodeError`] if an operand field is out of range for the
+    /// encoding. The bytes are target-independent; use [`encode_for_target`](Self::encode_for_target) to
+    /// also check that a given profile supports the instruction.
+    pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
+        let halfwords = match self {
+            Self::Adc_Register_T1(rdn, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Adc_Register_T1, rdn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Add_Immediate_T1(rd, rn, imm3) => {
+                check_unsigned_maximum("imm3", *imm3 as u32, 7)?;
+
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__0608(ArmT32OpcodePattern_16Bit::Add_Immediate_T1, rd.as_operand_bits(), rn.as_operand_bits(), *imm3);
+                vec![halfword0]
+            },
+            Self::Add_Immediate_T2(rdn, imm8) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0007__080a(ArmT32OpcodePattern_16Bit::Add_Immediate_T2, *imm8, rdn.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Add_Register_T1(rd, rn, rm) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__0608(ArmT32OpcodePattern_16Bit::Add_Register_T1, rd.as_operand_bits(), rn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Add_Register_T2(n, m) => {
+                if *n == Arm32GeneralPurposeRegister::R13 {
+                    return Err(EncodeError::RegisterNotEncodable { field: "n", detail: "n cannot be SP (R13); use Add_SpPlusRegister_T2 instead" });
+                }
+                if *m == Arm32GeneralPurposeRegister::R13 {
+                    return Err(EncodeError::RegisterNotEncodable { field: "m", detail: "m cannot be SP (R13); use Add_SpPlusRegister_T1 instead" });
+                }
+
+                let rdn_as_u3 = n.as_operand_bits() & 0b0000_0111;
+                let dn_as_u1 = (n.as_operand_bits() & 0b0000_1000) >> 3;
+                let rm_as_u4 = m.as_operand_bits();
+                //
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0306__0707(ArmT32OpcodePattern_16Bit::Add_Register_T2, rdn_as_u3, rm_as_u4, dn_as_u1);
+                vec![halfword0]
+            },
+            Self::Add_SpPlusImmediate_T1(rd, const10) => {
+                check_multiple_of("const10", *const10 as i64, 4)?;
+                check_unsigned_maximum("const10", *const10 as u32, 1020)?;
+
+                let imm8 = (const10 / 4) as u8;
+                //
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0007__080a(ArmT32OpcodePattern_16Bit::Add_SpPlusImmediate_T1, imm8, rd.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Add_SpPlusImmediate_T2(const9) => {
+                check_multiple_of("const9", *const9 as i64, 4)?;
+                // The T2 field is imm7, so const9 (= imm7 * 4) maxes at 127 * 4 = 508. (The prior code
+                // checked <= 1020, which would have overflowed the 7-bit field and corrupted the opcode.)
+                check_unsigned_maximum("const9", *const9 as u32, 508)?;
+
+                let imm7 = (const9 / 4) as u8;
+                //
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0006(ArmT32OpcodePattern_16Bit::Add_SpPlusImmediate_T2, imm7);
+                vec![halfword0]
+            },
+            Self::Add_SpPlusRegister_T1(m) => { 
+                // NOTE: this encoding is the same encoding as ::AddRegister_T2 -- but with 0b1101 specified in bits 3..=6 (i.e. "rm" in ::AddRegister_T2)
+                let rdm_as_u3 = m.as_operand_bits() & 0b0000_0111;
+                let dm_as_u1 = (m.as_operand_bits() & 0b0000_1000) >> 3;
+                //
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0707(ArmT32OpcodePattern_16Bit::Add_SpPlusRegister_T1, rdm_as_u3, dm_as_u1);
+                vec![halfword0]
+            },
+            Self::Add_SpPlusRegister_T2(rm) => {
+                if *rm == Arm32GeneralPurposeRegister::R13 {
+                    return Err(EncodeError::RegisterNotEncodable { field: "rm", detail: "rm cannot be SP (R13); use Add_SpPlusRegister_T1 instead" });
+                }
+
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0306(ArmT32OpcodePattern_16Bit::Add_SpPlusRegister_T2, rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Adr_T1(rd, const10) => {
+                check_multiple_of("const10", *const10 as i64, 4)?;
+                check_unsigned_maximum("const10", *const10 as u32, 1020)?;
+
+                let imm8 = (const10 / 4) as u8;
+                //
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0007__080a(ArmT32OpcodePattern_16Bit::Adr_T1, imm8, rd.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::And_Register_T1(rdn, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::And_Register_T1, rdn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Asr_Immediate_T1(rd, rm, decoded_imm5) => {
+                check_signed_range("decoded_imm5", *decoded_imm5 as i32, 1, 32)?;
+
+                // NOTE: "A6.4.1 Shift operations" of the ARVv6-M ISA doc indicates that an imm5 value of ZERO is interpeted as an imm5 value of 32 (because shift 'type' is '10')
+                let encoded_imm5 = if *decoded_imm5 == 32 { 0 } else { *decoded_imm5 };
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__060a(ArmT32OpcodePattern_16Bit::Asr_Immediate_T1, rd.as_operand_bits(), rm.as_operand_bits(), encoded_imm5);
+                vec![halfword0]
+            },
+            Self::Asr_Register_T1(rdn, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Asr_Register_T1, rdn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::B_T1(cond, decoded_signed_imm9) => {
+                // NOTE: condition "AL" is _not_ allowed for B_T1 in ARMv6-M; this maps to "Udf_T1" so we don't need to worry about this issue when decoding--but when encoding we do prohibit this condition
+                //       [we also handle the cond 0b1111 out of an abundance of caution, even though it's not an encodable condition]
+                if *cond == ArmT32InstructionCondition::AlwaysUnconditional {
+                    return Err(EncodeError::ConditionNotEncodable { field: "cond", detail: "the AL (0b1110) condition is not encodable in B<c> T1; that slot is UDF" });
+                }
+                if *cond == ArmT32InstructionCondition::Undefined(0b1111) {
+                    return Err(EncodeError::ConditionNotEncodable { field: "cond", detail: "the 0b1111 condition is not encodable in B<c> T1; that slot is SVC" });
+                }
+
+                check_multiple_of("decoded_signed_imm9", *decoded_signed_imm9 as i64, 2)?;
+                check_signed_range("decoded_signed_imm9", *decoded_signed_imm9 as i32, -256, 254)?;
+
+                let encoded_signed_imm8 = (decoded_signed_imm9 / 2) as i8;
+                //
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0007__s080b(ArmT32OpcodePattern_16Bit::B_T1, encoded_signed_imm8, cond.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::B_T2(decoded_signed_imm12) => {
+                check_multiple_of("decoded_signed_imm12", *decoded_signed_imm12 as i64, 2)?;
+                check_signed_range("decoded_signed_imm12", *decoded_signed_imm12 as i32, -2048, 2046)?;
+
+                let encoded_signed_imm11 = decoded_signed_imm12 / 2;
+                //
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__s000a(ArmT32OpcodePattern_16Bit::B_T2, encoded_signed_imm11);
+                vec![halfword0]
+            },
+            Self::Bic_Register_T1(rdn, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Bic_Register_T1, rdn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Bkpt_T1(imm8) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0007(ArmT32OpcodePattern_16Bit::Bkpt_T1, *imm8);
+                vec![halfword0]
+            },
+            Self::Bl_T1(decoded_signed_imm25) => {
+                check_multiple_of("decoded_signed_imm25", *decoded_signed_imm25 as i64, 2)?;
+                check_signed_range("decoded_signed_imm25", *decoded_signed_imm25, -16_777_216, 16_777_214)?;
+
+                let encoded_signed_imm24 = *decoded_signed_imm25 / 2;
+                let s = (((encoded_signed_imm24 as u32) >> 23) & 0b0000_0001) as u8;
+                let i1 = (((encoded_signed_imm24 as u32) >> 22) & 0b0000_0001) as u8;
+                let i2 = (((encoded_signed_imm24 as u32) >> 21) & 0b0000_0001) as u8;
+                let imm10 = (((encoded_signed_imm24 as u32) >> 11) & 0b0000_0011_1111_1111) as u16;
+                let imm11 = ((encoded_signed_imm24 as u32) & 0b0000_0111_1111_1111) as u16;
+                //
+                let j1 = ((!i1) ^ s) & 0b1;
+                let j2 = ((!i2) ^ s) & 0b1;
+                //
+                let word = ArmT32InstructionEncoder::encode_instruction_word__000a__0b0b__0d0d__1019__1a1a(ArmT32OpcodePattern_32Bit::Bl_T1, imm11, j2, j1, imm10, s);
+                let halfwords = split_instruction_word_into_halfwords(word);
+                halfwords.to_vec()
+            },
+            Self::Blx_Register_T1(rm) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0306(ArmT32OpcodePattern_16Bit::Blx_Register_T1, rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Bx_T1(rm) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0306(ArmT32OpcodePattern_16Bit::Bx_T1, rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Cmn_Register_T1(rn, rm) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Cmn_Register_T1, rn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Cmp_Immediate_T1(rn, imm8) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0007__080a(ArmT32OpcodePattern_16Bit::Cmp_Immediate_T1, *imm8, rn.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Cmp_Register_T1(rn, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Cmp_Register_T1, rn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Cmp_Register_T2(rn, rm) => {
+                let rn_as_u3 = rn.as_operand_bits() & 0b0000_0111;
+                let n_as_u1 = (rn.as_operand_bits() & 0b0000_1000) >> 3;
+                let rm_as_u4 = rm.as_operand_bits();
+                //
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0306__0707(ArmT32OpcodePattern_16Bit::Cmp_Register_T2, rn_as_u3, rm_as_u4, n_as_u1);
+                vec![halfword0]
+            },
+            Self::Cps_T1(primask_effect) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0404(ArmT32OpcodePattern_16Bit::Cps_T1, primask_effect.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Dmb_T1(option) => { 
+                let word = ArmT32InstructionEncoder::encode_instruction_word__0003(ArmT32OpcodePattern_32Bit::Dmb_T1, option.as_operand_bits());
+                let halfwords = split_instruction_word_into_halfwords(word);
+                halfwords.to_vec()
+            },
+            Self::Dsb_T1(option) => { 
+                let word = ArmT32InstructionEncoder::encode_instruction_word__0003(ArmT32OpcodePattern_32Bit::Dsb_T1, option.as_operand_bits());
+                let halfwords = split_instruction_word_into_halfwords(word);
+                halfwords.to_vec()
+            },
+            Self::Eor_Register_T1(rdn, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Eor_Register_T1, rdn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Isb_T1(option) => { 
+                let word = ArmT32InstructionEncoder::encode_instruction_word__0003(ArmT32OpcodePattern_32Bit::Isb_T1, option.as_operand_bits());
+                let halfwords = split_instruction_word_into_halfwords(word);
+                halfwords.to_vec()
+            },
+            Self::Ldm_T1(rn, registers) => {
+                let register_list = gpr_coding_utils::convert_low_registers_slice_to_gpr_register_list_u8(registers)?;
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0007__080a(ArmT32OpcodePattern_16Bit::Ldm_T1, register_list, rn.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Ldr_Immediate_T1(rt, rn, decoded_imm7) => {
+                check_multiple_of("decoded_imm7", *decoded_imm7 as i64, 4)?;
+                check_unsigned_maximum("decoded_imm7", *decoded_imm7 as u32, 124)?;
+
+                let encoded_imm5 = decoded_imm7 / 4;
+                //
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__060a(ArmT32OpcodePattern_16Bit::Ldr_Immediate_T1, rt.as_operand_bits(), rn.as_operand_bits(), encoded_imm5);
+                vec![halfword0]
+            },
+            Self::Ldr_Immediate_T2(rt, decoded_imm10) => {
+                check_multiple_of("decoded_imm10", *decoded_imm10 as i64, 4)?;
+                check_unsigned_maximum("decoded_imm10", *decoded_imm10 as u32, 1020)?;
+
+                let encoded_imm8 = (decoded_imm10 / 4) as u8;
+                //
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0007__080a(ArmT32OpcodePattern_16Bit::Ldr_Immediate_T2, encoded_imm8, rt.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Ldr_Literal_T1(rt, decoded_imm10) => {
+                check_multiple_of("decoded_imm10", *decoded_imm10 as i64, 4)?;
+                check_unsigned_maximum("decoded_imm10", *decoded_imm10 as u32, 1020)?;
+
+                let encoded_imm8 = (decoded_imm10 / 4) as u8;
+                //
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0007__080a(ArmT32OpcodePattern_16Bit::Ldr_Literal_T1, encoded_imm8, rt.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Ldr_Register_T1(rt, rn, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__0608(ArmT32OpcodePattern_16Bit::Ldr_Register_T1, rt.as_operand_bits(), rn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Ldrb_Immediate_T1(rt, rn, imm5) => {
+                check_unsigned_maximum("imm5", *imm5 as u32, 31)?;
+
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__060a(ArmT32OpcodePattern_16Bit::Ldrb_Immediate_T1, rt.as_operand_bits(), rn.as_operand_bits(), *imm5);
+                vec![halfword0]
+            },
+            Self::Ldrb_Register_T1(rt, rn, rm) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__0608(ArmT32OpcodePattern_16Bit::Ldrb_Register_T1, rt.as_operand_bits(), rn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Ldrh_Immediate_T1(rt, rn, decoded_imm6) => {
+                check_multiple_of("decoded_imm6", *decoded_imm6 as i64, 2)?;
+                check_unsigned_maximum("decoded_imm6", *decoded_imm6 as u32, 62)?;
+
+                let encoded_imm5 = decoded_imm6 / 2;
+                //
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__060a(ArmT32OpcodePattern_16Bit::Ldrh_Immediate_T1, rt.as_operand_bits(), rn.as_operand_bits(), encoded_imm5);
+                vec![halfword0]
+            },
+            Self::Ldrh_Register_T1(rt, rn, rm) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__0608(ArmT32OpcodePattern_16Bit::Ldrh_Register_T1, rt.as_operand_bits(), rn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Ldrsb_Register_T1(rt, rn, rm) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__0608(ArmT32OpcodePattern_16Bit::Ldrsb_Register_T1, rt.as_operand_bits(), rn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Ldrsh_Register_T1(rt, rn, rm) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__0608(ArmT32OpcodePattern_16Bit::Ldrsh_Register_T1, rt.as_operand_bits(), rn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Lsl_Immediate_T1(rd, rm, imm5) => {
+                check_unsigned_maximum("imm5", *imm5 as u32, 31)?;
+
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__060a(ArmT32OpcodePattern_16Bit::Lsl_Immediate_T1, rd.as_operand_bits(), rm.as_operand_bits(), *imm5);
+                vec![halfword0]
+            },
+            Self::Lsl_Register_T1(rdn, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Lsl_Register_T1, rdn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Lsr_Immediate_T1(rd, rm, decoded_imm5) => {
+                check_signed_range("decoded_imm5", *decoded_imm5 as i32, 1, 32)?;
+
+                // NOTE: "A6.4.1 Shift operations" of the ARVv6-M ISA doc indicates that an imm5 value of ZERO is interpeted as an imm5 value of 32 (because shift 'type' is '01'); we should consider where we want to put _that_ logic in our code
+                let encoded_imm5 = if *decoded_imm5 == 32 { 0 } else { *decoded_imm5 };
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__060a(ArmT32OpcodePattern_16Bit::Lsr_Immediate_T1, rd.as_operand_bits(), rm.as_operand_bits(), encoded_imm5);
+                vec![halfword0]
+            },
+            Self::Lsr_Register_T1(rdn, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Lsr_Register_T1, rdn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Mrs_T1(rd, spec_reg) => {
+                let sysm = spec_reg.as_operand_bits();
+                let word = ArmT32InstructionEncoder::encode_instruction_word__0007__080b(ArmT32OpcodePattern_32Bit::Mrs_T1, sysm, rd.as_operand_bits());
+                let halfwords = split_instruction_word_into_halfwords(word);
+                halfwords.to_vec()
+            },
+            Self::Msr_Register_T1(spec_reg, rn) => { 
+                let sysm = spec_reg.as_operand_bits();
+                let word = ArmT32InstructionEncoder::encode_instruction_word__0007__1013(ArmT32OpcodePattern_32Bit::Msr_Register_T1, sysm, rn.as_operand_bits());
+                let halfwords = split_instruction_word_into_halfwords(word);
+                halfwords.to_vec()
+            },
+            Self::Mov_Immediate_T1(rd, imm8) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0007__080a(ArmT32OpcodePattern_16Bit::Mov_Immediate_T1, *imm8, rd.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Mov_Register_T1(rd, rm) => {
+                let rd_as_u3 = rd.as_operand_bits() & 0b0000_0111;
+                let d_as_u1 = (rd.as_operand_bits() & 0b0000_1000) >> 3;
+                let rm_as_u4 = rm.as_operand_bits();
+                //
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0306__0707(ArmT32OpcodePattern_16Bit::Mov_Register_T1, rd_as_u3, rm_as_u4, d_as_u1);
+                vec![halfword0]
+            },
+            Self::Mov_Register_T2(rd, rm) => { 
+                // NOTE: we encode this function using the pattern for Lsl_Immediate_T1 (which creates the same encoding as Mov_Register_T2 by setting Lsl_Immediate_T1's imm5 value to 0b00000)
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__060a(ArmT32OpcodePattern_16Bit::Lsl_Immediate_T1, rd.as_operand_bits(), rm.as_operand_bits(), 0b00000);
+                vec![halfword0]
+            },
+            Self::Mul_T1(rdm, rn) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Mul_T1, rdm.as_operand_bits(), rn.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Mvn_Register_T1(rd, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Mvn_Register_T1, rd.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Nop_T1 => {
+                let halfword0 = ArmT32OpcodePattern_16Bit::Nop_T1 as u16;
+                vec![halfword0]
+            },
+            Self::Orr_Register_T1(rdn, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Orr_Register_T1, rdn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Pop_T1(registers) => { 
+                let (register_list, p) = gpr_coding_utils::convert_registers_slice_to_gpr_register_list_u8_and_p_u1(registers)?;
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0007__0808(ArmT32OpcodePattern_16Bit::Pop_T1, register_list, p);
+                vec![halfword0]
+            },
+            Self::Push_T1(registers) => { 
+                let (register_list, m) = gpr_coding_utils::convert_registers_slice_to_gpr_register_list_u8_and_m_u1(registers)?;
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0007__0808(ArmT32OpcodePattern_16Bit::Push_T1, register_list, m);
+                vec![halfword0]
+            },
+            Self::Rev_T1(rd, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Rev_T1, rd.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Rev16_T1(rd, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Rev16_T1, rd.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Revsh_T1(rd, rm) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Revsh_T1, rd.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Ror_Register_T1(rdn, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Ror_Register_T1, rdn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Rsb_Immediate_T1(rd, rn) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Rsb_Immediate_T1, rd.as_operand_bits(), rn.as_operand_bits()/*, imm5: 0*/);
+                vec![halfword0]
+            },
+            Self::Sbc_Register_T1(rdn, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Sbc_Register_T1, rdn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Sev_T1 => { 
+                let halfword0 = ArmT32OpcodePattern_16Bit::Sev_T1 as u16;
+                vec![halfword0]
+            },
+            Self::Stm_T1(rn, registers) => { 
+                let register_list = gpr_coding_utils::convert_low_registers_slice_to_gpr_register_list_u8(registers)?;
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0007__080a(ArmT32OpcodePattern_16Bit::Stm_T1, register_list, rn.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Str_Immediate_T1(rt, rn, decoded_imm7) => {
+                check_multiple_of("decoded_imm7", *decoded_imm7 as i64, 4)?;
+                check_unsigned_maximum("decoded_imm7", *decoded_imm7 as u32, 124)?;
+
+                let encoded_imm5 = decoded_imm7 / 4;
+                //
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__060a(ArmT32OpcodePattern_16Bit::Str_Immediate_T1, rt.as_operand_bits(), rn.as_operand_bits(), encoded_imm5);
+                vec![halfword0]
+            },
+            Self::Str_Immediate_T2(rt, decoded_imm10) => {
+                check_multiple_of("decoded_imm10", *decoded_imm10 as i64, 4)?;
+                check_unsigned_maximum("decoded_imm10", *decoded_imm10 as u32, 1020)?;
+
+                let encoded_imm8 = (decoded_imm10 / 4) as u8;
+                //
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0007__080a(ArmT32OpcodePattern_16Bit::Str_Immediate_T2, encoded_imm8, rt.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Str_Register_T1(rt, rn, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__0608(ArmT32OpcodePattern_16Bit::Str_Register_T1, rt.as_operand_bits(), rn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Strb_Immediate_T1(rt, rn, imm5) => {
+                check_unsigned_maximum("imm5", *imm5 as u32, 31)?;
+
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__060a(ArmT32OpcodePattern_16Bit::Strb_Immediate_T1, rt.as_operand_bits(), rn.as_operand_bits(), *imm5);
+                vec![halfword0]
+            },
+            Self::Strb_Register_T1(rt, rn, rm) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__0608(ArmT32OpcodePattern_16Bit::Strb_Register_T1, rt.as_operand_bits(), rn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Strh_Immediate_T1(rt, rn, decoded_imm6) => {
+                check_multiple_of("decoded_imm6", *decoded_imm6 as i64, 2)?;
+                check_unsigned_maximum("decoded_imm6", *decoded_imm6 as u32, 62)?;
+
+                let encoded_imm5 = decoded_imm6 / 2;
+                //
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__060a(ArmT32OpcodePattern_16Bit::Strh_Immediate_T1, rt.as_operand_bits(), rn.as_operand_bits(), encoded_imm5);
+                vec![halfword0]
+            },
+            Self::Strh_Register_T1(rt, rn, rm) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__0608(ArmT32OpcodePattern_16Bit::Strh_Register_T1, rt.as_operand_bits(), rn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Sub_Immediate_T1(rd, rn, imm3) => {
+                check_unsigned_maximum("imm3", *imm3 as u32, 7)?;
+
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__0608(ArmT32OpcodePattern_16Bit::Sub_Immediate_T1, rd.as_operand_bits(), rn.as_operand_bits(), *imm3);
+                vec![halfword0]
+            },
+            Self::Sub_Immediate_T2(rdn, imm8) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0007__080a(ArmT32OpcodePattern_16Bit::Sub_Immediate_T2, *imm8, rdn.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Sub_Register_T1(rd, rn, rm) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305__0608(ArmT32OpcodePattern_16Bit::Sub_Register_T1, rd.as_operand_bits(), rn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Sub_SpMinusImmediate_T1(const9) => {
+                check_multiple_of("const9", *const9 as i64, 4)?;
+                // imm7 field: const9 (= imm7 * 4) maxes at 508. (The prior code checked <= 1020, which
+                // would have overflowed the 7-bit field.)
+                check_unsigned_maximum("const9", *const9 as u32, 508)?;
+
+                let imm7 = (const9 / 4) as u8;
+                //
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0006(ArmT32OpcodePattern_16Bit::Sub_SpMinusImmediate_T1, imm7);
+                vec![halfword0]
+            },
+            Self::Svc_T1(imm8) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0007(ArmT32OpcodePattern_16Bit::Svc_T1, *imm8);
+                vec![halfword0]
+            },
+            Self::Sxtb_T1(rd, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Sxtb_T1, rd.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Sxth_T1(rd, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Sxth_T1, rd.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Tst_Register_T1(rn, rm) => {
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Tst_Register_T1, rn.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Udf_T1(imm8) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0007(ArmT32OpcodePattern_16Bit::Udf_T1, *imm8);
+                vec![halfword0]
+            },
+            Self::Udf_T2(imm16) => {
+                let imm12 = imm16 & 0b0000_1111_1111_1111;
+                let imm4 = ((imm16 & 0b1111_0000_0000_0000) >> 12) as u8;
+                let word = ArmT32InstructionEncoder::encode_instruction_word__000b__1013(ArmT32OpcodePattern_32Bit::Udf_T2, imm12, imm4);
+                let halfwords = split_instruction_word_into_halfwords(word);
+                halfwords.to_vec()
+            },
+            Self::Uxtb_T1(rd, rm) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Uxtb_T1, rd.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Uxth_T1(rd, rm) => { 
+                let halfword0 = ArmT32InstructionEncoder::encode_instruction_halfword__0002__0305(ArmT32OpcodePattern_16Bit::Uxth_T1, rd.as_operand_bits(), rm.as_operand_bits());
+                vec![halfword0]
+            },
+            Self::Wfe_T1 => { 
+                let halfword0 = ArmT32OpcodePattern_16Bit::Wfe_T1 as u16;
+                vec![halfword0]
+            },
+            Self::Wfi_T1 => { 
+                let halfword0 = ArmT32OpcodePattern_16Bit::Wfi_T1 as u16;
+                vec![halfword0]
+            },
+            Self::Yield_T1 => {
+                let halfword0 = ArmT32OpcodePattern_16Bit::Yield_T1 as u16;
+                vec![halfword0]
+            },
+
+            // ---- ARMv7-M (Thumb-2) additions ----
+            Self::Mov_Immediate_T3(rd, imm16) => {
+                check_general_register_is_encodable("rd", rd)?;
+                let word = ArmT32OpcodePattern_32Bit::Mov_Immediate_T3 as u32 | movw_immediate_field_bits(*imm16) | ((rd.as_operand_bits() as u32) << 8);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Movt_T1(rd, imm16) => {
+                check_general_register_is_encodable("rd", rd)?;
+                let word = ArmT32OpcodePattern_32Bit::Movt_T1 as u32 | movw_immediate_field_bits(*imm16) | ((rd.as_operand_bits() as u32) << 8);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Mul_T2(rd, rn, rm) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                check_general_register_is_encodable("rm", rm)?;
+                let word = ArmT32OpcodePattern_32Bit::Mul_T2 as u32 | ((rn.as_operand_bits() as u32) << 16) | ((rd.as_operand_bits() as u32) << 8) | (rm.as_operand_bits() as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Mla_T1(rd, rn, rm, ra) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                check_general_register_is_encodable("rm", rm)?;
+                check_general_register_is_encodable("ra", ra)?;
+                let word = ArmT32OpcodePattern_32Bit::Mla_T1 as u32 | ((rn.as_operand_bits() as u32) << 16) | ((ra.as_operand_bits() as u32) << 12) | ((rd.as_operand_bits() as u32) << 8) | (rm.as_operand_bits() as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Mls_T1(rd, rn, rm, ra) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                check_general_register_is_encodable("rm", rm)?;
+                check_general_register_is_encodable("ra", ra)?;
+                let word = ArmT32OpcodePattern_32Bit::Mls_T1 as u32 | ((rn.as_operand_bits() as u32) << 16) | ((ra.as_operand_bits() as u32) << 12) | ((rd.as_operand_bits() as u32) << 8) | (rm.as_operand_bits() as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Sdiv_T1(rd, rn, rm) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                check_general_register_is_encodable("rm", rm)?;
+                let word = ArmT32OpcodePattern_32Bit::Sdiv_T1 as u32 | ((rn.as_operand_bits() as u32) << 16) | ((rd.as_operand_bits() as u32) << 8) | (rm.as_operand_bits() as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Udiv_T1(rd, rn, rm) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                check_general_register_is_encodable("rm", rm)?;
+                let word = ArmT32OpcodePattern_32Bit::Udiv_T1 as u32 | ((rn.as_operand_bits() as u32) << 16) | ((rd.as_operand_bits() as u32) << 8) | (rm.as_operand_bits() as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Clz_T1(rd, rm) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rm", rm)?;
+                // Rm is encoded in BOTH bits 19:16 and 3:0
+                let word = ArmT32OpcodePattern_32Bit::Clz_T1 as u32 | ((rm.as_operand_bits() as u32) << 16) | ((rd.as_operand_bits() as u32) << 8) | (rm.as_operand_bits() as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+
+            // ---- ARMv7-M batch M7b ----
+            Self::Rbit_T1(rd, rm) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rm", rm)?;
+                // Rm is encoded in BOTH bits 19:16 and 3:0 (like CLZ)
+                let word = ArmT32OpcodePattern_32Bit::Rbit_T1 as u32 | ((rm.as_operand_bits() as u32) << 16) | ((rd.as_operand_bits() as u32) << 8) | (rm.as_operand_bits() as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Ubfx_T1(rd, rn, lsb, width) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                check_bitfield_lsb_width(*lsb, *width)?;
+                let word = ArmT32OpcodePattern_32Bit::Ubfx_T1 as u32 | ((rn.as_operand_bits() as u32) << 16) | ((rd.as_operand_bits() as u32) << 8) | bitfield_lsb_field_bits(*lsb) | ((*width - 1) as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Sbfx_T1(rd, rn, lsb, width) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                check_bitfield_lsb_width(*lsb, *width)?;
+                let word = ArmT32OpcodePattern_32Bit::Sbfx_T1 as u32 | ((rn.as_operand_bits() as u32) << 16) | ((rd.as_operand_bits() as u32) << 8) | bitfield_lsb_field_bits(*lsb) | ((*width - 1) as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Bfi_T1(rd, rn, lsb, width) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                check_bitfield_lsb_width(*lsb, *width)?;
+                let msb = (*lsb + *width - 1) as u32; // BFI stores msb (= lsb + width - 1), not widthm1
+                let word = ArmT32OpcodePattern_32Bit::Bfi_T1 as u32 | ((rn.as_operand_bits() as u32) << 16) | ((rd.as_operand_bits() as u32) << 8) | bitfield_lsb_field_bits(*lsb) | msb;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Bfc_T1(rd, lsb, width) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_bitfield_lsb_width(*lsb, *width)?;
+                let msb = (*lsb + *width - 1) as u32;
+                // BFC is BFI with Rn == 0b1111
+                let word = ArmT32OpcodePattern_32Bit::Bfi_T1 as u32 | (0b1111 << 16) | ((rd.as_operand_bits() as u32) << 8) | bitfield_lsb_field_bits(*lsb) | msb;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Ldr_Immediate_T3(rt, rn, imm12) => {
+                check_register_is_not_pc("rn", rn)?;
+                check_unsigned_maximum("imm12", *imm12 as u32, 4095)?;
+                let word = ArmT32OpcodePattern_32Bit::Ldr_Immediate_T3 as u32 | ((rn.as_operand_bits() as u32) << 16) | ((rt.as_operand_bits() as u32) << 12) | (*imm12 as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Str_Immediate_T3(rt, rn, imm12) => {
+                check_register_is_not_pc("rn", rn)?;
+                check_general_register_is_encodable("rt", rt)?;
+                check_unsigned_maximum("imm12", *imm12 as u32, 4095)?;
+                let word = ArmT32OpcodePattern_32Bit::Str_Immediate_T3 as u32 | ((rn.as_operand_bits() as u32) << 16) | ((rt.as_operand_bits() as u32) << 12) | (*imm12 as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+
+            // ---- ARMv8-M load-acquire / store-release ----
+            Self::LoadAcquire_T1(size, exclusive, rt, rn) => {
+                let word = 0xE8D0_0F8F | ((*size as u32) << 4) | ((*exclusive as u32) << 6)
+                    | ((rn.as_operand_bits() as u32) << 16) | ((rt.as_operand_bits() as u32) << 12);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::StoreRelease_T1(size, rt, rn) => {
+                let word = 0xE8C0_0F8F | ((*size as u32) << 4)
+                    | ((rn.as_operand_bits() as u32) << 16) | ((rt.as_operand_bits() as u32) << 12);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::StoreReleaseExclusive_T1(size, rd, rt, rn) => {
+                let word = 0xE8C0_0FC0 | ((*size as u32) << 4)
+                    | ((rn.as_operand_bits() as u32) << 16) | ((rt.as_operand_bits() as u32) << 12) | (rd.as_operand_bits() as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::UnprivLoadStore_T1(load, signed, size, rt, rn, imm8) => {
+                let word = 0xF800_0E00 | ((*signed as u32) << 24) | ((*size as u32) << 21) | ((*load as u32) << 20)
+                    | ((rn.as_operand_bits() as u32) << 16) | ((rt.as_operand_bits() as u32) << 12) | (*imm8 as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+
+            // ---- ARMv7-M batch M7c ----
+            Self::Ldrex_T1(rt, rn, imm) => {
+                check_general_register_is_encodable("rt", rt)?;
+                check_register_is_not_pc("rn", rn)?;
+                let imm8 = exclusive_word_offset_field("imm", *imm)?;
+                let word = ArmT32OpcodePattern_32Bit::Ldrex_T1 as u32 | ((rn.as_operand_bits() as u32) << 16) | ((rt.as_operand_bits() as u32) << 12) | imm8;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Strex_T1(rd, rt, rn, imm) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rt", rt)?;
+                check_register_is_not_pc("rn", rn)?;
+                let imm8 = exclusive_word_offset_field("imm", *imm)?;
+                let word = ArmT32OpcodePattern_32Bit::Strex_T1 as u32 | ((rn.as_operand_bits() as u32) << 16) | ((rt.as_operand_bits() as u32) << 12) | ((rd.as_operand_bits() as u32) << 8) | imm8;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Ldrexb_T1(rt, rn) => {
+                check_general_register_is_encodable("rt", rt)?;
+                check_register_is_not_pc("rn", rn)?;
+                let word = ArmT32OpcodePattern_32Bit::Ldrexb_T1 as u32 | ((rn.as_operand_bits() as u32) << 16) | ((rt.as_operand_bits() as u32) << 12);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Strexb_T1(rd, rt, rn) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rt", rt)?;
+                check_register_is_not_pc("rn", rn)?;
+                let word = ArmT32OpcodePattern_32Bit::Strexb_T1 as u32 | ((rn.as_operand_bits() as u32) << 16) | ((rt.as_operand_bits() as u32) << 12) | (rd.as_operand_bits() as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Ldrexh_T1(rt, rn) => {
+                check_general_register_is_encodable("rt", rt)?;
+                check_register_is_not_pc("rn", rn)?;
+                let word = ArmT32OpcodePattern_32Bit::Ldrexh_T1 as u32 | ((rn.as_operand_bits() as u32) << 16) | ((rt.as_operand_bits() as u32) << 12);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Strexh_T1(rd, rt, rn) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rt", rt)?;
+                check_register_is_not_pc("rn", rn)?;
+                let word = ArmT32OpcodePattern_32Bit::Strexh_T1 as u32 | ((rn.as_operand_bits() as u32) << 16) | ((rt.as_operand_bits() as u32) << 12) | (rd.as_operand_bits() as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Clrex_T1 => {
+                // the option field (bits 3:0) is SBO (1111)
+                split_instruction_word_into_halfwords(ArmT32OpcodePattern_32Bit::Clrex_T1 as u32 | 0b1111).to_vec()
+            },
+            Self::Tbb_T1(rn, rm) => {
+                check_general_register_is_encodable("rm", rm)?;
+                let word = ArmT32OpcodePattern_32Bit::Tbb_T1 as u32 | ((rn.as_operand_bits() as u32) << 16) | (rm.as_operand_bits() as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Tbh_T1(rn, rm) => {
+                check_general_register_is_encodable("rm", rm)?;
+                let word = ArmT32OpcodePattern_32Bit::Tbh_T1 as u32 | ((rn.as_operand_bits() as u32) << 16) | (rm.as_operand_bits() as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+
+            // ---- ARMv7-M batch M7d: data processing (modified immediate) ----
+            Self::Mov_Immediate_T2(rd, constant, set_flags) => {
+                check_general_register_is_encodable("rd", rd)?;
+                let word = encode_data_processing_modified_immediate(0b0010, *set_flags, 0b1111, rd.as_operand_bits(), *constant)?;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Mvn_Immediate_T1(rd, constant, set_flags) => {
+                check_general_register_is_encodable("rd", rd)?;
+                let word = encode_data_processing_modified_immediate(0b0011, *set_flags, 0b1111, rd.as_operand_bits(), *constant)?;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::And_Immediate_T1(rd, rn, constant, set_flags) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                let word = encode_data_processing_modified_immediate(0b0000, *set_flags, rn.as_operand_bits(), rd.as_operand_bits(), *constant)?;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Bic_Immediate_T1(rd, rn, constant, set_flags) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                let word = encode_data_processing_modified_immediate(0b0001, *set_flags, rn.as_operand_bits(), rd.as_operand_bits(), *constant)?;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Orr_Immediate_T1(rd, rn, constant, set_flags) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                let word = encode_data_processing_modified_immediate(0b0010, *set_flags, rn.as_operand_bits(), rd.as_operand_bits(), *constant)?;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Eor_Immediate_T1(rd, rn, constant, set_flags) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                let word = encode_data_processing_modified_immediate(0b0100, *set_flags, rn.as_operand_bits(), rd.as_operand_bits(), *constant)?;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Add_Immediate_T3(rd, rn, constant, set_flags) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                let word = encode_data_processing_modified_immediate(0b1000, *set_flags, rn.as_operand_bits(), rd.as_operand_bits(), *constant)?;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Sub_Immediate_T3(rd, rn, constant, set_flags) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                let word = encode_data_processing_modified_immediate(0b1101, *set_flags, rn.as_operand_bits(), rd.as_operand_bits(), *constant)?;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Tst_Immediate_T1(rn, constant) => {
+                check_general_register_is_encodable("rn", rn)?;
+                let word = encode_data_processing_modified_immediate(0b0000, true, rn.as_operand_bits(), 0b1111, *constant)?;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Teq_Immediate_T1(rn, constant) => {
+                check_general_register_is_encodable("rn", rn)?;
+                let word = encode_data_processing_modified_immediate(0b0100, true, rn.as_operand_bits(), 0b1111, *constant)?;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Cmn_Immediate_T1(rn, constant) => {
+                check_general_register_is_encodable("rn", rn)?;
+                let word = encode_data_processing_modified_immediate(0b1000, true, rn.as_operand_bits(), 0b1111, *constant)?;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Cmp_Immediate_T2(rn, constant) => {
+                check_general_register_is_encodable("rn", rn)?;
+                let word = encode_data_processing_modified_immediate(0b1101, true, rn.as_operand_bits(), 0b1111, *constant)?;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+
+            // ---- ARMv7-M batch M7e ----
+            Self::Adc_Immediate_T1(rd, rn, constant, set_flags) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                let word = encode_data_processing_modified_immediate(0b1010, *set_flags, rn.as_operand_bits(), rd.as_operand_bits(), *constant)?;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Sbc_Immediate_T1(rd, rn, constant, set_flags) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                let word = encode_data_processing_modified_immediate(0b1011, *set_flags, rn.as_operand_bits(), rd.as_operand_bits(), *constant)?;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Rsb_Immediate_T2(rd, rn, constant, set_flags) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                let word = encode_data_processing_modified_immediate(0b1110, *set_flags, rn.as_operand_bits(), rd.as_operand_bits(), *constant)?;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Orn_Immediate_T1(rd, rn, constant, set_flags) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                let word = encode_data_processing_modified_immediate(0b0011, *set_flags, rn.as_operand_bits(), rd.as_operand_bits(), *constant)?;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+
+            // ---- ARMv7-M batch M7f: data processing (shifted register) ----
+            Self::Add_Register_T3(rd, rn, rm, shift, set_flags) => encode_dp_shifted_register(0b1000, *set_flags, rd, rn, rm, shift)?,
+            Self::Sub_Register_T2(rd, rn, rm, shift, set_flags) => encode_dp_shifted_register(0b1101, *set_flags, rd, rn, rm, shift)?,
+            Self::And_Register_T2(rd, rn, rm, shift, set_flags) => encode_dp_shifted_register(0b0000, *set_flags, rd, rn, rm, shift)?,
+            Self::Orr_Register_T2(rd, rn, rm, shift, set_flags) => encode_dp_shifted_register(0b0010, *set_flags, rd, rn, rm, shift)?,
+            Self::Eor_Register_T2(rd, rn, rm, shift, set_flags) => encode_dp_shifted_register(0b0100, *set_flags, rd, rn, rm, shift)?,
+            Self::Bic_Register_T2(rd, rn, rm, shift, set_flags) => encode_dp_shifted_register(0b0001, *set_flags, rd, rn, rm, shift)?,
+
+            // ---- ARMv7-M batch M7g: shifted-register alias forms ----
+            Self::Mov_Register_T3(rd, rm, shift, set_flags) => encode_mov_mvn_register(0b0010, *set_flags, rd, rm, shift)?,
+            Self::Mvn_Register_T2(rd, rm, shift, set_flags) => encode_mov_mvn_register(0b0011, *set_flags, rd, rm, shift)?,
+            Self::Adc_Register_T2(rd, rn, rm, shift, set_flags) => encode_dp_shifted_register(0b1010, *set_flags, rd, rn, rm, shift)?,
+            Self::Sbc_Register_T2(rd, rn, rm, shift, set_flags) => encode_dp_shifted_register(0b1011, *set_flags, rd, rn, rm, shift)?,
+            Self::Rsb_Register_T1(rd, rn, rm, shift, set_flags) => encode_dp_shifted_register(0b1110, *set_flags, rd, rn, rm, shift)?,
+            Self::Orn_Register_T1(rd, rn, rm, shift, set_flags) => encode_dp_shifted_register(0b0011, *set_flags, rd, rn, rm, shift)?,
+            Self::Tst_Register_T2(rn, rm, shift) => encode_compare_register(0b0000, rn, rm, shift)?,
+            Self::Teq_Register_T1(rn, rm, shift) => encode_compare_register(0b0100, rn, rm, shift)?,
+            Self::Cmn_Register_T2(rn, rm, shift) => encode_compare_register(0b1000, rn, rm, shift)?,
+            Self::Cmp_Register_T3(rn, rm, shift) => encode_compare_register(0b1101, rn, rm, shift)?,
+
+            // ---- ARMv7-M batch M7h: wide byte/half load/store (imm12) + register offset ----
+            Self::Ldrb_Immediate_T2(rt, rn, imm12) => encode_load_store_immediate12(0xF890_0000, rt, rn, *imm12)?,
+            Self::Strb_Immediate_T2(rt, rn, imm12) => encode_load_store_immediate12(0xF880_0000, rt, rn, *imm12)?,
+            Self::Ldrh_Immediate_T2(rt, rn, imm12) => encode_load_store_immediate12(0xF8B0_0000, rt, rn, *imm12)?,
+            Self::Strh_Immediate_T2(rt, rn, imm12) => encode_load_store_immediate12(0xF8A0_0000, rt, rn, *imm12)?,
+            Self::Ldrsb_Immediate_T1(rt, rn, imm12) => encode_load_store_immediate12(0xF990_0000, rt, rn, *imm12)?,
+            Self::Ldrsh_Immediate_T1(rt, rn, imm12) => encode_load_store_immediate12(0xF9B0_0000, rt, rn, *imm12)?,
+            Self::Ldr_Register_T2(rt, rn, rm, lsl) => encode_load_store_register(0xF850_0000, rt, rn, rm, *lsl)?,
+            Self::Str_Register_T2(rt, rn, rm, lsl) => encode_load_store_register(0xF840_0000, rt, rn, rm, *lsl)?,
+            Self::Ldrb_Register_T2(rt, rn, rm, lsl) => encode_load_store_register(0xF810_0000, rt, rn, rm, *lsl)?,
+            Self::Strb_Register_T2(rt, rn, rm, lsl) => encode_load_store_register(0xF800_0000, rt, rn, rm, *lsl)?,
+            Self::Ldrh_Register_T2(rt, rn, rm, lsl) => encode_load_store_register(0xF830_0000, rt, rn, rm, *lsl)?,
+            Self::Strh_Register_T2(rt, rn, rm, lsl) => encode_load_store_register(0xF820_0000, rt, rn, rm, *lsl)?,
+            Self::Ldrsb_Register_T2(rt, rn, rm, lsl) => encode_load_store_register(0xF910_0000, rt, rn, rm, *lsl)?,
+            Self::Ldrsh_Register_T2(rt, rn, rm, lsl) => encode_load_store_register(0xF930_0000, rt, rn, rm, *lsl)?,
+
+            // ---- ARMv7-M batch M7k: long multiply ----
+            Self::Smull_T1(rdlo, rdhi, rn, rm) => encode_long_multiply(0xFB80_0000, rdlo, rdhi, rn, rm)?,
+            Self::Umull_T1(rdlo, rdhi, rn, rm) => encode_long_multiply(0xFBA0_0000, rdlo, rdhi, rn, rm)?,
+            Self::Smlal_T1(rdlo, rdhi, rn, rm) => encode_long_multiply(0xFBC0_0000, rdlo, rdhi, rn, rm)?,
+            Self::Umlal_T1(rdlo, rdhi, rn, rm) => encode_long_multiply(0xFBE0_0000, rdlo, rdhi, rn, rm)?,
+            Self::Umaal_T1(rdlo, rdhi, rn, rm) => encode_long_multiply(0xFBE0_0060, rdlo, rdhi, rn, rm)?,
+
+            // ---- ARMv7-M batch M7l: wide extend (with ROR), wide byte-reverse, saturate ----
+            Self::Sxtb_T2(rd, rm, rotation) => encode_extend(0xFA4F_F080, rd, rm, *rotation)?,
+            Self::Uxtb_T2(rd, rm, rotation) => encode_extend(0xFA5F_F080, rd, rm, *rotation)?,
+            Self::Sxth_T2(rd, rm, rotation) => encode_extend(0xFA0F_F080, rd, rm, *rotation)?,
+            Self::Uxth_T2(rd, rm, rotation) => encode_extend(0xFA1F_F080, rd, rm, *rotation)?,
+            Self::Rev_T2(rd, rm) => encode_byte_reverse(0xFA90_F080, rd, rm)?,
+            Self::Rev16_T2(rd, rm) => encode_byte_reverse(0xFA90_F090, rd, rm)?,
+            Self::Revsh_T2(rd, rm) => encode_byte_reverse(0xFA90_F0B0, rd, rm)?,
+            Self::Ssat_T1(rd, sat_imm, rn, shift) => encode_saturate(0xF300_0000, false, rd, *sat_imm, rn, *shift)?,
+            Self::Usat_T1(rd, sat_imm, rn, shift) => encode_saturate(0xF380_0000, true, rd, *sat_imm, rn, *shift)?,
+
+            // ---- ARMv7-M batch M7i: indexed load/store, LDRD/STRD, literal loads, preload ----
+            Self::Ldr_Immediate_T4(rt, rn, offset, mode) => encode_load_store_indexed(0xF850_0800, rt, rn, *offset, *mode)?,
+            Self::Str_Immediate_T4(rt, rn, offset, mode) => encode_load_store_indexed(0xF840_0800, rt, rn, *offset, *mode)?,
+            Self::Ldrb_Immediate_T3(rt, rn, offset, mode) => encode_load_store_indexed(0xF810_0800, rt, rn, *offset, *mode)?,
+            Self::Strb_Immediate_T3(rt, rn, offset, mode) => encode_load_store_indexed(0xF800_0800, rt, rn, *offset, *mode)?,
+            Self::Ldrh_Immediate_T3(rt, rn, offset, mode) => encode_load_store_indexed(0xF830_0800, rt, rn, *offset, *mode)?,
+            Self::Strh_Immediate_T3(rt, rn, offset, mode) => encode_load_store_indexed(0xF820_0800, rt, rn, *offset, *mode)?,
+            Self::Ldrsb_Immediate_T2(rt, rn, offset, mode) => encode_load_store_indexed(0xF910_0800, rt, rn, *offset, *mode)?,
+            Self::Ldrsh_Immediate_T2(rt, rn, offset, mode) => encode_load_store_indexed(0xF930_0800, rt, rn, *offset, *mode)?,
+            Self::Ldrd_Immediate_T1(rt, rt2, rn, offset, mode) => encode_load_store_dual(true, rt, rt2, rn, *offset, *mode)?,
+            Self::Strd_Immediate_T1(rt, rt2, rn, offset, mode) => encode_load_store_dual(false, rt, rt2, rn, *offset, *mode)?,
+            Self::Ldr_Literal_T2(rt, offset) => encode_load_literal(0xF85F_0000, rt, *offset)?,
+            Self::Ldrb_Literal_T1(rt, offset) => encode_load_literal(0xF81F_0000, rt, *offset)?,
+            Self::Ldrh_Literal_T1(rt, offset) => encode_load_literal(0xF83F_0000, rt, *offset)?,
+            Self::Ldrsb_Literal_T1(rt, offset) => encode_load_literal(0xF91F_0000, rt, *offset)?,
+            Self::Ldrsh_Literal_T1(rt, offset) => encode_load_literal(0xF93F_0000, rt, *offset)?,
+            Self::Pld_Immediate_T1(rn, offset) => encode_preload(0xF890_F000, 0xF810_FC00, rn, *offset)?,
+            Self::Pli_Immediate_T1(rn, offset) => encode_preload(0xF990_F000, 0xF910_FC00, rn, *offset)?,
+
+            // ---- ARMv7-M batch M7j: wide load/store multiple ----
+            Self::Ldmia_T2(rn, writeback, registers) => encode_load_store_multiple(0xE890_0000, true, rn, *writeback, registers)?,
+            Self::Stmia_T2(rn, writeback, registers) => encode_load_store_multiple(0xE880_0000, false, rn, *writeback, registers)?,
+            Self::Ldmdb_T1(rn, writeback, registers) => encode_load_store_multiple(0xE910_0000, true, rn, *writeback, registers)?,
+            Self::Stmdb_T1(rn, writeback, registers) => encode_load_store_multiple(0xE900_0000, false, rn, *writeback, registers)?,
+
+            // ---- ARMv7-M batch M7m: wide branches + compare-and-branch ----
+            Self::B_T4(offset) => encode_branch_wide_unconditional(*offset)?,
+            Self::B_T3(cond, offset) => encode_branch_wide_conditional(cond, *offset)?,
+            Self::Cbz_T1(rn, offset) => encode_compare_branch(0xB100, rn, *offset)?,
+            Self::Cbnz_T1(rn, offset) => encode_compare_branch(0xB900, rn, *offset)?,
+
+            // ---- ARMv7-M batch M7n: IT ----
+            Self::It_T1(firstcond, mask) => {
+                let cond_bits = firstcond.as_operand_bits();
+                if cond_bits >= 14 {
+                    return Err(EncodeError::ConditionNotEncodable { field: "firstcond", detail: "IT does not support the AL/NV conditions" });
+                }
+                if *mask == 0 || *mask > 0b1111 {
+                    return Err(EncodeError::ImmediateOutOfRange { field: "mask", value: *mask as i64, minimum: 1, maximum: 15 });
+                }
+                vec![0xBF00u16 | ((cond_bits as u16) << 4) | (*mask as u16)]
+            },
+
+            // ---- ARMv7E-M DSP M8a: saturating arithmetic ----
+            Self::Qadd_T1(rd, rm, rn) => encode_saturating_arithmetic(0xFA80_F080, rd, rm, rn)?,
+            Self::Qsub_T1(rd, rm, rn) => encode_saturating_arithmetic(0xFA80_F0A0, rd, rm, rn)?,
+            Self::Qdadd_T1(rd, rm, rn) => encode_saturating_arithmetic(0xFA80_F090, rd, rm, rn)?,
+            Self::Qdsub_T1(rd, rm, rn) => encode_saturating_arithmetic(0xFA80_F0B0, rd, rm, rn)?,
+
+            // ---- ARMv7E-M DSP M8b: extend-and-add + 16-bit extends ----
+            Self::Sxtab_T1(rd, rn, rm, rotation) => encode_extend_and_add(0xFA40_F080, rd, rn, rm, *rotation)?,
+            Self::Uxtab_T1(rd, rn, rm, rotation) => encode_extend_and_add(0xFA50_F080, rd, rn, rm, *rotation)?,
+            Self::Sxtah_T1(rd, rn, rm, rotation) => encode_extend_and_add(0xFA00_F080, rd, rn, rm, *rotation)?,
+            Self::Uxtah_T1(rd, rn, rm, rotation) => encode_extend_and_add(0xFA10_F080, rd, rn, rm, *rotation)?,
+            Self::Sxtab16_T1(rd, rn, rm, rotation) => encode_extend_and_add(0xFA20_F080, rd, rn, rm, *rotation)?,
+            Self::Uxtab16_T1(rd, rn, rm, rotation) => encode_extend_and_add(0xFA30_F080, rd, rn, rm, *rotation)?,
+            Self::Sxtb16_T1(rd, rm, rotation) => encode_extend(0xFA2F_F080, rd, rm, *rotation)?,
+            Self::Uxtb16_T1(rd, rm, rotation) => encode_extend(0xFA3F_F080, rd, rm, *rotation)?,
+
+            // ---- ARMv7E-M DSP M8c: pack / saturate16 / select / SAD ----
+            Self::Pkhbt_T1(rd, rn, rm, lsl) => encode_pack_halfword(rd, rn, rm, *lsl, false)?,
+            Self::Pkhtb_T1(rd, rn, rm, asr) => encode_pack_halfword(rd, rn, rm, *asr, true)?,
+            Self::Ssat16_T1(rd, sat_imm, rn) => encode_saturate16(0xF320_0000, false, rd, *sat_imm, rn)?,
+            Self::Usat16_T1(rd, sat_imm, rn) => encode_saturate16(0xF3A0_0000, true, rd, *sat_imm, rn)?,
+            Self::Sel_T1(rd, rn, rm) => encode_saturating_arithmetic(0xFAA0_F080, rd, rm, rn)?,
+            Self::Usad8_T1(rd, rn, rm) => encode_saturating_arithmetic(0xFB70_F000, rd, rm, rn)?,
+            Self::Usada8_T1(rd, rn, rm, ra) => encode_usada8(rd, rn, rm, ra)?,
+
+            // ---- ARMv7E-M DSP M8d: parallel add/subtract ----
+            Self::ParallelAddSub_T1(operation, prefix, rd, rn, rm) => {
+                check_general_register_is_encodable("rd", rd)?;
+                check_general_register_is_encodable("rn", rn)?;
+                check_general_register_is_encodable("rm", rm)?;
+                let word = operation.base() | ((rn.as_operand_bits() as u32) << 16) | ((rd.as_operand_bits() as u32) << 8) | (prefix.bits() << 4) | (rm.as_operand_bits() as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+
+            // ---- ARMv7E-M DSP M8e: signed multiplies (nibble = the op2/[7:4] field) ----
+            Self::Smul_T1(rd, rn, rm, n, m) => encode_signed_multiply(0xFB10_F000, rd, rn, rm, nm_nibble(*n, *m))?,
+            Self::Smulw_T1(rd, rn, rm, m) => encode_signed_multiply(0xFB30_F000, rd, rn, rm, *m as u32)?,
+            Self::Smla_T1(rd, rn, rm, ra, n, m) => encode_signed_multiply_accumulate(0xFB10_0000, rd, rn, rm, ra, nm_nibble(*n, *m))?,
+            Self::Smlaw_T1(rd, rn, rm, ra, m) => encode_signed_multiply_accumulate(0xFB30_0000, rd, rn, rm, ra, *m as u32)?,
+            Self::Smlal_Halfword_T1(rdlo, rdhi, rn, rm, n, m) => encode_signed_multiply_long(0xFBC0_0000, rdlo, rdhi, rn, rm, 0b1000 | nm_nibble(*n, *m))?,
+            Self::Smuad_T1(rd, rn, rm, x) => encode_signed_multiply(0xFB20_F000, rd, rn, rm, *x as u32)?,
+            Self::Smusd_T1(rd, rn, rm, x) => encode_signed_multiply(0xFB40_F000, rd, rn, rm, *x as u32)?,
+            Self::Smlad_T1(rd, rn, rm, ra, x) => encode_signed_multiply_accumulate(0xFB20_0000, rd, rn, rm, ra, *x as u32)?,
+            Self::Smlsd_T1(rd, rn, rm, ra, x) => encode_signed_multiply_accumulate(0xFB40_0000, rd, rn, rm, ra, *x as u32)?,
+            Self::Smlald_T1(rdlo, rdhi, rn, rm, x) => encode_signed_multiply_long(0xFBC0_0000, rdlo, rdhi, rn, rm, 0b1100 | (*x as u32))?,
+            Self::Smlsld_T1(rdlo, rdhi, rn, rm, x) => encode_signed_multiply_long(0xFBD0_0000, rdlo, rdhi, rn, rm, 0b1100 | (*x as u32))?,
+            Self::Smmul_T1(rd, rn, rm, round) => encode_signed_multiply(0xFB50_F000, rd, rn, rm, *round as u32)?,
+            Self::Smmla_T1(rd, rn, rm, ra, round) => encode_signed_multiply_accumulate(0xFB50_0000, rd, rn, rm, ra, *round as u32)?,
+            Self::Smmls_T1(rd, rn, rm, ra, round) => encode_signed_multiply_accumulate(0xFB60_0000, rd, rn, rm, ra, *round as u32)?,
+
+            // ---- ARMv7E-M FP M8f: load/store ----
+            Self::Vldr_Single_T2(sd, rn, offset) => encode_fp_load_store(0xED10_0A00, sd.field(), sd.extra_bit(), rn, *offset)?,
+            Self::Vstr_Single_T2(sd, rn, offset) => encode_fp_load_store(0xED00_0A00, sd.field(), sd.extra_bit(), rn, *offset)?,
+            Self::Vldr_Double_T1(dd, rn, offset) => encode_fp_load_store(0xED10_0B00, dd.field(), dd.extra_bit(), rn, *offset)?,
+            Self::Vstr_Double_T1(dd, rn, offset) => encode_fp_load_store(0xED00_0B00, dd.field(), dd.extra_bit(), rn, *offset)?,
+
+            // ---- ARMv7E-M FP M8g: load/store multiple (single imm8=count, double imm8=2*count) ----
+            Self::Vldm_Single_T2(rn, wb, db, first, count) => encode_fp_load_store_multiple(0x0A00, true, rn, *wb, *db, first.field(), first.extra_bit(), *count, first.number(), 31, false)?,
+            Self::Vstm_Single_T2(rn, wb, db, first, count) => encode_fp_load_store_multiple(0x0A00, false, rn, *wb, *db, first.field(), first.extra_bit(), *count, first.number(), 31, false)?,
+            Self::Vldm_Double_T1(rn, wb, db, first, count) => encode_fp_load_store_multiple(0x0B00, true, rn, *wb, *db, first.field(), first.extra_bit(), *count, first.number(), 15, true)?,
+            Self::Vstm_Double_T1(rn, wb, db, first, count) => encode_fp_load_store_multiple(0x0B00, false, rn, *wb, *db, first.field(), first.extra_bit(), *count, first.number(), 15, true)?,
+            Self::FldmdbxFstmdbx_T1(load, rn, first, count) => {
+                let base = if *load { 0xED30_0B00u32 } else { 0xED20_0B00 };
+                let word = base | ((rn.as_operand_bits() as u32) << 16) | (first.extra_bit() << 22) | (first.field() << 12) | (2 * (*count as u32) + 1);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Coproc_Mcr_T1(two, load, cp, opc1, rt, crn, crm, opc2) => split_instruction_word_into_halfwords(
+                (if *two { 0xFE00_0010u32 } else { 0xEE00_0010 }) | ((*load as u32) << 20) | ((*opc1 as u32) << 21)
+                    | ((*crn as u32) << 16) | ((rt.as_operand_bits() as u32) << 12) | ((*cp as u32) << 8) | ((*opc2 as u32) << 5) | (*crm as u32)
+            ).to_vec(),
+            Self::Coproc_Cdp_T1(two, cp, opc1, crd, crn, crm, opc2) => split_instruction_word_into_halfwords(
+                (if *two { 0xFE00_0000u32 } else { 0xEE00_0000 }) | ((*opc1 as u32) << 20) | ((*crn as u32) << 16)
+                    | ((*crd as u32) << 12) | ((*cp as u32) << 8) | ((*opc2 as u32) << 5) | (*crm as u32)
+            ).to_vec(),
+            Self::Coproc_Mcrr_T1(two, load, cp, opc1, rt, rt2, crm) => split_instruction_word_into_halfwords(
+                (if *two { 0xFC40_0000u32 } else { 0xEC40_0000 }) | ((*load as u32) << 20) | ((rt2.as_operand_bits() as u32) << 16)
+                    | ((rt.as_operand_bits() as u32) << 12) | ((*cp as u32) << 8) | ((*opc1 as u32) << 4) | (*crm as u32)
+            ).to_vec(),
+            Self::Coproc_Ldc_T1(two, long, load, cp, crd, rn, offset) => {
+                let u = if *offset >= 0 { 1u32 } else { 0 };
+                let imm8 = (offset.unsigned_abs() / 4) & 0xFF;
+                split_instruction_word_into_halfwords(
+                    (if *two { 0xFC00_0000u32 } else { 0xEC00_0000 }) | (1 << 24) | (u << 23) | ((*long as u32) << 22) | ((*load as u32) << 20)
+                        | ((rn.as_operand_bits() as u32) << 16) | ((*crd as u32) << 12) | ((*cp as u32) << 8) | imm8
+                ).to_vec()
+            },
+            Self::PacbtiHint_T1(kind) => split_instruction_word_into_halfwords(
+                match kind { 0 => 0xF3AF_800Fu32, 1 => 0xF3AF_801D, 2 => 0xF3AF_802D, _ => 0xF3AF_800D }
+            ).to_vec(),
+            Self::PacbtiData_T1(op, rd, rn, rm) => {
+                let (rd_v, rm_v, rn_v) = (rd.as_operand_bits() as u32, rm.as_operand_bits() as u32, (rn.as_operand_bits() as u32) << 16);
+                split_instruction_word_into_halfwords(match op {
+                    0 => 0xFB60_F000 | rn_v | (rd_v << 8) | rm_v,   // pacg  ([15:12]=1111, Rd[11:8])
+                    1 => 0xFB50_0F00 | rn_v | (rd_v << 12) | rm_v,  // autg  ([11:8]=1111, Rd[15:12])
+                    _ => 0xFB50_0F10 | rn_v | (rd_v << 12) | rm_v,  // bxaut ([11:8]=1111, [7:4]=0001, Rd[15:12])
+                }).to_vec()
+            },
+            Self::Vscclrm_T1(double, first, count) => {
+                let (vd, d) = if *double { ((*first & 0xF) as u32, (*first >> 4) as u32) } else { ((*first >> 1) as u32, (*first & 1) as u32) };
+                let base = if *double { 0xEC9F_0B00u32 } else { 0xEC9F_0A00 };
+                split_instruction_word_into_halfwords(base | (d << 22) | (vd << 12) | (*count as u32)).to_vec()
+            },
+            Self::Cde_Cx1_T1(acc, dual, coproc, rd, imm) => split_instruction_word_into_halfwords(
+                0xEE00_0000 | ((*acc as u32) << 28) | ((*dual as u32) << 6) | ((rd.as_operand_bits() as u32) << 12) | ((*coproc as u32) << 8)
+                    | ((*imm as u32) & 0x3F) | ((((*imm as u32) >> 6) & 1) << 7) | ((((*imm as u32) >> 7) & 0x3F) << 16)
+            ).to_vec(),
+            Self::Cde_Cx2_T1(acc, dual, coproc, rd, rn, imm) => split_instruction_word_into_halfwords(
+                0xEE40_0000 | ((*acc as u32) << 28) | ((*dual as u32) << 6) | ((rn.as_operand_bits() as u32) << 16) | ((rd.as_operand_bits() as u32) << 12)
+                    | ((*coproc as u32) << 8) | ((*imm as u32) & 0x3F) | ((((*imm as u32) >> 6) & 1) << 7) | ((((*imm as u32) >> 7) & 0x3) << 20)
+            ).to_vec(),
+            Self::Cde_Cx3_T1(acc, dual, coproc, rd, rn, rm, imm) => split_instruction_word_into_halfwords(
+                0xEE80_0000 | ((*acc as u32) << 28) | ((*dual as u32) << 6) | ((rn.as_operand_bits() as u32) << 16) | ((rm.as_operand_bits() as u32) << 12)
+                    | ((*coproc as u32) << 8) | (rd.as_operand_bits() as u32) | (((*imm as u32) & 0x3) << 4) | ((((*imm as u32) >> 2) & 1) << 7) | ((((*imm as u32) >> 3) & 0x7) << 20)
+            ).to_vec(),
+
+            // ---- Branch Future. Offset split: immA=offset[16:12]->hw1[4:0], immB=offset[11:2]->hw2[10:1],
+            // immC=offset[1]->hw2[11]; boff->hw1[10:7]. BF base 0xF040_E001 ([6:5]=10), BFL 0xF000_C001
+            // (hw2=1100), BFX 0xF060_E001 ([6:4]=110)+Rn, BFLX 0xF070_E001 ([6:4]=111)+Rn, BFCSEL
+            // 0xF000_E001 ([6]=0) + cond[5:2] + T[1] + immA[0]. ----
+            Self::Bf_T1(boff, offset) => split_instruction_word_into_halfwords(
+                0xF040_E001 | ((*boff as u32) << 23) | (((*offset as u32 >> 12) & 0x1F) << 16)
+                    | (((*offset as u32 >> 1) & 0x1) << 11) | (((*offset as u32 >> 2) & 0x3FF) << 1)
+            ).to_vec(),
+            Self::Bfl_T4(boff, offset) => split_instruction_word_into_halfwords(
+                0xF000_C001 | ((*boff as u32) << 23) | (((*offset as u32 >> 12) & 0x1F) << 16)
+                    | (((*offset as u32 >> 1) & 0x1) << 11) | (((*offset as u32 >> 2) & 0x3FF) << 1)
+            ).to_vec(),
+            Self::Bfx_T3(boff, rn) => split_instruction_word_into_halfwords(
+                0xF060_E001 | ((*boff as u32) << 23) | ((rn.as_operand_bits() as u32) << 16)
+            ).to_vec(),
+            Self::Bflx_T5(boff, rn) => split_instruction_word_into_halfwords(
+                0xF070_E001 | ((*boff as u32) << 23) | ((rn.as_operand_bits() as u32) << 16)
+            ).to_vec(),
+            Self::Bfcsel_T2(boff, offset, cond, t) => split_instruction_word_into_halfwords(
+                0xF000_E001 | ((*boff as u32) << 23) | ((*cond as u32) << 18) | ((*t as u32) << 17)
+                    | (((*offset as u32 >> 12) & 0x1) << 16) | (((*offset as u32 >> 1) & 0x1) << 11)
+                    | (((*offset as u32 >> 2) & 0x3FF) << 1)
+            ).to_vec(),
+
+            // ---- VCX1/VCX2/VCX3 (CDE FP/vector). Base 0xEC20/0xEC30/0xEC80_0000 | acc(28) | sz(24, kind==1)
+            // | vector(6, kind==2) | coproc(<<8) | the register/immediate scatters (see the vcx_* helpers). ----
+            Self::Vcx1_T1(acc, kind, coproc, rd, imm) => {
+                let extra = ((*acc as u32) << 28) | (((*kind == 1) as u32) << 24) | (((*kind == 2) as u32) << 6) | ((*coproc as u32) << 8);
+                split_instruction_word_into_halfwords(0xEC20_0000 | extra | vcx_enc_d(*kind, *rd) | vcx_enc_imm1(*imm)).to_vec()
+            },
+            Self::Vcx2_T1(acc, kind, coproc, rd, rn, imm) => {
+                let extra = ((*acc as u32) << 28) | (((*kind == 1) as u32) << 24) | (((*kind == 2) as u32) << 6) | ((*coproc as u32) << 8);
+                split_instruction_word_into_halfwords(0xEC30_0000 | extra | vcx_enc_d(*kind, *rd) | vcx_enc_lo(*kind, *rn) | vcx_enc_imm2(*imm)).to_vec()
+            },
+            Self::Vcx3_T1(acc, kind, coproc, rd, rn, rm, imm) => {
+                let extra = ((*acc as u32) << 28) | (((*kind == 1) as u32) << 24) | (((*kind == 2) as u32) << 6) | ((*coproc as u32) << 8);
+                split_instruction_word_into_halfwords(0xEC80_0000 | extra | vcx_enc_d(*kind, *rd) | vcx_enc_hi(*kind, *rn) | vcx_enc_lo(*kind, *rm) | vcx_enc_imm3(*imm)).to_vec()
+            },
+
+            // ---- ARMv7E-M FP M8h: data-processing ----
+            Self::FpDataProcess3_Single(op, sd, sn, sm) => {
+                let word = 0xEE00_0A00 | op.opcode_bits() | (sd.extra_bit() << 22) | (sn.field() << 16) | (sd.field() << 12) | (sn.extra_bit() << 7) | (sm.extra_bit() << 5) | sm.field();
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::FpDataProcess3_Double(op, dd, dn, dm) => {
+                let word = 0xEE00_0B00 | op.opcode_bits() | (dd.extra_bit() << 22) | (dn.field() << 16) | (dd.field() << 12) | (dn.extra_bit() << 7) | (dm.extra_bit() << 5) | dm.field();
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::FpDataProcess2_Single(op, sd, sm) => {
+                let word = op.base() | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field();
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::FpDataProcess2_Double(op, dd, dm) => {
+                let word = op.base() | (1 << 8) | (dd.extra_bit() << 22) | (dd.field() << 12) | (dm.extra_bit() << 5) | dm.field();
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+
+            // ---- ARMv7E-M FP M8i: compare / FPSCR transfer / core<->FP move ----
+            Self::Vcmp_Single_T1(sd, sm, e) => {
+                let word = 0xEEB4_0A40 | (sd.extra_bit() << 22) | (sd.field() << 12) | ((*e as u32) << 7) | (sm.extra_bit() << 5) | sm.field();
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Vcmp_Double_T1(dd, dm, e) => {
+                let word = 0xEEB4_0B40 | (dd.extra_bit() << 22) | (dd.field() << 12) | ((*e as u32) << 7) | (dm.extra_bit() << 5) | dm.field();
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Vcmp_Zero_Single_T2(sd, e) => {
+                let word = 0xEEB5_0A40 | (sd.extra_bit() << 22) | (sd.field() << 12) | ((*e as u32) << 7);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Vcmp_Zero_Double_T2(dd, e) => {
+                let word = 0xEEB5_0B40 | (dd.extra_bit() << 22) | (dd.field() << 12) | ((*e as u32) << 7);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Vmrs_T1(rt) => {
+                check_general_register_is_encodable("rt", rt)?;
+                split_instruction_word_into_halfwords(0xEEF1_0A10 | ((rt.as_operand_bits() as u32) << 12)).to_vec()
+            },
+            Self::Vmrs_Apsr_Nzcv_T1 => split_instruction_word_into_halfwords(0xEEF1_FA10).to_vec(),
+            Self::Vmsr_T1(rt) => {
+                check_general_register_is_encodable("rt", rt)?;
+                split_instruction_word_into_halfwords(0xEEE1_0A10 | ((rt.as_operand_bits() as u32) << 12)).to_vec()
+            },
+            Self::Vmov_Core_To_Single_T1(sn, rt) => {
+                check_general_register_is_encodable("rt", rt)?;
+                split_instruction_word_into_halfwords(0xEE00_0A10 | (sn.field() << 16) | ((rt.as_operand_bits() as u32) << 12) | (sn.extra_bit() << 7)).to_vec()
+            },
+            Self::Vmov_Single_To_Core_T1(rt, sn) => {
+                check_general_register_is_encodable("rt", rt)?;
+                split_instruction_word_into_halfwords(0xEE10_0A10 | (sn.field() << 16) | ((rt.as_operand_bits() as u32) << 12) | (sn.extra_bit() << 7)).to_vec()
+            },
+            Self::Vmov_Core_To_Scalar_T1(size, index, dd, rt) => {
+                check_general_register_is_encodable("rt", rt)?;
+                if *index >= size.lane_count() {
+                    return Err(EncodeError::ImmediateOutOfRange { field: "VMOV scalar lane index", value: *index as i64, minimum: 0, maximum: size.lane_count() as i64 - 1 });
+                }
+                let (opc1, opc2) = size.opc_fields(*index);
+                split_instruction_word_into_halfwords(0xEE00_0B10 | (opc1 << 21) | (dd.field() << 16) | ((rt.as_operand_bits() as u32) << 12) | (dd.extra_bit() << 7) | (opc2 << 5)).to_vec()
+            },
+            Self::Vmov_Scalar_To_Core_T1(unsigned, size, index, rt, dn) => {
+                check_general_register_is_encodable("rt", rt)?;
+                if *index >= size.lane_count() {
+                    return Err(EncodeError::ImmediateOutOfRange { field: "VMOV scalar lane index", value: *index as i64, minimum: 0, maximum: size.lane_count() as i64 - 1 });
+                }
+                let (opc1, opc2) = size.opc_fields(*index);
+                let u = if matches!(size, Arm32VmovLaneSize::Word) { 0 } else { *unsigned as u32 };
+                split_instruction_word_into_halfwords(0xEE10_0B10 | (u << 23) | (opc1 << 21) | (dn.field() << 16) | ((rt.as_operand_bits() as u32) << 12) | (dn.extra_bit() << 7) | (opc2 << 5)).to_vec()
+            },
+
+            // ---- ARMv7E-M FP M8i: VCVT (integer in a single-precision register) ----
+            Self::Vcvt_FloatToInt_FromSingle_T1(sd, sm, signed, round) => {
+                let word = 0xEEBC_0A40 | ((*signed as u32) << 16) | ((*round as u32) << 7) | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field();
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Vcvt_FloatToInt_FromDouble_T1(sd, dm, signed, round) => {
+                let word = 0xEEBC_0B40 | ((*signed as u32) << 16) | ((*round as u32) << 7) | (sd.extra_bit() << 22) | (sd.field() << 12) | (dm.extra_bit() << 5) | dm.field();
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Vcvt_IntToFloat_ToSingle_T1(sd, sm, signed) => {
+                let word = 0xEEB8_0A40 | ((*signed as u32) << 7) | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field();
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Vcvt_IntToFloat_ToDouble_T1(dd, sm, signed) => {
+                let word = 0xEEB8_0B40 | ((*signed as u32) << 7) | (dd.extra_bit() << 22) | (dd.field() << 12) | (sm.extra_bit() << 5) | sm.field();
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Vcvt_Single_To_Double_T1(dd, sm) => {
+                let word = 0xEEB7_0AC0 | (dd.extra_bit() << 22) | (dd.field() << 12) | (sm.extra_bit() << 5) | sm.field();
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Vcvt_Double_To_Single_T1(sd, dm) => {
+                let word = 0xEEB7_0BC0 | (sd.extra_bit() << 22) | (sd.field() << 12) | (dm.extra_bit() << 5) | dm.field();
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+
+            // ---- ARMv7E-M FP M8i (final corners) ----
+            Self::Vmov_Immediate_Single_T1(sd, imm8) => {
+                let word = 0xEEB0_0A00 | (((*imm8 as u32) >> 4) << 16) | (sd.extra_bit() << 22) | (sd.field() << 12) | ((*imm8 as u32) & 0xF);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Vmov_Immediate_Double_T1(dd, imm8) => {
+                let word = 0xEEB0_0B00 | (((*imm8 as u32) >> 4) << 16) | (dd.extra_bit() << 22) | (dd.field() << 12) | ((*imm8 as u32) & 0xF);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Vmov_CorePair_To_Double_T1(dm, rt, rt2) => encode_vmov_core_pair(0xEC40_0B10, false, rt, rt2, dm.field(), dm.extra_bit())?,
+            Self::Vmov_Double_To_CorePair_T1(rt, rt2, dm) => encode_vmov_core_pair(0xEC40_0B10, true, rt, rt2, dm.field(), dm.extra_bit())?,
+            Self::Vmov_CorePair_To_Singles_T1(sm, rt, rt2) => encode_vmov_core_pair(0xEC40_0A10, false, rt, rt2, sm.field(), sm.extra_bit())?,
+            Self::Vmov_Singles_To_CorePair_T1(rt, rt2, sm) => encode_vmov_core_pair(0xEC40_0A10, true, rt, rt2, sm.field(), sm.extra_bit())?,
+            Self::Vcvt_HalfToSingle_T1(sd, sm, top) => {
+                let word = 0xEEB2_0A40 | ((*top as u32) << 7) | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field();
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Vcvt_SingleToHalf_T1(sd, sm, top) => {
+                let word = 0xEEB3_0A40 | ((*top as u32) << 7) | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field();
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Vcvt_FloatToFixed_Single_T1(sd, signed, bits32, frac) => encode_vcvt_fixed(sd.field(), sd.extra_bit(), 0, true, *signed, *bits32, *frac)?,
+            Self::Vcvt_FloatToFixed_Double_T1(dd, signed, bits32, frac) => encode_vcvt_fixed(dd.field(), dd.extra_bit(), 1, true, *signed, *bits32, *frac)?,
+            Self::Vcvt_FixedToFloat_Single_T1(sd, signed, bits32, frac) => encode_vcvt_fixed(sd.field(), sd.extra_bit(), 0, false, *signed, *bits32, *frac)?,
+            Self::Vcvt_FixedToFloat_Double_T1(dd, signed, bits32, frac) => encode_vcvt_fixed(dd.field(), dd.extra_bit(), 1, false, *signed, *bits32, *frac)?,
+
+            // ---- ARMv8-M Security Extension ----
+            Self::Csdb_T1 => split_instruction_word_into_halfwords(ArmT32OpcodePattern_32Bit::Csdb_T1 as u32).to_vec(),
+            Self::Sg_T1 => split_instruction_word_into_halfwords(ArmT32OpcodePattern_32Bit::Sg_T1 as u32).to_vec(),
+            Self::Bxns_T1(rm) => vec![ArmT32OpcodePattern_16Bit::Bxns_T1 as u16 | ((rm.as_operand_bits() as u16) << 3)],
+            Self::Blxns_T1(rm) => vec![ArmT32OpcodePattern_16Bit::Blxns_T1 as u16 | ((rm.as_operand_bits() as u16) << 3)],
+            Self::Tt_T1(rd, rn, a, t) => {
+                let word = ArmT32OpcodePattern_32Bit::Tt_T1 as u32 | ((rn.as_operand_bits() as u32) << 16) | ((rd.as_operand_bits() as u32) << 8) | ((*a as u32) << 7) | ((*t as u32) << 6);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            Self::Vlstm_T1(rn) => split_instruction_word_into_halfwords(ArmT32OpcodePattern_32Bit::Vlstm_T1 as u32 | ((rn.as_operand_bits() as u32) << 16)).to_vec(),
+            Self::Vlldm_T1(rn) => split_instruction_word_into_halfwords(ArmT32OpcodePattern_32Bit::Vlldm_T1 as u32 | ((rn.as_operand_bits() as u32) << 16)).to_vec(),
+
+            // ---- ARMv8.1-M MVE 3-reg-same vector-vector: Qn[19:17], Qd[15:13], Qm[3:1] ----
+            Self::MveIntArith(op, size, qd, qn, qm) =>
+                split_instruction_word_into_halfwords(
+                    op.base_word() | (size.size_bits() << 20) | (qn.field() << 17) | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec(),
+            Self::MveBitwise(op, qd, qn, qm) =>
+                split_instruction_word_into_halfwords(
+                    op.base_word() | (qn.field() << 17) | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec(),
+            Self::MveFloatArith(op, size, qd, qn, qm) =>
+                split_instruction_word_into_halfwords(
+                    op.base_word() | (size.size_bit() << 20) | (qn.field() << 17) | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec(),
+
+            // ---- MVE vector-by-scalar (Qd[15:13], Qn[19:17], Rm[3:0]) and VDUP (Qd[19:17], Rt[15:12]) ----
+            Self::MveVecScalarInt(op, size, qd, qn, rm) =>
+                split_instruction_word_into_halfwords(
+                    op.base_word() | (size.size_bits() << 20) | (qn.field() << 17) | (qd.field() << 13) | (rm.as_operand_bits() as u32)
+                ).to_vec(),
+            Self::MveVecScalarFloat(op, size, qd, qn, rm) =>
+                split_instruction_word_into_halfwords(
+                    op.base_word() | (size.size_bit() << 28) | (qn.field() << 17) | (qd.field() << 13) | (rm.as_operand_bits() as u32)
+                ).to_vec(),
+            Self::MveVdup(size, qd, rt) => {
+                let (b, e) = mve_vdup_size_bits(*size);
+                split_instruction_word_into_halfwords(
+                    MVE_VDUP_BASE | (b << 22) | (e << 5) | (qd.field() << 17) | ((rt.as_operand_bits() as u32) << 12)
+                ).to_vec()
+            },
+            Self::MveShiftImm(op, size, amount, qd, qm) => {
+                let esize = mve_shift_esize(*size);
+                let imm6 = if op.is_left_shift() { esize + (*amount as u32) } else { 2 * esize - (*amount as u32) };
+                split_instruction_word_into_halfwords(
+                    op.base_word() | (imm6 << 16) | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec()
+            },
+            Self::MveModifiedImmediate(cmode, op, imm8, qd) =>
+                split_instruction_word_into_halfwords(encode_mve_modified_imm(*cmode, *op, *imm8, qd.field())).to_vec(),
+
+            // ---- MVE two-register miscellaneous (Qd[15:13], Qm[3:1], size[19:18]) ----
+            Self::MveMisc2(op, size, qd, qm) =>
+                split_instruction_word_into_halfwords(
+                    op.base_word() | (size.size_bits() << 18) | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec(),
+            Self::MveMisc2Float(op, size, qd, qm) =>
+                split_instruction_word_into_halfwords(
+                    op.base_word() | (mve_misc2_float_size_bits(*size) << 18) | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec(),
+            Self::MveVmaxaMina(is_min, size, qda, qm) =>
+                split_instruction_word_into_halfwords(
+                    0xEE33_0E81 | ((*is_min as u32) << 12) | (size.size_bits() << 18) | (qda.field() << 13) | (qm.field() << 1)
+                ).to_vec(),
+            Self::MveVmaxnmaMinnma(is_min, size, qda, qm) =>
+                split_instruction_word_into_halfwords(
+                    0xEE3F_0E81 | ((*is_min as u32) << 12) | (matches!(size, Arm32MveFloatSize::F16) as u32) << 28 | (qda.field() << 13) | (qm.field() << 1)
+                ).to_vec(),
+            Self::MveMvnRegister(qd, qm) =>
+                split_instruction_word_into_halfwords(MVE_VMVN_REG_BASE | (qd.field() << 13) | (qm.field() << 1)).to_vec(),
+
+            // ---- MVE contiguous vector load/store (base 0xEC00_1E00; P[24] U[23] W[21] L[20], size[8:7]) ----
+            Self::MveLoadStore(is_load, size, qd, rn, offset, mode) => {
+                let size_bytes = mve_shift_esize(*size) / 8; // 1 / 2 / 4 bytes
+                let imm7 = (offset.unsigned_abs() / size_bytes) & 0x7F;
+                let u = if *offset >= 0 { 1u32 } else { 0 };
+                let (p, w) = match mode {
+                    ArmT32IndexMode::Offset => (1u32, 0u32),
+                    ArmT32IndexMode::PreIndex => (1, 1),
+                    ArmT32IndexMode::PostIndex => (0, 1),
+                };
+                let l = if *is_load { 1u32 } else { 0 };
+                let word = 0xEC00_1E00 | (p << 24) | (u << 23) | (w << 21) | (l << 20)
+                    | ((rn.as_operand_bits() as u32) << 16) | (qd.field() << 13) | (size.size_bits() << 7) | imm7;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            // ---- MVE gather/scatter (scalar base + vector offset): esize[8:7], msize={bit6,bit4}, scaled=bit0 ----
+            Self::MveGatherScatter(is_load, unsigned, esize, msize, scaled, qd, rn, qm) => {
+                let esize_log = mve_mem_size_log(*esize);
+                let msize_log = mve_mem_size_log(*msize);
+                let msize_bits = (((msize_log >> 1) & 1) << 6) | ((msize_log & 1) << 4);
+                let word = MVE_GATHER_SCATTER_BASE | ((*unsigned as u32) << 28) | ((*is_load as u32) << 20)
+                    | ((rn.as_operand_bits() as u32) << 16) | (qd.field() << 13)
+                    | (esize_log << 7) | msize_bits | (qm.field() << 1) | (*scaled as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            // ---- MVE gather/scatter, vector base + immediate: U(sign)=bit23, W=bit21, size=bit8, imm7[6:0] ----
+            Self::MveGatherScatterBase(is_load, is_dword, writeback, qd, qn, offset) => {
+                let scale = if *is_dword { 8 } else { 4 };
+                let imm7 = (offset.unsigned_abs() / scale) & 0x7F;
+                let add = if *offset >= 0 { 1u32 } else { 0 };
+                let word = MVE_GATHER_VBASE_BASE | ((*is_load as u32) << 20) | ((*writeback as u32) << 21)
+                    | (add << 23) | ((*is_dword as u32) << 8) | (qn.field() << 17) | (qd.field() << 13) | imm7;
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            // ---- MVE de-interleaving/interleaving load/store: pass[6:5], size[8:7], is-VLD4=bit0 ----
+            Self::MveInterleave(is_load, is_quad, pass, size, qd, rn, writeback) => {
+                let word = MVE_INTERLEAVE_BASE | ((*is_load as u32) << 20) | ((*writeback as u32) << 21)
+                    | ((rn.as_operand_bits() as u32) << 16) | (qd.field() << 13) | (size.size_bits() << 7)
+                    | (((*pass as u32) & 0b11) << 5) | (*is_quad as u32);
+                split_instruction_word_into_halfwords(word).to_vec()
+            },
+            // ---- low-overhead loops ----
+            Self::LobStart(is_while, tp_size, rn, offset) => {
+                let hw0 = 0xF000 | (lob_size_field(*tp_size) << 4) | (rn.as_operand_bits() as u32);
+                let hw1 = if *is_while { lob_branch_hw1(*offset) } else { 0xE001 };
+                split_instruction_word_into_halfwords((hw0 << 16) | hw1).to_vec()
+            },
+            Self::LobEnd(tail_predicated, offset) => {
+                let hw0: u32 = if *tail_predicated { 0xF01F } else { 0xF00F };
+                split_instruction_word_into_halfwords((hw0 << 16) | lob_branch_hw1(*offset)).to_vec()
+            },
+            Self::Lctp => split_instruction_word_into_halfwords(MVE_LCTP_WORD).to_vec(),
+            Self::MveVctp(size, rn) => {
+                let size_bits = match size { 8 => 0u32, 16 => 1, 32 => 2, _ => 3 };
+                split_instruction_word_into_halfwords(MVE_VCTP_BASE | (size_bits << 20) | ((rn.as_operand_bits() as u32) << 16)).to_vec()
+            },
+
+            // ---- MVE cross-lane reductions to a GPR ----
+            Self::MveReduce(op, size, rd, qm) =>
+                split_instruction_word_into_halfwords(
+                    op.base_word() | (size.size_bits() << 18) | ((rd.as_operand_bits() as u32) << 12) | (qm.field() << 1)
+                ).to_vec(),
+            Self::MveVabav(signed, size, rd, qn, qm) => {
+                let u = if *signed { 0u32 } else { 1 };
+                split_instruction_word_into_halfwords(
+                    MVE_VABAV_BASE | (u << 28) | (size.size_bits() << 20) | (qn.field() << 17) | ((rd.as_operand_bits() as u32) << 12) | (qm.field() << 1)
+                ).to_vec()
+            },
+            // VMLADAV/VMLSDAV: Rda (even) at [15:12] with X folded into the freed bit 12, A=bit5, subtract=bit0.
+            // The size/signedness bits (28/16/8) are irregular between add and subtract -- see mve_dualmac_size_bits.
+            Self::MveDualMac(subtract, exchange, accumulate, unsigned, size, rda, qn, qm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_DUALMAC_BASE
+                        | mve_dualmac_size_bits(*subtract, *unsigned, *size)
+                        | ((rda.as_operand_bits() as u32) << 12)
+                        | ((*exchange as u32) << 12)
+                        | (qn.field() << 17)
+                        | (qm.field() << 1)
+                        | ((*accumulate as u32) << 5)
+                        | (*subtract as u32)
+                ).to_vec(),
+            // VMLALDAV/VMLSLDAV/VRMLALDAVH/VRMLSLDAVH: RdaLo[15:12] even (+ X folded into bit12), RdaHi>>1 at [22:20]
+            Self::MveLongDualMac(op, exchange, accumulate, unsigned, size, rda_lo, rda_hi, qn, qm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_LONG_DUALMAC_BASE
+                        | mve_long_dualmac_bits(*op, *unsigned, *size)
+                        | ((rda_lo.as_operand_bits() as u32) << 12)
+                        | ((*exchange as u32) << 12)
+                        | (((rda_hi.as_operand_bits() as u32) >> 1) << 20)
+                        | (qn.field() << 17)
+                        | (qm.field() << 1)
+                        | ((*accumulate as u32) << 5)
+                ).to_vec(),
+
+            // ---- MVE VRINT / VCVT (float<->int) in the 0xFFBx space (size[19:18], Qd[15:13], Qm[3:1]) ----
+            Self::MveVrint(op, size, qd, qm) =>
+                split_instruction_word_into_halfwords(
+                    op.base_word() | (mve_misc2_float_size_bits(*size) << 18) | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec(),
+            Self::MveVcvtFloatInt(to_int, unsigned, size, qd, qm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VCVT_FI_BASE | ((*to_int as u32) << 8) | ((*unsigned as u32) << 7)
+                        | (mve_misc2_float_size_bits(*size) << 18) | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec(),
+            // fixed-point VCVT: imm6[21:16] = 64 - fbits, size = bit9, direction = bit8, U = bit28
+            Self::MveVcvtFixed(to_fixed, unsigned, size, fbits, qd, qm) => {
+                let imm6 = 64 - (*fbits as u32);
+                split_instruction_word_into_halfwords(
+                    MVE_VCVT_FIXED_BASE | ((*unsigned as u32) << 28) | (imm6 << 16)
+                        | ((matches!(size, Arm32MveFloatSize::F32) as u32) << 9) | ((*to_fixed as u32) << 8)
+                        | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec()
+            },
+            // VCVT half<->single (vector): op=bit28, T=bit12, Qd[15:13], Qm[3:1] (DDI0553)
+            Self::MveVcvtHalf(top, half_to_single, qd, qm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VCVT_HALF_BASE | ((*half_to_single as u32) << 28) | ((*top as u32) << 12)
+                        | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec(),
+            // shift-and-narrow: imm5 = (16|32) - shift at [20:16]; op bits = bit28 / [7:6] / bit0 (DDI0553)
+            Self::MveShiftNarrow(op, unsigned, top, src_is_32, shift, qd, qm) => {
+                let imm5 = (if *src_is_32 { 32 } else { 16 }) - (*shift as u32);
+                let (bit28, bit76, bit0) = op.opcode_bits(*unsigned);
+                split_instruction_word_into_halfwords(
+                    MVE_SHIFT_NARROW_BASE | (bit28 << 28) | (imm5 << 16) | (qd.field() << 13)
+                        | ((*top as u32) << 12) | (bit76 << 6) | (qm.field() << 1) | bit0
+                ).to_vec()
+            },
+            // VADC/VSBC: subtract = bit28, init-carry = bit12
+            Self::MveVadc(subtract, init_carry, qd, qn, qm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VADC_BASE | ((*subtract as u32) << 28) | ((*init_carry as u32) << 12)
+                        | (qd.field() << 13) | (qn.field() << 17) | (qm.field() << 1)
+                ).to_vec(),
+            // VSHLC: imm5[20:16] = shift (32 encoded as 0), Qda[15:13], Rdm[3:0]
+            Self::MveVshlc(shift, qda, rdm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VSHLC_BASE | (((*shift as u32) & 0x1F) << 16) | (qda.field() << 13) | (rdm.as_operand_bits() as u32)
+                ).to_vec(),
+            // VIDUP/VDDUP/VIWDUP/VDWDUP: Rn>>1 at [19:17], step (log2) split across {bit7,bit0}, wrap Rm>>1 at
+            // [3:1] (PC = no wrap)
+            Self::MveViddup(decrement, size, qd, rn, wrap_rm, step) => {
+                let imm2 = step.trailing_zeros(); // 1->0, 2->1, 4->2, 8->3
+                let rm_field = match wrap_rm {
+                    Some(rm) => (rm.as_operand_bits() as u32) >> 1,
+                    None => 0b111, // r15 (PC) marks the non-wrapping form
+                };
+                split_instruction_word_into_halfwords(
+                    MVE_VIDDUP_BASE | (size.size_bits() << 20) | (((rn.as_operand_bits() as u32) >> 1) << 17)
+                        | (qd.field() << 13) | ((*decrement as u32) << 12)
+                        | (imm2 & 1) | (((imm2 >> 1) & 1) << 7) | (rm_field << 1)
+                ).to_vec()
+            },
+            // VBRSR: vector-by-scalar shape -- Qd[15:13], Qn[19:17], Rm[3:0], size[21:20]
+            Self::MveVbrsr(size, qd, qn, rm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VBRSR_BASE | (size.size_bits() << 20) | (qd.field() << 13) | (qn.field() << 17) | (rm.as_operand_bits() as u32)
+                ).to_vec(),
+
+            // ---- MVE width-changing register moves (VMOVL long, VMOVN narrow, VADDLV 64-bit reduction) ----
+            Self::MveVmovl(top, unsigned, size, qd, qm) => {
+                let size_bit = if matches!(size, Arm32MveSize::I8) { 1u32 << 19 } else { 1u32 << 20 }; // .8 -> bit19, .16 -> bit20
+                split_instruction_word_into_halfwords(
+                    MVE_VMOVL_BASE | ((*unsigned as u32) << 28) | size_bit | ((*top as u32) << 12) | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec()
+            },
+            Self::MveVmovn(top, size, qd, qm) => {
+                let size_bit = if matches!(size, Arm32MveSize::I32) { 1u32 << 18 } else { 0 }; // .16 -> 0, .32 -> bit18
+                split_instruction_word_into_halfwords(
+                    MVE_VMOVN_BASE | size_bit | ((*top as u32) << 12) | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec()
+            },
+            Self::MveVmovTwoLane(to_vector, idx1, qd, rt, rt2) => {
+                if *idx1 != 2 && *idx1 != 3 {
+                    return Err(EncodeError::ImmediateOutOfRange { field: "VMOV two-lane index", value: *idx1 as i64, minimum: 2, maximum: 3 });
+                }
+                split_instruction_word_into_halfwords(
+                    0xEC00_0F00 | ((*to_vector as u32) << 20) | ((rt2.as_operand_bits() as u32) << 16)
+                        | (qd.field() << 13) | (((*idx1 as u32) & 1) << 4) | (rt.as_operand_bits() as u32)
+                ).to_vec()
+            },
+            Self::MveVqmovn(kind, unsigned, top, size, qd, qm) => {
+                let size_bit = if matches!(size, Arm32MveSize::I32) { 1u32 << 18 } else { 0 }; // .16 -> 0, .32 -> bit18
+                let base = match kind {
+                    Arm32MveQMovnKind::Vqmovn => MVE_VQMOVN_BASE | ((*unsigned as u32) << 28),
+                    Arm32MveQMovnKind::Vqmovun => MVE_VQMOVUN_BASE,
+                };
+                split_instruction_word_into_halfwords(
+                    base | size_bit | ((*top as u32) << 12) | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec()
+            },
+            Self::MveVmull(polynomial, unsigned, top, size, qd, qn, qm) => {
+                let head = if *polynomial {
+                    // poly: size[21:20]=11 (in base), bit28 selects P8(I8)/P16(I16)
+                    MVE_VMULL_POLY_BASE | ((matches!(size, Arm32MveSize::I16) as u32) << 28)
+                } else {
+                    MVE_VMULL_INT_BASE | ((*unsigned as u32) << 28) | (size.size_bits() << 20)
+                };
+                split_instruction_word_into_halfwords(
+                    head | ((*top as u32) << 12) | (qd.field() << 13) | (qn.field() << 17) | (qm.field() << 1)
+                ).to_vec()
+            },
+            Self::MveVmulh(rounding, unsigned, size, qd, qn, qm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VMULH_BASE | ((*unsigned as u32) << 28) | (size.size_bits() << 20) | ((*rounding as u32) << 12)
+                        | (qd.field() << 13) | (qn.field() << 17) | (qm.field() << 1)
+                ).to_vec(),
+            Self::MveVqdmull(top, size32, qd, qn, qm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VQDMULL_VEC_BASE | ((*size32 as u32) << 28) | ((*top as u32) << 12)
+                        | (qd.field() << 13) | (qn.field() << 17) | (qm.field() << 1)
+                ).to_vec(),
+            Self::MveVqdmullScalar(top, size32, qd, qn, rm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VQDMULL_SCALAR_BASE | ((*size32 as u32) << 28) | ((*top as u32) << 12)
+                        | (qd.field() << 13) | (qn.field() << 17) | (rm.as_operand_bits() as u32)
+                ).to_vec(),
+            Self::MveVqdmladh(subtract, rounding, exchange, size, qd, qn, qm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VQDMLADH_BASE | ((*subtract as u32) << 28) | (*rounding as u32) | ((*exchange as u32) << 12)
+                        | (size.size_bits() << 20) | (qd.field() << 13) | (qn.field() << 17) | (qm.field() << 1)
+                ).to_vec(),
+            Self::MveShiftByVector(rounding, saturating, unsigned, size, qd, qm, qn) =>
+                split_instruction_word_into_halfwords(
+                    MVE_SHIFT_VEC_BASE | ((*unsigned as u32) << 28) | (size.size_bits() << 20) | ((*rounding as u32) << 8)
+                        | ((*saturating as u32) << 4) | (qd.field() << 13) | (qm.field() << 1) | (qn.field() << 17)
+                ).to_vec(),
+            Self::MveShiftByScalar(rounding, saturating, unsigned, size, qda, rm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_SHIFT_SCALAR_BASE | ((*unsigned as u32) << 28) | (size.size_bits() << 18) | ((*rounding as u32) << 17)
+                        | ((*saturating as u32) << 7) | (qda.field() << 13) | (rm.as_operand_bits() as u32)
+                ).to_vec(),
+            Self::MveVshll(top, unsigned, size, shift, qd, qm) => {
+                let esize: u32 = if matches!(size, Arm32MveSize::I16) { 16 } else { 8 };
+                let word = if *shift as u32 == esize {
+                    MVE_VSHLL_T2_BASE | ((matches!(size, Arm32MveSize::I16) as u32) << 18)
+                } else {
+                    MVE_VSHLL_T1_BASE | ((esize + *shift as u32) << 16)
+                };
+                split_instruction_word_into_halfwords(
+                    word | ((*unsigned as u32) << 28) | ((*top as u32) << 12) | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec()
+            },
+            Self::Vmovx_T1(insert, sd, sm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VMOVX_BASE | ((*insert as u32) << 7) | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field()
+                ).to_vec(),
+            Self::Dbg_T1(option) => split_instruction_word_into_halfwords(0xF3AF_80F0 | (*option as u32 & 0xF)).to_vec(),
+            Self::Esb_T1 => split_instruction_word_into_halfwords(0xF3AF_8010).to_vec(),
+            Self::Ssbb_T1 => split_instruction_word_into_halfwords(0xF3BF_8F40).to_vec(),
+            Self::Pssbb_T1 => split_instruction_word_into_halfwords(0xF3BF_8F44).to_vec(),
+            Self::Sb_T1 => split_instruction_word_into_halfwords(0xF3BF_8F70).to_vec(),
+            Self::Clrm_T1(list) => split_instruction_word_into_halfwords(0xE89F_0000 | (*list as u32 & 0xDFFF)).to_vec(),
+            Self::Vsel_Single_T1(cond, sd, sn, sm) => split_instruction_word_into_halfwords(
+                0xFE00_0A00 | ((*cond as u32) << 20) | (sd.extra_bit() << 22) | (sd.field() << 12) | (sn.extra_bit() << 7) | (sn.field() << 16) | (sm.extra_bit() << 5) | sm.field()
+            ).to_vec(),
+            Self::Vsel_Double_T1(cond, dd, dn, dm) => split_instruction_word_into_halfwords(
+                0xFE00_0B00 | ((*cond as u32) << 20) | (dd.extra_bit() << 22) | (dd.field() << 12) | (dn.extra_bit() << 7) | (dn.field() << 16) | (dm.extra_bit() << 5) | dm.field()
+            ).to_vec(),
+            Self::Csel_T1(op, rd, rn, rm, cond) => split_instruction_word_into_halfwords(
+                0xEA50_8000 | ((rn.as_operand_bits() as u32) << 16) | ((*op as u32) << 12)
+                    | ((rd.as_operand_bits() as u32) << 8) | ((cond.as_operand_bits() as u32) << 4) | (rm.as_operand_bits() as u32)
+            ).to_vec(),
+            Self::LongShiftImm_T1(op, rdalo, rdahi, imm) => split_instruction_word_into_halfwords(
+                0xEA50_010F | ((rdalo.as_operand_bits() as u32) << 16) | (((rdahi.as_operand_bits() as u32 >> 1) & 0b111) << 9)
+                    | (((*imm as u32 >> 2) & 0b111) << 12) | ((*imm as u32 & 0b11) << 6) | ((*op as u32) << 4)
+            ).to_vec(),
+            Self::LongShiftReg_T1(op, rdalo, rdahi, rm) => split_instruction_word_into_halfwords(
+                0xEA50_010D | ((rdalo.as_operand_bits() as u32) << 16) | (((rdahi.as_operand_bits() as u32 >> 1) & 0b111) << 9)
+                    | ((rm.as_operand_bits() as u32) << 12) | ((*op as u32) << 4)
+            ).to_vec(),
+            Self::SatShiftImm_T1(op, rda, imm) => split_instruction_word_into_halfwords(
+                0xEA50_0F0F | ((rda.as_operand_bits() as u32) << 16) | (((*imm as u32 >> 2) & 0b111) << 12)
+                    | ((*imm as u32 & 0b11) << 6) | ((*op as u32) << 4)
+            ).to_vec(),
+            Self::SatShiftLongImm_T1(op, rdalo, rdahi, imm) => split_instruction_word_into_halfwords(
+                0xEA51_010F | (((rdalo.as_operand_bits() as u32 >> 1) & 0b111) << 17) | (((rdahi.as_operand_bits() as u32 >> 1) & 0b111) << 9)
+                    | (((*imm as u32 >> 2) & 0b111) << 12) | ((*imm as u32 & 0b11) << 6) | ((*op as u32) << 4)
+            ).to_vec(),
+            Self::SatShiftReg_T1(signed, rda, rm) => split_instruction_word_into_halfwords(
+                0xEA50_0F0D | ((rda.as_operand_bits() as u32) << 16) | ((rm.as_operand_bits() as u32) << 12) | ((*signed as u32) << 5)
+            ).to_vec(),
+            Self::SatShiftLongReg_T1(signed, rdalo, rdahi, rm, sat48) => split_instruction_word_into_halfwords(
+                0xEA51_010D | (((rdalo.as_operand_bits() as u32 >> 1) & 0b111) << 17) | (((rdahi.as_operand_bits() as u32 >> 1) & 0b111) << 9)
+                    | ((rm.as_operand_bits() as u32) << 12) | ((*signed as u32) << 5) | ((*sat48 as u32) << 7)
+            ).to_vec(),
+            Self::Vrintr_Single_T1(sd, sm) => split_instruction_word_into_halfwords(
+                0xEEB6_0A40 | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field()
+            ).to_vec(),
+            Self::Vrintr_Double_T1(dd, dm) => split_instruction_word_into_halfwords(
+                0xEEB6_0B40 | (dd.extra_bit() << 22) | (dd.field() << 12) | (dm.extra_bit() << 5) | dm.field()
+            ).to_vec(),
+            Self::Vmaxnm_Single_T1(sd, sn, sm) => split_instruction_word_into_halfwords(
+                0xFE80_0A00 | (sd.extra_bit() << 22) | (sn.field() << 16) | (sd.field() << 12) | (sn.extra_bit() << 7) | (sm.extra_bit() << 5) | sm.field()
+            ).to_vec(),
+            Self::Vmaxnm_Double_T1(dd, dn, dm) => split_instruction_word_into_halfwords(
+                0xFE80_0B00 | (dd.extra_bit() << 22) | (dn.field() << 16) | (dd.field() << 12) | (dn.extra_bit() << 7) | (dm.extra_bit() << 5) | dm.field()
+            ).to_vec(),
+            Self::Vminnm_Single_T1(sd, sn, sm) => split_instruction_word_into_halfwords(
+                0xFE80_0A40 | (sd.extra_bit() << 22) | (sn.field() << 16) | (sd.field() << 12) | (sn.extra_bit() << 7) | (sm.extra_bit() << 5) | sm.field()
+            ).to_vec(),
+            Self::Vminnm_Double_T1(dd, dn, dm) => split_instruction_word_into_halfwords(
+                0xFE80_0B40 | (dd.extra_bit() << 22) | (dn.field() << 16) | (dd.field() << 12) | (dn.extra_bit() << 7) | (dm.extra_bit() << 5) | dm.field()
+            ).to_vec(),
+            Self::Vrint_Directed_Single_T1(mode, sd, sm) => split_instruction_word_into_halfwords(
+                0xFEB8_0A40 | (mode.rm_bits() << 16) | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field()
+            ).to_vec(),
+            Self::Vrint_Directed_Double_T1(mode, dd, dm) => split_instruction_word_into_halfwords(
+                0xFEB8_0B40 | (mode.rm_bits() << 16) | (dd.extra_bit() << 22) | (dd.field() << 12) | (dm.extra_bit() << 5) | dm.field()
+            ).to_vec(),
+            Self::Vrintz_Single_T1(sd, sm) => split_instruction_word_into_halfwords(
+                0xEEB6_0AC0 | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field()
+            ).to_vec(),
+            Self::Vrintz_Double_T1(dd, dm) => split_instruction_word_into_halfwords(
+                0xEEB6_0BC0 | (dd.extra_bit() << 22) | (dd.field() << 12) | (dm.extra_bit() << 5) | dm.field()
+            ).to_vec(),
+            Self::Vrintx_Single_T1(sd, sm) => split_instruction_word_into_halfwords(
+                0xEEB7_0A40 | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field()
+            ).to_vec(),
+            Self::Vrintx_Double_T1(dd, dm) => split_instruction_word_into_halfwords(
+                0xEEB7_0B40 | (dd.extra_bit() << 22) | (dd.field() << 12) | (dm.extra_bit() << 5) | dm.field()
+            ).to_vec(),
+            Self::Vcvt_Directed_FromSingle_T1(mode, sd, sm, signed) => split_instruction_word_into_halfwords(
+                0xFEBC_0A40 | (mode.rm_bits() << 16) | ((*signed as u32) << 7) | (sd.extra_bit() << 22) | (sd.field() << 12) | (sm.extra_bit() << 5) | sm.field()
+            ).to_vec(),
+            Self::Vcvt_Directed_FromDouble_T1(mode, sd, dm, signed) => split_instruction_word_into_halfwords(
+                0xFEBC_0B40 | (mode.rm_bits() << 16) | ((*signed as u32) << 7) | (sd.extra_bit() << 22) | (sd.field() << 12) | (dm.extra_bit() << 5) | dm.field()
+            ).to_vec(),
+            Self::Vjcvt_T1(sd, dm) => split_instruction_word_into_halfwords(
+                0xEEB9_0BC0 | (sd.extra_bit() << 22) | (sd.field() << 12) | (dm.extra_bit() << 5) | dm.field()
+            ).to_vec(),
+            Self::MveVaddlv(accumulate, unsigned, rd_lo, rd_hi, qm) => {
+                let lo = rd_lo.as_operand_bits() as u32;
+                let hi = rd_hi.as_operand_bits() as u32;
+                split_instruction_word_into_halfwords(
+                    MVE_VADDLV_BASE | ((*unsigned as u32) << 28) | ((*accumulate as u32) << 5)
+                        | (lo << 12) | ((hi >> 1) << 20) | (qm.field() << 1)
+                ).to_vec()
+            },
+
+            // ---- MVE complex-number ops (Qd[15:13], Qn[19:17], Qm[3:1] throughout) ----
+            Self::MveVcaddInt(halving, size, rot270, qd, qn, qm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VCADD_INT_PATTERN | (if *halving { 0 } else { 1 << 28 }) | (size.size_bits() << 20)
+                        | ((*rot270 as u32) << 12) | (qn.field() << 17) | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec(),
+            Self::MveVcaddFloat(size, rot270, qd, qn, qm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VCADD_FLOAT_PATTERN | (if matches!(size, Arm32MveFloatSize::F32) { 1 << 20 } else { 0 })
+                        | ((*rot270 as u32) << 24) | (qn.field() << 17) | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec(),
+            Self::MveVcmul(size, rotate, qd, qn, qm) => {
+                let r = *rotate as u32;
+                split_instruction_word_into_halfwords(
+                    MVE_VCMUL_PATTERN | (if matches!(size, Arm32MveFloatSize::F32) { 1 << 28 } else { 0 })
+                        | (r & 1) | (((r >> 1) & 1) << 12) | (qn.field() << 17) | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec()
+            },
+            Self::MveVcmla(size, rotate, qd, qn, qm) => {
+                let r = *rotate as u32;
+                split_instruction_word_into_halfwords(
+                    MVE_VCMLA_PATTERN | (if matches!(size, Arm32MveFloatSize::F32) { 1 << 20 } else { 0 })
+                        | ((r & 1) << 23) | (((r >> 1) & 1) << 24) | (qn.field() << 17) | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec()
+            },
+
+            // ---- MVE predication primitives ----
+            Self::MveVpsel(qd, qn, qm) =>
+                split_instruction_word_into_halfwords(MVE_VPSEL_BASE | (qn.field() << 17) | (qd.field() << 13) | (qm.field() << 1)).to_vec(),
+            Self::MveVpnot => split_instruction_word_into_halfwords(MVE_VPNOT_WORD).to_vec(),
+
+            // ---- MVE VCMP (compare into the VPR) ----
+            Self::MveVcmpReg(cond, size, qn, qm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VCMP_INT_BASE | (size.size_bits() << 20) | mve_vcmp_fc_bits(*cond, false) | (qn.field() << 17) | (qm.field() << 1)
+                ).to_vec(),
+            Self::MveVcmpScalar(cond, size, qn, rm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VCMP_INT_BASE | (1 << 6) | (size.size_bits() << 20) | mve_vcmp_fc_bits(*cond, true) | (qn.field() << 17) | (rm.as_operand_bits() as u32)
+                ).to_vec(),
+            Self::MveVcmpFloatReg(cond, size, qn, qm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VCMP_FLOAT_BASE | (if matches!(size, Arm32MveFloatSize::F16) { 1 << 28 } else { 0 }) | mve_vcmp_fc_bits(*cond, false) | (qn.field() << 17) | (qm.field() << 1)
+                ).to_vec(),
+            Self::MveVcmpFloatScalar(cond, size, qn, rm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VCMP_FLOAT_BASE | (1 << 6) | (if matches!(size, Arm32MveFloatSize::F16) { 1 << 28 } else { 0 }) | mve_vcmp_fc_bits(*cond, true) | (qn.field() << 17) | (rm.as_operand_bits() as u32)
+                ).to_vec(),
+            Self::MveVpst(mask) =>
+                split_instruction_word_into_halfwords(MVE_VPST_NOT_BASE | mve_predicate_mask_bits(*mask)).to_vec(),
+
+            // ---- VPT (compare + predicate block) = VCMP | predicate-mask bits ----
+            Self::MveVptReg(cond, size, qn, qm, mask) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VCMP_INT_BASE | (size.size_bits() << 20) | mve_vcmp_fc_bits(*cond, false) | (qn.field() << 17) | (qm.field() << 1) | mve_predicate_mask_bits(*mask)
+                ).to_vec(),
+            Self::MveVptScalar(cond, size, qn, rm, mask) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VCMP_INT_BASE | (1 << 6) | (size.size_bits() << 20) | mve_vcmp_fc_bits(*cond, true) | (qn.field() << 17) | (rm.as_operand_bits() as u32) | mve_predicate_mask_bits(*mask)
+                ).to_vec(),
+            Self::MveVptFloatReg(cond, size, qn, qm, mask) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VCMP_FLOAT_BASE | (if matches!(size, Arm32MveFloatSize::F16) { 1 << 28 } else { 0 }) | mve_vcmp_fc_bits(*cond, false) | (qn.field() << 17) | (qm.field() << 1) | mve_predicate_mask_bits(*mask)
+                ).to_vec(),
+            Self::MveVptFloatScalar(cond, size, qn, rm, mask) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VCMP_FLOAT_BASE | (1 << 6) | (if matches!(size, Arm32MveFloatSize::F16) { 1 << 28 } else { 0 }) | mve_vcmp_fc_bits(*cond, true) | (qn.field() << 17) | (rm.as_operand_bits() as u32) | mve_predicate_mask_bits(*mask)
+                ).to_vec(),
+            Self::MveFloatReduce(op, size, rd, qm) =>
+                split_instruction_word_into_halfwords(
+                    op.base_word() | (if matches!(size, Arm32MveFloatSize::F16) { 1 << 28 } else { 0 }) | ((rd.as_operand_bits() as u32) << 12) | (qm.field() << 1)
+                ).to_vec(),
+            Self::MveVcvtRound(rounding, unsigned, size, qd, qm) =>
+                split_instruction_word_into_halfwords(
+                    MVE_VCVTR_BASE | ((*rounding as u32 & 0b11) << 8) | ((*unsigned as u32) << 7)
+                        | (mve_misc2_float_size_bits(*size) << 18) | (qd.field() << 13) | (qm.field() << 1)
+                ).to_vec(),
+        };
+
+        Ok(convert_halfwords_to_u8_vec(&halfwords))
+    }
+}
 
 //
 
