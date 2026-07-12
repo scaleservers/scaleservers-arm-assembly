@@ -359,3 +359,156 @@ fn encode__armv7m_batch7_shifted_register_aliases_exact_bytes() {
     ); // cmp.w  r6, r7, lsl #2
 }
 
+#[test]
+fn encode__armv7m_batch8_wide_load_store_exact_bytes() {
+    // bytes verified against `clang --target=thumbv7m-none-eabi`
+    assert_eq!(
+        ArmT32Instruction::Ldrb_Immediate_T2(R::R0, R::R1, 100)
+            .encode()
+            .unwrap(),
+        vec![0x91, 0xF8, 0x64, 0x00]
+    ); // ldrb.w  r0, [r1, #100]
+    assert_eq!(
+        ArmT32Instruction::Ldrh_Immediate_T2(R::R2, R::R3, 200)
+            .encode()
+            .unwrap(),
+        vec![0xB3, 0xF8, 0xC8, 0x20]
+    ); // ldrh.w  r2, [r3, #200]
+    assert_eq!(
+        ArmT32Instruction::Ldrsb_Immediate_T1(R::R4, R::R5, 4)
+            .encode()
+            .unwrap(),
+        vec![0x95, 0xF9, 0x04, 0x40]
+    ); // ldrsb.w r4, [r5, #4]
+    assert_eq!(
+        ArmT32Instruction::Strb_Immediate_T2(R::R0, R::R1, 100)
+            .encode()
+            .unwrap(),
+        vec![0x81, 0xF8, 0x64, 0x00]
+    ); // strb.w  r0, [r1, #100]
+    assert_eq!(
+        ArmT32Instruction::Ldr_Register_T2(R::R0, R::R1, R::R2, 0)
+            .encode()
+            .unwrap(),
+        vec![0x51, 0xF8, 0x02, 0x00]
+    ); // ldr.w  r0, [r1, r2]
+    assert_eq!(
+        ArmT32Instruction::Ldr_Register_T2(R::R0, R::R1, R::R2, 2)
+            .encode()
+            .unwrap(),
+        vec![0x51, 0xF8, 0x22, 0x00]
+    ); // ldr.w  r0, [r1, r2, lsl #2]
+    assert_eq!(
+        ArmT32Instruction::Ldrb_Register_T2(R::R0, R::R1, R::R2, 0)
+            .encode()
+            .unwrap(),
+        vec![0x11, 0xF8, 0x02, 0x00]
+    ); // ldrb.w r0, [r1, r2]
+    assert_eq!(
+        ArmT32Instruction::Ldrsh_Register_T2(R::R4, R::R5, R::R6, 3)
+            .encode()
+            .unwrap(),
+        vec![0x35, 0xF9, 0x36, 0x40]
+    ); // ldrsh.w r4, [r5, r6, lsl #3]
+}
+
+#[test]
+fn encode__armv7m_batch9_long_multiply_exact_bytes() {
+    // bytes verified against `clang --target=thumbv7m-none-eabi`
+    assert_eq!(
+        ArmT32Instruction::Smull_T1(R::R0, R::R1, R::R2, R::R3)
+            .encode()
+            .unwrap(),
+        vec![0x82, 0xFB, 0x03, 0x01]
+    ); // smull r0, r1, r2, r3
+    assert_eq!(
+        ArmT32Instruction::Umull_T1(R::R4, R::R5, R::R6, R::R7)
+            .encode()
+            .unwrap(),
+        vec![0xA6, 0xFB, 0x07, 0x45]
+    ); // umull r4, r5, r6, r7
+    assert_eq!(
+        ArmT32Instruction::Smlal_T1(R::R0, R::R1, R::R2, R::R3)
+            .encode()
+            .unwrap(),
+        vec![0xC2, 0xFB, 0x03, 0x01]
+    ); // smlal r0, r1, r2, r3
+    assert_eq!(
+        ArmT32Instruction::Umlal_T1(R::R4, R::R5, R::R6, R::R7)
+            .encode()
+            .unwrap(),
+        vec![0xE6, 0xFB, 0x07, 0x45]
+    ); // umlal r4, r5, r6, r7
+}
+
+#[test]
+fn encode__armv7m_batch10_extend_reverse_saturate_exact_bytes() {
+    // bytes verified against `clang --target=thumbv7m-none-eabi`
+    assert_eq!(
+        ArmT32Instruction::Sxtb_T2(R::R0, R::R1, 0)
+            .encode()
+            .unwrap(),
+        vec![0x4F, 0xFA, 0x81, 0xF0]
+    ); // sxtb.w  r0, r1
+    assert_eq!(
+        ArmT32Instruction::Sxtb_T2(R::R0, R::R1, 8)
+            .encode()
+            .unwrap(),
+        vec![0x4F, 0xFA, 0x91, 0xF0]
+    ); // sxtb.w  r0, r1, ror #8
+    assert_eq!(
+        ArmT32Instruction::Uxtb_T2(R::R2, R::R3, 16)
+            .encode()
+            .unwrap(),
+        vec![0x5F, 0xFA, 0xA3, 0xF2]
+    ); // uxtb.w  r2, r3, ror #16
+    assert_eq!(
+        ArmT32Instruction::Sxth_T2(R::R4, R::R5, 24)
+            .encode()
+            .unwrap(),
+        vec![0x0F, 0xFA, 0xB5, 0xF4]
+    ); // sxth.w  r4, r5, ror #24
+    assert_eq!(
+        ArmT32Instruction::Uxth_T2(R::R6, R::R7, 0)
+            .encode()
+            .unwrap(),
+        vec![0x1F, 0xFA, 0x87, 0xF6]
+    ); // uxth.w  r6, r7
+    assert_eq!(
+        ArmT32Instruction::Rev_T2(R::R0, R::R1).encode().unwrap(),
+        vec![0x91, 0xFA, 0x81, 0xF0]
+    ); // rev.w   r0, r1
+    assert_eq!(
+        ArmT32Instruction::Rev16_T2(R::R2, R::R3).encode().unwrap(),
+        vec![0x93, 0xFA, 0x93, 0xF2]
+    ); // rev16.w r2, r3
+    assert_eq!(
+        ArmT32Instruction::Revsh_T2(R::R4, R::R5).encode().unwrap(),
+        vec![0x95, 0xFA, 0xB5, 0xF4]
+    ); // revsh.w r4, r5
+    assert_eq!(
+        ArmT32Instruction::Ssat_T1(R::R0, 5, R::R1, Shift::Lsl(0))
+            .encode()
+            .unwrap(),
+        vec![0x01, 0xF3, 0x04, 0x00]
+    ); // ssat r0, #5, r1
+    assert_eq!(
+        ArmT32Instruction::Usat_T1(R::R2, 7, R::R3, Shift::Lsl(0))
+            .encode()
+            .unwrap(),
+        vec![0x83, 0xF3, 0x07, 0x02]
+    ); // usat r2, #7, r3
+    assert_eq!(
+        ArmT32Instruction::Ssat_T1(R::R0, 5, R::R1, Shift::Lsl(2))
+            .encode()
+            .unwrap(),
+        vec![0x01, 0xF3, 0x84, 0x00]
+    ); // ssat r0, #5, r1, lsl #2
+    assert_eq!(
+        ArmT32Instruction::Ssat_T1(R::R4, 10, R::R5, Shift::Asr(3))
+            .encode()
+            .unwrap(),
+        vec![0x25, 0xF3, 0xC9, 0x04]
+    ); // ssat r4, #10, r5, asr #3
+}
+
