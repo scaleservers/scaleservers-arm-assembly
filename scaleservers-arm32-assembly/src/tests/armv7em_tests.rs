@@ -150,3 +150,138 @@ fn round_trip__m8b_extend_and_add() {
     round_trip(&ArmT32Instruction::Uxtb16_T1(R::R8, R::R9, 24));
 }
 
+#[test]
+fn encode__m8c_pack_saturate_select_sad_exact_bytes() {
+    // bytes verified against `clang --target=thumbv7em-none-eabi -mcpu=cortex-m4`
+    assert_eq!(
+        ArmT32Instruction::Pkhbt_T1(R::R0, R::R1, R::R2, 0)
+            .encode()
+            .unwrap(),
+        vec![0xC1, 0xEA, 0x02, 0x00]
+    ); // pkhbt  r0, r1, r2
+    assert_eq!(
+        ArmT32Instruction::Pkhbt_T1(R::R0, R::R1, R::R2, 4)
+            .encode()
+            .unwrap(),
+        vec![0xC1, 0xEA, 0x02, 0x10]
+    ); // pkhbt  r0, r1, r2, lsl #4
+    assert_eq!(
+        ArmT32Instruction::Pkhtb_T1(R::R3, R::R4, R::R5, 8)
+            .encode()
+            .unwrap(),
+        vec![0xC4, 0xEA, 0x25, 0x23]
+    ); // pkhtb  r3, r4, r5, asr #8
+    assert_eq!(
+        ArmT32Instruction::Ssat16_T1(R::R0, 5, R::R1)
+            .encode()
+            .unwrap(),
+        vec![0x21, 0xF3, 0x04, 0x00]
+    ); // ssat16 r0, #5, r1
+    assert_eq!(
+        ArmT32Instruction::Usat16_T1(R::R2, 7, R::R3)
+            .encode()
+            .unwrap(),
+        vec![0xA3, 0xF3, 0x07, 0x02]
+    ); // usat16 r2, #7, r3
+    assert_eq!(
+        ArmT32Instruction::Sel_T1(R::R0, R::R1, R::R2)
+            .encode()
+            .unwrap(),
+        vec![0xA1, 0xFA, 0x82, 0xF0]
+    ); // sel    r0, r1, r2
+    assert_eq!(
+        ArmT32Instruction::Usad8_T1(R::R3, R::R4, R::R5)
+            .encode()
+            .unwrap(),
+        vec![0x74, 0xFB, 0x05, 0xF3]
+    ); // usad8  r3, r4, r5
+    assert_eq!(
+        ArmT32Instruction::Usada8_T1(R::R6, R::R7, R::R8, R::R9)
+            .encode()
+            .unwrap(),
+        vec![0x77, 0xFB, 0x08, 0x96]
+    ); // usada8 r6, r7, r8, r9
+}
+
+#[test]
+fn round_trip__m8c_pack_saturate_select_sad() {
+    round_trip(&ArmT32Instruction::Pkhbt_T1(R::R0, R::R1, R::R2, 0));
+    round_trip(&ArmT32Instruction::Pkhbt_T1(R::R3, R::R4, R::R5, 31));
+    round_trip(&ArmT32Instruction::Pkhtb_T1(R::R6, R::R7, R::R8, 1));
+    round_trip(&ArmT32Instruction::Pkhtb_T1(R::R9, R::R10, R::R11, 31));
+    round_trip(&ArmT32Instruction::Ssat16_T1(R::R0, 1, R::R1));
+    round_trip(&ArmT32Instruction::Ssat16_T1(R::R2, 16, R::R3));
+    round_trip(&ArmT32Instruction::Usat16_T1(R::R4, 0, R::R5));
+    round_trip(&ArmT32Instruction::Usat16_T1(R::R6, 15, R::R7));
+    round_trip(&ArmT32Instruction::Sel_T1(R::R12, R::R11, R::R10));
+    round_trip(&ArmT32Instruction::Usad8_T1(R::R0, R::R1, R::R2));
+    round_trip(&ArmT32Instruction::Usada8_T1(R::R3, R::R4, R::R5, R::R6));
+}
+
+#[test]
+fn encode__m8d_parallel_add_sub_exact_bytes() {
+    use crate::{ArmT32ParallelOperation as Op, ArmT32ParallelPrefix as Pre};
+    // bytes verified against `clang --target=thumbv7em-none-eabi -mcpu=cortex-m4`
+    assert_eq!(
+        ArmT32Instruction::ParallelAddSub_T1(Op::Add16, Pre::Signed, R::R0, R::R1, R::R2)
+            .encode()
+            .unwrap(),
+        vec![0x91, 0xFA, 0x02, 0xF0]
+    ); // sadd16
+    assert_eq!(
+        ArmT32Instruction::ParallelAddSub_T1(Op::Add16, Pre::UnsignedHalving, R::R0, R::R1, R::R2)
+            .encode()
+            .unwrap(),
+        vec![0x91, 0xFA, 0x62, 0xF0]
+    ); // uhadd16
+    assert_eq!(
+        ArmT32Instruction::ParallelAddSub_T1(
+            Op::Sub8,
+            Pre::UnsignedSaturating,
+            R::R0,
+            R::R1,
+            R::R2
+        )
+        .encode()
+        .unwrap(),
+        vec![0xC1, 0xFA, 0x52, 0xF0]
+    ); // uqsub8
+    assert_eq!(
+        ArmT32Instruction::ParallelAddSub_T1(Op::Asx, Pre::SignedHalving, R::R0, R::R1, R::R2)
+            .encode()
+            .unwrap(),
+        vec![0xA1, 0xFA, 0x22, 0xF0]
+    ); // shasx
+    assert_eq!(
+        ArmT32Instruction::ParallelAddSub_T1(Op::Sax, Pre::Signed, R::R0, R::R1, R::R2)
+            .encode()
+            .unwrap(),
+        vec![0xE1, 0xFA, 0x02, 0xF0]
+    ); // ssax
+}
+
+#[test]
+fn round_trip__m8d_all_36_parallel_forms() {
+    use crate::{ArmT32ParallelOperation as Op, ArmT32ParallelPrefix as Pre};
+    let operations = [Op::Add16, Op::Asx, Op::Sax, Op::Sub16, Op::Add8, Op::Sub8];
+    let prefixes = [
+        Pre::Signed,
+        Pre::SignedSaturating,
+        Pre::SignedHalving,
+        Pre::Unsigned,
+        Pre::UnsignedSaturating,
+        Pre::UnsignedHalving,
+    ];
+    for operation in operations {
+        for prefix in prefixes {
+            round_trip(&ArmT32Instruction::ParallelAddSub_T1(
+                operation,
+                prefix,
+                R::R3,
+                R::R4,
+                R::R5,
+            ));
+        }
+    }
+}
+
