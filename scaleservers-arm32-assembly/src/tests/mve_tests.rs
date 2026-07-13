@@ -2009,3 +2009,397 @@ fn encode_round_trip__cde() {
     }
 }
 
+#[test]
+fn encode_round_trip__branch_future() {
+    use ArmT32Instruction::{Bf_T1, Bfcsel_T2, Bfl_T4, Bflx_T5, Bfx_T3};
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main` (Thumb). `boff` is the raw 4-bit
+    // b_label field (b_label = PC + 2*boff); `offset` is the byte displacement of the target from PC.
+    assert_eq!(Bf_T1(1, 4).encode().unwrap(), vec![0xc0, 0xf0, 0x03, 0xe0]); // bf  PC+2, PC+4
+    assert_eq!(Bf_T1(1, 16).encode().unwrap(), vec![0xc0, 0xf0, 0x09, 0xe0]); // bf  PC+2, PC+16
+    assert_eq!(Bf_T1(3, 12).encode().unwrap(), vec![0xc0, 0xf1, 0x07, 0xe0]); // bf  PC+6, PC+12
+    assert_eq!(Bfl_T4(1, 8).encode().unwrap(), vec![0x80, 0xf0, 0x05, 0xc0]); // bfl PC+2, PC+8
+    assert_eq!(
+        Bfx_T3(1, R::R3).encode().unwrap(),
+        vec![0xe3, 0xf0, 0x01, 0xe0]
+    ); // bfx  PC+2, r3
+    assert_eq!(
+        Bflx_T5(1, R::R10).encode().unwrap(),
+        vec![0xfa, 0xf0, 0x01, 0xe0]
+    ); // bflx PC+2, r10
+    assert_eq!(
+        Bfcsel_T2(1, 8, 1, false).encode().unwrap(),
+        vec![0x84, 0xf0, 0x05, 0xe0]
+    ); // bfcsel PC+2, PC+8, ..., ne
+    assert_eq!(
+        Bfcsel_T2(1, 8, 11, false).encode().unwrap(),
+        vec![0xac, 0xf0, 0x05, 0xe0]
+    ); // bfcsel PC+2, PC+8, ..., lt
+    // round-trips: sweep boff (1..=15), signed even offsets incl. the range extremes, registers, conditions, T.
+    for boff in 1..=15u8 {
+        for off in [-65536, -4096, -100, -2, 0, 2, 100, 4094, 65534] {
+            round_trip(&Bf_T1(boff, off));
+            round_trip(&Bfl_T4(boff, off));
+        }
+        for off in [-4096, -2, 0, 2, 4094] {
+            for cond in 0..=13u8 {
+                for t in [false, true] {
+                    round_trip(&Bfcsel_T2(boff, off, cond, t));
+                }
+            }
+        }
+        for rn in [0u8, 1, 3, 7, 12, 14] {
+            round_trip(&Bfx_T3(boff, R::from_operand_bits(rn)));
+            round_trip(&Bflx_T5(boff, R::from_operand_bits(rn)));
+        }
+    }
+}
+
+#[test]
+fn encode_round_trip__vcx() {
+    use ArmT32Instruction::{Vcx1_T1, Vcx2_T1, Vcx3_T1};
+    // exact bytes vs `arm-none-eabi-as -march=armv8.1-m.main+mve.fp+cdecp0+cdecp1` (Thumb). kind: 0=S 1=D 2=Q.
+    assert_eq!(
+        Vcx1_T1(false, 0, 0, 0, 0).encode().unwrap(),
+        vec![0x20, 0xec, 0x00, 0x00]
+    ); // vcx1  p0, s0, #0
+    assert_eq!(
+        Vcx1_T1(false, 0, 0, 1, 1).encode().unwrap(),
+        vec![0x60, 0xec, 0x01, 0x00]
+    ); // vcx1  p0, s1, #1
+    assert_eq!(
+        Vcx1_T1(true, 0, 0, 0, 0).encode().unwrap(),
+        vec![0x20, 0xfc, 0x00, 0x00]
+    ); // vcx1a p0, s0, #0
+    assert_eq!(
+        Vcx1_T1(false, 1, 0, 0, 0).encode().unwrap(),
+        vec![0x20, 0xed, 0x00, 0x00]
+    ); // vcx1  p0, d0, #0
+    assert_eq!(
+        Vcx1_T1(false, 2, 0, 0, 0).encode().unwrap(),
+        vec![0x20, 0xec, 0x40, 0x00]
+    ); // vcx1  p0, q0, #0
+    assert_eq!(
+        Vcx1_T1(false, 2, 0, 7, 0).encode().unwrap(),
+        vec![0x20, 0xec, 0x40, 0xe0]
+    ); // vcx1  p0, q7, #0
+    assert_eq!(
+        Vcx1_T1(false, 0, 0, 0, 2047).encode().unwrap(),
+        vec![0x2f, 0xec, 0xbf, 0x00]
+    ); // vcx1  p0, s0, #2047
+    assert_eq!(
+        Vcx2_T1(false, 0, 0, 0, 1, 0).encode().unwrap(),
+        vec![0x30, 0xec, 0x20, 0x00]
+    ); // vcx2  p0, s0, s1, #0
+    assert_eq!(
+        Vcx2_T1(true, 0, 0, 2, 3, 63).encode().unwrap(),
+        vec![0x3f, 0xfc, 0xb1, 0x10]
+    ); // vcx2a p0, s2, s3, #63
+    assert_eq!(
+        Vcx2_T1(false, 1, 0, 0, 1, 0).encode().unwrap(),
+        vec![0x30, 0xed, 0x01, 0x00]
+    ); // vcx2  p0, d0, d1, #0
+    assert_eq!(
+        Vcx2_T1(false, 2, 0, 0, 1, 0).encode().unwrap(),
+        vec![0x30, 0xec, 0x42, 0x00]
+    ); // vcx2  p0, q0, q1, #0
+    assert_eq!(
+        Vcx3_T1(false, 0, 0, 0, 1, 2, 0).encode().unwrap(),
+        vec![0x80, 0xec, 0x81, 0x00]
+    ); // vcx3  p0, s0, s1, s2, #0
+    assert_eq!(
+        Vcx3_T1(true, 0, 0, 3, 4, 5, 7).encode().unwrap(),
+        vec![0xf2, 0xfc, 0x32, 0x10]
+    ); // vcx3a p0, s3, s4, s5, #7
+    assert_eq!(
+        Vcx3_T1(false, 1, 0, 0, 1, 2, 0).encode().unwrap(),
+        vec![0x81, 0xed, 0x02, 0x00]
+    ); // vcx3  p0, d0, d1, d2, #0
+    assert_eq!(
+        Vcx3_T1(false, 2, 0, 0, 1, 2, 0).encode().unwrap(),
+        vec![0x82, 0xec, 0x44, 0x00]
+    ); // vcx3  p0, q0, q1, q2, #0
+    // round-trips: sweep acc, coproc, kind (S/D/Q with valid register ranges) and immediates.
+    for acc in [false, true] {
+        for cp in 0..=7u8 {
+            for &(kind, rmax) in &[(0u8, 31u8), (1u8, 15u8), (2u8, 7u8)] {
+                for &rd in &[0u8, 1, rmax] {
+                    for &imm in &[0u16, 1, 1023, 2047] {
+                        round_trip(&Vcx1_T1(acc, kind, cp, rd, imm));
+                    }
+                    for &rn in &[0u8, rmax] {
+                        for &imm in &[0u8, 1, 63] {
+                            round_trip(&Vcx2_T1(acc, kind, cp, rd, rn, imm));
+                        }
+                        for &rm in &[0u8, rmax] {
+                            for &imm in &[0u8, 1, 7] {
+                                round_trip(&Vcx3_T1(acc, kind, cp, rd, rn, rm, imm));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn encode_round_trip__vscclrm() {
+    use ArmT32Instruction::Vscclrm_T1;
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb)
+    assert_eq!(
+        Vscclrm_T1(false, 0, 32).encode().unwrap(),
+        vec![0x9f, 0xec, 0x20, 0x0a]
+    ); // vscclrm {s0-s31, vpr}
+    assert_eq!(
+        Vscclrm_T1(false, 4, 28).encode().unwrap(),
+        vec![0x9f, 0xec, 0x1c, 0x2a]
+    ); // vscclrm {s4-s31, vpr}
+    assert_eq!(
+        Vscclrm_T1(true, 0, 32).encode().unwrap(),
+        vec![0x9f, 0xec, 0x20, 0x0b]
+    ); // vscclrm {d0-d15, vpr}
+    assert_eq!(
+        Vscclrm_T1(true, 0, 0).encode().unwrap(),
+        vec![0x9f, 0xec, 0x00, 0x0b]
+    ); // vscclrm {vpr}
+    round_trip(&ArmT32Instruction::Vscclrm_T1(false, 0, 32));
+    round_trip(&ArmT32Instruction::Vscclrm_T1(false, 4, 28));
+    round_trip(&ArmT32Instruction::Vscclrm_T1(true, 0, 32));
+    round_trip(&ArmT32Instruction::Vscclrm_T1(true, 0, 0));
+    round_trip(&ArmT32Instruction::Vscclrm_T1(true, 2, 8));
+}
+
+#[test]
+fn encode_round_trip__pacbti() {
+    use ArmT32Instruction::{PacbtiData_T1, PacbtiHint_T1};
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+pacbti` (Thumb)
+    assert_eq!(
+        PacbtiHint_T1(0).encode().unwrap(),
+        vec![0xaf, 0xf3, 0x0f, 0x80]
+    ); // bti
+    assert_eq!(
+        PacbtiHint_T1(1).encode().unwrap(),
+        vec![0xaf, 0xf3, 0x1d, 0x80]
+    ); // pac r12, lr, sp
+    assert_eq!(
+        PacbtiHint_T1(2).encode().unwrap(),
+        vec![0xaf, 0xf3, 0x2d, 0x80]
+    ); // aut r12, lr, sp
+    assert_eq!(
+        PacbtiHint_T1(3).encode().unwrap(),
+        vec![0xaf, 0xf3, 0x0d, 0x80]
+    ); // pacbti r12, lr, sp
+    assert_eq!(
+        PacbtiData_T1(2, R::R0, R::R1, R::R2).encode().unwrap(),
+        vec![0x51, 0xfb, 0x12, 0x0f]
+    ); // bxaut r0, r1, r2
+    assert_eq!(
+        PacbtiData_T1(0, R::R3, R::R4, R::R5).encode().unwrap(),
+        vec![0x64, 0xfb, 0x05, 0xf3]
+    ); // pacg  r3, r4, r5
+    assert_eq!(
+        PacbtiData_T1(1, R::R6, R::R7, R::R8).encode().unwrap(),
+        vec![0x57, 0xfb, 0x08, 0x6f]
+    ); // autg  r6, r7, r8
+    for kind in 0..=3u8 {
+        round_trip(&ArmT32Instruction::PacbtiHint_T1(kind));
+    }
+    for op in 0..=2u8 {
+        for &(d, n, m) in &[(0u8, 1u8, 2u8), (3, 4, 5), (12, 11, 9)] {
+            round_trip(&ArmT32Instruction::PacbtiData_T1(
+                op,
+                R::from_operand_bits(d),
+                R::from_operand_bits(n),
+                R::from_operand_bits(m),
+            ));
+        }
+    }
+}
+
+#[test]
+fn encode_round_trip__coprocessor() {
+    use ArmT32Instruction::{Coproc_Cdp_T1, Coproc_Ldc_T1, Coproc_Mcr_T1, Coproc_Mcrr_T1};
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main` (Thumb)
+    assert_eq!(
+        Coproc_Mcr_T1(false, false, 15, 0, R::R1, 0, 0, 0)
+            .encode()
+            .unwrap(),
+        vec![0x00, 0xee, 0x10, 0x1f]
+    ); // mcr  p15,0,r1,c0,c0,0
+    assert_eq!(
+        Coproc_Mcr_T1(true, false, 14, 1, R::R2, 3, 4, 2)
+            .encode()
+            .unwrap(),
+        vec![0x23, 0xfe, 0x54, 0x2e]
+    ); // mcr2 p14,1,r2,c3,c4,2
+    assert_eq!(
+        Coproc_Mcr_T1(false, true, 15, 0, R::R5, 0, 0, 0)
+            .encode()
+            .unwrap(),
+        vec![0x10, 0xee, 0x10, 0x5f]
+    ); // mrc  p15,0,r5,c0,c0,0
+    assert_eq!(
+        Coproc_Mcr_T1(true, true, 14, 7, R::R6, 1, 2, 5)
+            .encode()
+            .unwrap(),
+        vec![0xf1, 0xfe, 0xb2, 0x6e]
+    ); // mrc2 p14,7,r6,c1,c2,5
+    assert_eq!(
+        Coproc_Cdp_T1(false, 7, 4, 1, 2, 3, 5).encode().unwrap(),
+        vec![0x42, 0xee, 0xa3, 0x17]
+    ); // cdp  p7,4,c1,c2,c3,5
+    assert_eq!(
+        Coproc_Cdp_T1(true, 10, 1, 5, 6, 7, 2).encode().unwrap(),
+        vec![0x16, 0xfe, 0x47, 0x5a]
+    ); // cdp2 p10,1,c5,c6,c7,2
+    assert_eq!(
+        Coproc_Mcrr_T1(false, false, 15, 5, R::R0, R::R1, 2)
+            .encode()
+            .unwrap(),
+        vec![0x41, 0xec, 0x52, 0x0f]
+    ); // mcrr  p15,5,r0,r1,c2
+    assert_eq!(
+        Coproc_Mcrr_T1(false, true, 15, 0, R::R2, R::R3, 4)
+            .encode()
+            .unwrap(),
+        vec![0x53, 0xec, 0x04, 0x2f]
+    ); // mrrc  p15,0,r2,r3,c4
+    assert_eq!(
+        Coproc_Ldc_T1(false, false, true, 14, 5, R::R0, 16)
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xed, 0x04, 0x5e]
+    ); // ldc  p14,c5,[r0,#16]
+    assert_eq!(
+        Coproc_Ldc_T1(false, true, true, 13, 0, R::R2, -8)
+            .encode()
+            .unwrap(),
+        vec![0x52, 0xed, 0x02, 0x0d]
+    ); // ldcl p13,c0,[r2,#-8]
+    assert_eq!(
+        Coproc_Ldc_T1(true, true, false, 12, 4, R::R3, 240)
+            .encode()
+            .unwrap(),
+        vec![0xc3, 0xfd, 0x3c, 0x4c]
+    ); // stc2l p12,c4,[r3,#240]
+}
+
+// NOTE: the generic coprocessor instructions are NOT round-trip-tested. Their 0xEC/0xEE encoding space
+// pervasively overlaps the MVE/FP extensions (e.g. `cdp p15,...` shares bytes with MVE VSHRN, `ldc p14,...`
+// with an MVE contiguous load). This decoder is MVE/FP-enabled, so it deliberately decodes those bytes as the
+// MVE/FP form. The coprocessor *encoder* output is GNU-correct regardless (covered by the exact-byte test).
+
+// Rule R4 (family-wide): "same bytes, different meaning" is resolved by an explicit `ArmDecodeContext`, never
+// by guessing. The one T32 case is the CDE custom-datapath (CX*/VCX*) vs. generic coprocessor (CDP/MCR/LDC/...)
+// overlap on coprocessors 0-7. `decode` keeps the historical canonical (coprocessor 0-7 = CDE) so it is
+// non-breaking; `decode_with(context)` lets a caller decode chosen coprocessors as generic instead, and the
+// byte-stable encode<->decode round-trip then holds PER CONTEXT.
+#[test]
+fn decode_with__cde_vs_generic_coprocessor_rule_r4() {
+    use ArmT32Instruction::{Coproc_Ldc_T1, Vcx1_T1, Vcx2_T1, Vcx3_T1};
+
+    // The exact collision the cargo-fuzz `t32_instruction_stream` target originally surfaced: `ldc2 p0, c4,
+    // [r4]` and a CDE `vcx3a p0, ...` encode to the IDENTICAL word (0xFD94_0000). ENCODE is unambiguous (two
+    // distinct variants); only DECODE has to choose.
+    let ldc2 = Coproc_Ldc_T1(true, false, true, 0, 4, R::R4, 0); // ldc2 p0, c4, [r4]  (coprocessor 0)
+    let bytes = ldc2.encode().unwrap();
+
+    let decode_ctx = |context: &ArmDecodeContext| {
+        let mut offset = 0;
+        let instruction = ArmT32Instruction::decode_with(&mut bytes.iter(), &mut offset, context)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, bytes.len(), "consumed wrong byte count");
+        instruction
+    };
+
+    // (1) The bare `decode` is unchanged and equals `decode_with(default)` / `decode_with(all_cde)`. The
+    //     default treats coprocessor 0 as CDE, so the shared bytes decode as the CDE form -- NOT the LDC2.
+    let mut offset = 0;
+    let bare = ArmT32Instruction::decode(&mut bytes.iter(), &mut offset)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        bare,
+        decode_ctx(&ArmDecodeContext::default()),
+        "decode must equal decode_with(default)"
+    );
+    assert_eq!(bare, decode_ctx(&ArmDecodeContext::all_cde()));
+    assert_ne!(
+        bare, ldc2,
+        "default decode is the CDE canonical, not the generic LDC2"
+    );
+    assert!(
+        matches!(bare, Vcx1_T1(..) | Vcx2_T1(..) | Vcx3_T1(..)),
+        "the canonical is a CDE custom-datapath form"
+    );
+    assert_eq!(
+        bare.encode().unwrap(),
+        bytes,
+        "the CDE canonical itself round-trips to the same bytes"
+    );
+
+    // (2) A context where coprocessor 0 is NOT CDE decodes the SAME bytes as the generic LDC2 -- round-tripping it.
+    assert_eq!(
+        decode_ctx(&ArmDecodeContext::no_cde()),
+        ldc2,
+        "no_cde must recover the generic LDC2"
+    );
+
+    // (3) Per-COPROCESSOR selectivity: a context with only coprocessor 0 CDE keeps the CDE reading; a context
+    //     with coprocessor 0 cleared (but others set) flips these bytes to the LDC2.
+    assert!(matches!(
+        decode_ctx(&ArmDecodeContext::with_cde_coprocessors(0b0000_0001)),
+        Vcx1_T1(..) | Vcx2_T1(..) | Vcx3_T1(..)
+    ));
+    assert_eq!(
+        decode_ctx(&ArmDecodeContext::with_cde_coprocessors(0b1111_1110)),
+        ldc2
+    );
+
+    // (4) The CDE forms across coprocessors 0-7 still round-trip under the default context (behaviour unchanged).
+    for cp in 0..8u8 {
+        round_trip(&Vcx1_T1(false, 0, cp, 0, 5));
+    }
+
+    // (5) The context predicate: coprocessors 8-15 can never be CDE.
+    let context = ArmDecodeContext::with_cde_coprocessors(0b0000_0101);
+    assert!(context.is_cde_coprocessor(0) && context.is_cde_coprocessor(2));
+    assert!(!context.is_cde_coprocessor(1) && !context.is_cde_coprocessor(3));
+    assert!(
+        !context.is_cde_coprocessor(8)
+            && !context.is_cde_coprocessor(10)
+            && !context.is_cde_coprocessor(15)
+    );
+}
+
+#[test]
+fn encode_round_trip__fldmdbx() {
+    use ArmT32Instruction::FldmdbxFstmdbx_T1;
+    let d = |n: u8| crate::enums::Arm32DoublePrecisionRegister::new(n).unwrap();
+    assert_eq!(
+        FldmdbxFstmdbx_T1(true, R::R0, d(0), 4).encode().unwrap(),
+        vec![0x30, 0xed, 0x09, 0x0b]
+    ); // fldmdbx r0!, {d0-d3}
+    assert_eq!(
+        FldmdbxFstmdbx_T1(false, R::R1, d(4), 4).encode().unwrap(),
+        vec![0x21, 0xed, 0x09, 0x4b]
+    ); // fstmdbx r1!, {d4-d7}
+    assert_eq!(
+        FldmdbxFstmdbx_T1(true, R::R2, d(0), 16).encode().unwrap(),
+        vec![0x32, 0xed, 0x21, 0x0b]
+    ); // fldmdbx r2!, {d0-d15}
+    for load in [false, true] {
+        for first in [0u8, 4, 8] {
+            for count in 1..=8u8 {
+                round_trip(&ArmT32Instruction::FldmdbxFstmdbx_T1(
+                    load,
+                    R::R3,
+                    d(first),
+                    count,
+                ));
+            }
+        }
+    }
+}
+
