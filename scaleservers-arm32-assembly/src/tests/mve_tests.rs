@@ -1602,3 +1602,410 @@ fn encode__mve_register_shifts_and_vshll_exact_bytes() {
     ); // vshllb.u8  q0,q1,#8
 }
 
+#[test]
+fn round_trip__mve_register_shifts_and_vshll() {
+    for rounding in [false, true] {
+        for saturating in [false, true] {
+            for unsigned in [false, true] {
+                for size in [Arm32MveSize::I8, Arm32MveSize::I16, Arm32MveSize::I32] {
+                    for &(d, m, n) in &[(0u8, 0u8, 0u8), (7, 1, 3), (2, 6, 5)] {
+                        round_trip(&ArmT32Instruction::MveShiftByVector(
+                            rounding,
+                            saturating,
+                            unsigned,
+                            size,
+                            q(d),
+                            q(m),
+                            q(n),
+                        ));
+                    }
+                    for &(d, rm) in &[(0u8, 0u8), (7, 12), (3, 5)] {
+                        round_trip(&ArmT32Instruction::MveShiftByScalar(
+                            rounding,
+                            saturating,
+                            unsigned,
+                            size,
+                            q(d),
+                            R::from_operand_bits(rm),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    // VSHLL: every legal shift for each source size + b/t + s/u
+    for top in [false, true] {
+        for unsigned in [false, true] {
+            for (size, esize) in [(Arm32MveSize::I8, 8u8), (Arm32MveSize::I16, 16u8)] {
+                for shift in 1..=esize {
+                    for &(d, m) in &[(0u8, 1u8), (4, 5), (7, 2)] {
+                        round_trip(&ArmT32Instruction::MveVshll(
+                            top,
+                            unsigned,
+                            size,
+                            shift,
+                            q(d),
+                            q(m),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn encode__vmovx_vins_exact_bytes() {
+    use ArmT32Instruction::Vmovx_T1;
+    let s = |n: u8| crate::enums::Arm32SinglePrecisionRegister::new(n).unwrap();
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb)
+    assert_eq!(
+        Vmovx_T1(false, s(0), s(1)).encode().unwrap(),
+        vec![0xb0, 0xfe, 0x60, 0x0a]
+    ); // vmovx.f16 s0, s1
+    assert_eq!(
+        Vmovx_T1(false, s(5), s(10)).encode().unwrap(),
+        vec![0xf0, 0xfe, 0x45, 0x2a]
+    ); // vmovx.f16 s5, s10
+    assert_eq!(
+        Vmovx_T1(false, s(31), s(30)).encode().unwrap(),
+        vec![0xf0, 0xfe, 0x4f, 0xfa]
+    ); // vmovx.f16 s31, s30
+    assert_eq!(
+        Vmovx_T1(true, s(0), s(1)).encode().unwrap(),
+        vec![0xb0, 0xfe, 0xe0, 0x0a]
+    ); // vins.f16  s0, s1
+    assert_eq!(
+        Vmovx_T1(true, s(4), s(7)).encode().unwrap(),
+        vec![0xb0, 0xfe, 0xe3, 0x2a]
+    ); // vins.f16  s4, s7
+}
+
+#[test]
+fn round_trip__vmovx_vins() {
+    let s = |n: u8| crate::enums::Arm32SinglePrecisionRegister::new(n).unwrap();
+    for insert in [false, true] {
+        for &(d, m) in &[(0u8, 0u8), (1, 2), (15, 16), (31, 30), (7, 24)] {
+            round_trip(&ArmT32Instruction::Vmovx_T1(insert, s(d), s(m)));
+        }
+    }
+}
+
+#[test]
+fn encode__lda_stl_acquire_release_exact_bytes() {
+    use ArmT32Instruction::{LoadAcquire_T1, StoreRelease_T1, StoreReleaseExclusive_T1};
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main` (Thumb). size: 0=byte, 1=half, 2=word.
+    assert_eq!(
+        LoadAcquire_T1(2, false, R::R0, R::R1).encode().unwrap(),
+        vec![0xd1, 0xe8, 0xaf, 0x0f]
+    ); // lda    r0, [r1]
+    assert_eq!(
+        LoadAcquire_T1(0, false, R::R2, R::R3).encode().unwrap(),
+        vec![0xd3, 0xe8, 0x8f, 0x2f]
+    ); // ldab   r2, [r3]
+    assert_eq!(
+        LoadAcquire_T1(1, false, R::R4, R::R5).encode().unwrap(),
+        vec![0xd5, 0xe8, 0x9f, 0x4f]
+    ); // ldah   r4, [r5]
+    assert_eq!(
+        StoreRelease_T1(2, R::R0, R::R1).encode().unwrap(),
+        vec![0xc1, 0xe8, 0xaf, 0x0f]
+    ); // stl    r0, [r1]
+    assert_eq!(
+        StoreRelease_T1(0, R::R2, R::R3).encode().unwrap(),
+        vec![0xc3, 0xe8, 0x8f, 0x2f]
+    ); // stlb   r2, [r3]
+    assert_eq!(
+        StoreRelease_T1(1, R::R4, R::R5).encode().unwrap(),
+        vec![0xc5, 0xe8, 0x9f, 0x4f]
+    ); // stlh   r4, [r5]
+    assert_eq!(
+        LoadAcquire_T1(2, true, R::R0, R::R1).encode().unwrap(),
+        vec![0xd1, 0xe8, 0xef, 0x0f]
+    ); // ldaex  r0, [r1]
+    assert_eq!(
+        LoadAcquire_T1(0, true, R::R2, R::R3).encode().unwrap(),
+        vec![0xd3, 0xe8, 0xcf, 0x2f]
+    ); // ldaexb r2, [r3]
+    assert_eq!(
+        LoadAcquire_T1(1, true, R::R4, R::R5).encode().unwrap(),
+        vec![0xd5, 0xe8, 0xdf, 0x4f]
+    ); // ldaexh r4, [r5]
+    assert_eq!(
+        StoreReleaseExclusive_T1(2, R::R0, R::R1, R::R2)
+            .encode()
+            .unwrap(),
+        vec![0xc2, 0xe8, 0xe0, 0x1f]
+    ); // stlex  r0, r1, [r2]
+    assert_eq!(
+        StoreReleaseExclusive_T1(0, R::R3, R::R4, R::R5)
+            .encode()
+            .unwrap(),
+        vec![0xc5, 0xe8, 0xc3, 0x4f]
+    ); // stlexb r3, r4, [r5]
+    assert_eq!(
+        StoreReleaseExclusive_T1(1, R::R6, R::R7, R::R8)
+            .encode()
+            .unwrap(),
+        vec![0xc8, 0xe8, 0xd6, 0x7f]
+    ); // stlexh r6, r7, [r8]
+}
+
+#[test]
+fn encode__hints_barriers_clrm_vsel_exact_bytes() {
+    use ArmT32Instruction::{
+        Clrm_T1, Dbg_T1, Esb_T1, Pssbb_T1, Sb_T1, Ssbb_T1, Vjcvt_T1, Vsel_Double_T1, Vsel_Single_T1,
+    };
+    let s = |n: u8| crate::enums::Arm32SinglePrecisionRegister::new(n).unwrap();
+    let d = |n: u8| crate::enums::Arm32DoublePrecisionRegister::new(n).unwrap();
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp+fp.dp` (ESB from DDI0553 spec)
+    assert_eq!(Dbg_T1(5).encode().unwrap(), vec![0xaf, 0xf3, 0xf5, 0x80]); // dbg #5
+    assert_eq!(Esb_T1.encode().unwrap(), vec![0xaf, 0xf3, 0x10, 0x80]); // esb
+    assert_eq!(Ssbb_T1.encode().unwrap(), vec![0xbf, 0xf3, 0x40, 0x8f]); // ssbb
+    assert_eq!(Pssbb_T1.encode().unwrap(), vec![0xbf, 0xf3, 0x44, 0x8f]); // pssbb
+    assert_eq!(Sb_T1.encode().unwrap(), vec![0xbf, 0xf3, 0x70, 0x8f]); // sb
+    assert_eq!(
+        Vjcvt_T1(s(0), d(1)).encode().unwrap(),
+        vec![0xb9, 0xee, 0xc1, 0x0b]
+    ); // vjcvt.s32.f64 s0, d1
+    assert_eq!(
+        Vjcvt_T1(s(3), d(5)).encode().unwrap(),
+        vec![0xf9, 0xee, 0xc5, 0x1b]
+    ); // vjcvt.s32.f64 s3, d5
+    assert_eq!(
+        Clrm_T1(0x0007).encode().unwrap(),
+        vec![0x9f, 0xe8, 0x07, 0x00]
+    ); // clrm {r0, r1, r2}
+    assert_eq!(
+        Clrm_T1(0x410F).encode().unwrap(),
+        vec![0x9f, 0xe8, 0x0f, 0x41]
+    ); // clrm {r0-r3, r8, lr}
+    // VSEL: cond EQ=0, VS=1, GE=2, GT=3
+    assert_eq!(
+        Vsel_Single_T1(3, s(0), s(1), s(2)).encode().unwrap(),
+        vec![0x30, 0xfe, 0x81, 0x0a]
+    ); // vselgt.f32 s0, s1, s2
+    assert_eq!(
+        Vsel_Double_T1(2, d(0), d(1), d(2)).encode().unwrap(),
+        vec![0x21, 0xfe, 0x02, 0x0b]
+    ); // vselge.f64 d0, d1, d2
+    assert_eq!(
+        Vsel_Single_T1(0, s(4), s(5), s(6)).encode().unwrap(),
+        vec![0x02, 0xfe, 0x83, 0x2a]
+    ); // vseleq.f32 s4, s5, s6
+    assert_eq!(
+        Vsel_Double_T1(1, d(4), d(5), d(6)).encode().unwrap(),
+        vec![0x15, 0xfe, 0x06, 0x4b]
+    ); // vselvs.f64 d4, d5, d6
+}
+
+#[test]
+fn encode__csel_family_exact_bytes() {
+    use crate::enums::ArmT32InstructionCondition as C;
+    use ArmT32Instruction::Csel_T1;
+    let pc = R::from_operand_bits(15);
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main` (Thumb). op: 0=csel,1=csinc,2=csinv,3=csneg.
+    assert_eq!(
+        Csel_T1(0, R::R0, R::R1, R::R2, C::Equal).encode().unwrap(),
+        vec![0x51, 0xea, 0x02, 0x80]
+    ); // csel  r0,r1,r2,eq
+    assert_eq!(
+        Csel_T1(1, R::R0, R::R1, R::R2, C::SignedGreaterThanOrEqual)
+            .encode()
+            .unwrap(),
+        vec![0x51, 0xea, 0xa2, 0x90]
+    ); // csinc r0,r1,r2,ge
+    assert_eq!(
+        Csel_T1(2, R::R3, R::R4, R::R5, C::SignedLessThan)
+            .encode()
+            .unwrap(),
+        vec![0x54, 0xea, 0xb5, 0xa3]
+    ); // csinv r3,r4,r5,lt
+    assert_eq!(
+        Csel_T1(3, R::R6, R::R7, R::R8, C::SignedGreaterThan)
+            .encode()
+            .unwrap(),
+        vec![0x57, 0xea, 0xc8, 0xb6]
+    ); // csneg r6,r7,r8,gt
+    // alias-equivalent encodings (Rn==Rm, inverted condition)
+    assert_eq!(
+        Csel_T1(1, R::R0, pc, pc, C::NotEqual).encode().unwrap(),
+        vec![0x5f, 0xea, 0x1f, 0x90]
+    ); // cset  r0,eq  (= csinc r0,pc,pc,ne)
+    assert_eq!(
+        Csel_T1(2, R::R1, pc, pc, C::Equal).encode().unwrap(),
+        vec![0x5f, 0xea, 0x0f, 0xa1]
+    ); // csetm r1,ne  (= csinv r1,pc,pc,eq)
+    assert_eq!(
+        Csel_T1(1, R::R2, R::R3, R::R3, C::SignedLessThan)
+            .encode()
+            .unwrap(),
+        vec![0x53, 0xea, 0xb3, 0x92]
+    ); // cinc  r2,r3,ge (= csinc r2,r3,r3,lt)
+    assert_eq!(
+        Csel_T1(3, R::R6, R::R7, R::R7, C::SignedLessThanOrEqual)
+            .encode()
+            .unwrap(),
+        vec![0x57, 0xea, 0xd7, 0xb6]
+    ); // cneg  r6,r7,gt (= csneg r6,r7,r7,le)
+}
+
+#[test]
+fn encode__long_shifts_exact_bytes() {
+    use ArmT32Instruction::{LongShiftImm_T1, LongShiftReg_T1};
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve`. op: 0=lsll, 1=lsrl, 2=asrl.
+    assert_eq!(
+        LongShiftImm_T1(2, R::R0, R::R1, 5).encode().unwrap(),
+        vec![0x50, 0xea, 0x6f, 0x11]
+    ); // asrl r0,r1,#5
+    assert_eq!(
+        LongShiftImm_T1(0, R::R0, R::R1, 10).encode().unwrap(),
+        vec![0x50, 0xea, 0x8f, 0x21]
+    ); // lsll r0,r1,#10
+    assert_eq!(
+        LongShiftImm_T1(1, R::R4, R::R5, 20).encode().unwrap(),
+        vec![0x54, 0xea, 0x1f, 0x55]
+    ); // lsrl r4,r5,#20
+    assert_eq!(
+        LongShiftReg_T1(2, R::R2, R::R3, R::R4).encode().unwrap(),
+        vec![0x52, 0xea, 0x2d, 0x43]
+    ); // asrl r2,r3,r4
+    assert_eq!(
+        LongShiftReg_T1(0, R::R2, R::R3, R::R4).encode().unwrap(),
+        vec![0x52, 0xea, 0x0d, 0x43]
+    ); // lsll r2,r3,r4
+}
+
+#[test]
+fn encode__saturating_shifts_exact_bytes() {
+    use ArmT32Instruction::{
+        SatShiftImm_T1, SatShiftLongImm_T1, SatShiftLongReg_T1, SatShiftReg_T1,
+    };
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve`. imm op: 0=uqshl,1=urshr,2=srshr,3=sqshl.
+    assert_eq!(
+        SatShiftImm_T1(3, R::R0, 3).encode().unwrap(),
+        vec![0x50, 0xea, 0xff, 0x0f]
+    ); // sqshl r0, #3
+    assert_eq!(
+        SatShiftImm_T1(2, R::R2, 7).encode().unwrap(),
+        vec![0x52, 0xea, 0xef, 0x1f]
+    ); // srshr r2, #7
+    assert_eq!(
+        SatShiftImm_T1(0, R::R4, 1).encode().unwrap(),
+        vec![0x54, 0xea, 0x4f, 0x0f]
+    ); // uqshl r4, #1
+    assert_eq!(
+        SatShiftImm_T1(1, R::R6, 15).encode().unwrap(),
+        vec![0x56, 0xea, 0xdf, 0x3f]
+    ); // urshr r6, #15
+    assert_eq!(
+        SatShiftLongImm_T1(3, R::R0, R::R1, 5).encode().unwrap(),
+        vec![0x51, 0xea, 0x7f, 0x11]
+    ); // sqshll r0,r1,#5
+    assert_eq!(
+        SatShiftLongImm_T1(0, R::R2, R::R3, 10).encode().unwrap(),
+        vec![0x53, 0xea, 0x8f, 0x23]
+    ); // uqshll r2,r3,#10
+    assert_eq!(
+        SatShiftLongImm_T1(2, R::R4, R::R5, 2).encode().unwrap(),
+        vec![0x55, 0xea, 0xaf, 0x05]
+    ); // srshrl r4,r5,#2
+    assert_eq!(
+        SatShiftLongImm_T1(1, R::R6, R::R7, 30).encode().unwrap(),
+        vec![0x57, 0xea, 0x9f, 0x77]
+    ); // urshrl r6,r7,#30
+    assert_eq!(
+        SatShiftReg_T1(true, R::R0, R::R1).encode().unwrap(),
+        vec![0x50, 0xea, 0x2d, 0x1f]
+    ); // sqrshr r0, r1
+    assert_eq!(
+        SatShiftReg_T1(false, R::R2, R::R3).encode().unwrap(),
+        vec![0x52, 0xea, 0x0d, 0x3f]
+    ); // uqrshl r2, r3
+    assert_eq!(
+        SatShiftLongReg_T1(true, R::R0, R::R1, R::R4, false)
+            .encode()
+            .unwrap(),
+        vec![0x51, 0xea, 0x2d, 0x41]
+    ); // sqrshrl r0,r1,#64,r4
+    assert_eq!(
+        SatShiftLongReg_T1(false, R::R2, R::R3, R::R5, true)
+            .encode()
+            .unwrap(),
+        vec![0x53, 0xea, 0x8d, 0x53]
+    ); // uqrshll r2,r3,#48,r5
+}
+
+#[test]
+fn encode_round_trip__cde() {
+    use ArmT32Instruction::{Cde_Cx1_T1, Cde_Cx2_T1, Cde_Cx3_T1};
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+cdecp0+cdecp1` (Thumb)
+    assert_eq!(
+        Cde_Cx1_T1(false, false, 0, R::R0, 100).encode().unwrap(),
+        vec![0x00, 0xee, 0xa4, 0x00]
+    ); // cx1  p0, r0, #100
+    assert_eq!(
+        Cde_Cx1_T1(true, false, 0, R::R1, 200).encode().unwrap(),
+        vec![0x01, 0xfe, 0x88, 0x10]
+    ); // cx1a p0, r1, #200
+    assert_eq!(
+        Cde_Cx1_T1(false, true, 0, R::R2, 50).encode().unwrap(),
+        vec![0x00, 0xee, 0x72, 0x20]
+    ); // cx1d p0, r2, r3, #50
+    assert_eq!(
+        Cde_Cx2_T1(false, false, 1, R::R4, R::R5, 10)
+            .encode()
+            .unwrap(),
+        vec![0x45, 0xee, 0x0a, 0x41]
+    ); // cx2  p1, r4, r5, #10
+    assert_eq!(
+        Cde_Cx2_T1(true, false, 1, R::R6, R::R7, 20)
+            .encode()
+            .unwrap(),
+        vec![0x47, 0xfe, 0x14, 0x61]
+    ); // cx2a p1, r6, r7, #20
+    assert_eq!(
+        Cde_Cx3_T1(false, false, 0, R::R8, R::R9, R::R10, 5)
+            .encode()
+            .unwrap(),
+        vec![0x89, 0xee, 0x98, 0xa0]
+    ); // cx3  p0, r8, r9, r10, #5
+    assert_eq!(
+        Cde_Cx3_T1(true, false, 0, R::R0, R::R1, R::R2, 3)
+            .encode()
+            .unwrap(),
+        vec![0x81, 0xfe, 0x30, 0x20]
+    ); // cx3a p0, r0, r1, r2, #3
+    // round-trips (CDE decodes coproc 0-7 before the generic coprocessor)
+    for acc in [false, true] {
+        for dual in [false, true] {
+            for cp in 0..=7u8 {
+                round_trip(&ArmT32Instruction::Cde_Cx1_T1(
+                    acc,
+                    dual,
+                    cp,
+                    R::R0,
+                    0x1ABC & 0x1FFF,
+                ));
+                round_trip(&ArmT32Instruction::Cde_Cx2_T1(
+                    acc,
+                    dual,
+                    cp,
+                    R::R2,
+                    R::R5,
+                    0x19C,
+                ));
+                round_trip(&ArmT32Instruction::Cde_Cx3_T1(
+                    acc,
+                    dual,
+                    cp,
+                    R::R4,
+                    R::R7,
+                    R::R9,
+                    0x2A,
+                ));
+            }
+        }
+    }
+}
+
