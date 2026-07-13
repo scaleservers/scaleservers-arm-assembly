@@ -1645,3 +1645,418 @@ fn round_trip__a32_status_system() {
     }
 }
 
+// ---- A13: coprocessor ----
+
+#[test]
+fn encode__a32_coprocessor_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(
+        Mcr_A1(al, 15, 0, R::R0, 1, 0, 0).encode().unwrap(),
+        le(0xEE01_0F10)
+    ); // mcr  p15, 0, r0, c1, c0, 0
+    assert_eq!(
+        Mrc_A1(al, 15, 0, R::R1, 1, 0, 0).encode().unwrap(),
+        le(0xEE11_1F10)
+    ); // mrc  p15, 0, r1, c1, c0, 0
+    assert_eq!(
+        Cdp_A1(al, 7, 1, 2, 3, 4, 5).encode().unwrap(),
+        le(0xEE13_27A4)
+    ); // cdp  p7, 1, c2, c3, c4, 5
+    assert_eq!(
+        Mcrr_A1(al, 15, 5, R::R0, R::R1, 2).encode().unwrap(),
+        le(0xEC41_0F52)
+    ); // mcrr p15, 5, r0, r1, c2
+    assert_eq!(
+        Ldc_A1(al, 14, false, 5, R::R0, true, 2, Idx::Offset)
+            .encode()
+            .unwrap(),
+        le(0xED90_5E02)
+    ); // ldc p14, c5, [r0, #8]
+    assert_eq!(
+        Mcr2_A1(15, 0, R::R0, 1, 0, 0).encode().unwrap(),
+        le(0xFE01_0F10)
+    ); // mcr2 p15, 0, r0, c1, c0, 0
+    assert_eq!(Cdp2_A1(7, 1, 2, 3, 4, 5).encode().unwrap(), le(0xFE13_27A4)); // cdp2 p7, 1, c2, c3, c4, 5
+}
+
+#[test]
+fn round_trip__a32_coprocessor() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let instructions = [
+        Mcr_A1(al, 15, 7, R::R5, 9, 10, 6),
+        Mrc_A1(Cond::NotEqual, 14, 0, R::R0, 1, 2, 3),
+        Mcr2_A1(9, 3, R::R8, 4, 5, 2), // coproc 9 (10/11 are the VFP/SIMD space, not a real coprocessor)
+        Mrc2_A1(15, 0, R::R0, 0, 0, 0),
+        Cdp_A1(al, 5, 15, 1, 2, 3, 7),
+        Cdp2_A1(6, 0, 15, 0, 15, 0),
+        Mcrr_A1(al, 15, 0, R::R0, R::R1, 0),
+        Mrrc_A1(al, 14, 15, R::R10, R::R11, 15),
+        Mcrr2_A1(8, 5, R::R2, R::R3, 4),
+        Mrrc2_A1(9, 10, R::R4, R::R5, 6),
+        Ldc_A1(al, 14, false, 5, R::R0, true, 0, Idx::Offset),
+        Ldc_A1(al, 15, true, 3, R::R1, false, 255, Idx::PreIndex),
+        Stc_A1(al, 13, false, 7, R::R2, true, 100, Idx::PostIndex),
+        Ldc2_A1(14, true, 0, R::R3, false, 4, Idx::Offset),
+        Stc2_A1(15, false, 15, R::R4, true, 200, Idx::PreIndex),
+    ];
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(decoded, instruction, "A32 coprocessor round-trip mismatch");
+    }
+}
+
+// ---- A14: hints / barriers / exceptions ----
+
+#[test]
+fn encode__a32_hints_barriers_exceptions_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(Yield_A1(al).encode().unwrap(), le(0xE320_F001)); // yield
+    assert_eq!(Wfe_A1(al).encode().unwrap(), le(0xE320_F002)); // wfe
+    assert_eq!(Wfi_A1(al).encode().unwrap(), le(0xE320_F003)); // wfi
+    assert_eq!(Sev_A1(al).encode().unwrap(), le(0xE320_F004)); // sev
+    assert_eq!(Dbg_A1(al, 5).encode().unwrap(), le(0xE320_F0F5)); // dbg #5
+    assert_eq!(Dmb_A1(0xF).encode().unwrap(), le(0xF57F_F05F)); // dmb sy
+    assert_eq!(Dsb_A1(0xF).encode().unwrap(), le(0xF57F_F04F)); // dsb sy
+    assert_eq!(Isb_A1(0xF).encode().unwrap(), le(0xF57F_F06F)); // isb sy
+    assert_eq!(Bkpt_A1(al, 0xABCD).encode().unwrap(), le(0xE12A_BC7D)); // bkpt #0xabcd
+    assert_eq!(Hvc_A1(al, 0x1234).encode().unwrap(), le(0xE141_2374)); // hvc #0x1234
+    assert_eq!(Smc_A1(al, 5).encode().unwrap(), le(0xE160_0075)); // smc #5
+    assert_eq!(Udf_A1(al, 0xDEAD).encode().unwrap(), le(0xE7FD_EAFD)); // udf #0xdead
+    assert_eq!(Eret_A1(al).encode().unwrap(), le(0xE160_006E)); // eret
+    assert_eq!(Nop_A1(al).encode().unwrap(), le(0xE320_F000)); // nop (still works)
+}
+
+#[test]
+fn round_trip__a32_hints_barriers_exceptions() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let instructions = [
+        Nop_A1(al),
+        Yield_A1(al),
+        Wfe_A1(Cond::NotEqual),
+        Wfi_A1(al),
+        Sev_A1(al),
+        Dbg_A1(al, 0),
+        Dbg_A1(al, 15),
+        Dmb_A1(0xF),
+        Dmb_A1(0xB),
+        Dsb_A1(0xE),
+        Isb_A1(0xF),
+        Bkpt_A1(al, 0),
+        Bkpt_A1(al, 0xFFFF),
+        Bkpt_A1(al, 0xABCD),
+        Hvc_A1(al, 0x1234),
+        Smc_A1(al, 0),
+        Smc_A1(al, 15),
+        Udf_A1(al, 0),
+        Udf_A1(al, 0xFFFF),
+        Eret_A1(Cond::Equal),
+    ];
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 hints/barriers/exceptions round-trip mismatch"
+        );
+    }
+}
+
+// ---- A14b: preload / RFE / SRS ----
+
+#[test]
+fn encode__a32_preload_rfe_srs_exact_bytes() {
+    use crate::Arm32BlockAddressMode::*;
+    use ArmA32Instruction::*;
+    assert_eq!(
+        Pld_A1(
+            R::R0,
+            Mem::Immediate {
+                add: true,
+                imm12: 8
+            }
+        )
+        .encode()
+        .unwrap(),
+        le(0xF5D0_F008)
+    ); // pld  [r0, #8]
+    assert_eq!(
+        Pld_A1(
+            R::R1,
+            Mem::Immediate {
+                add: false,
+                imm12: 4
+            }
+        )
+        .encode()
+        .unwrap(),
+        le(0xF551_F004)
+    ); // pld  [r1, #-4]
+    assert_eq!(
+        Pldw_A1(
+            R::R2,
+            Mem::Immediate {
+                add: true,
+                imm12: 16
+            }
+        )
+        .encode()
+        .unwrap(),
+        le(0xF592_F010)
+    ); // pldw [r2, #16]
+    assert_eq!(
+        Pli_A1(
+            R::R3,
+            Mem::Immediate {
+                add: true,
+                imm12: 32
+            }
+        )
+        .encode()
+        .unwrap(),
+        le(0xF4D3_F020)
+    ); // pli  [r3, #32]
+    assert_eq!(
+        Pld_A1(
+            R::R0,
+            Mem::Register {
+                add: true,
+                rm: R::R1,
+                shift: Shift::Lsl(0)
+            }
+        )
+        .encode()
+        .unwrap(),
+        le(0xF7D0_F001)
+    ); // pld [r0, r1]
+    assert_eq!(
+        Rfe_A1(IncrementAfter, R::R0, true).encode().unwrap(),
+        le(0xF8B0_0A00)
+    ); // rfeia r0!
+    assert_eq!(
+        Srs_A1(DecrementBefore, true, 0x13).encode().unwrap(),
+        le(0xF96D_0513)
+    ); // srsdb sp!, #0x13
+}
+
+#[test]
+fn round_trip__a32_preload_rfe_srs() {
+    use crate::Arm32BlockAddressMode::*;
+    use ArmA32Instruction::*;
+    let mut instructions = Vec::new();
+    for offset in [
+        Mem::Immediate {
+            add: true,
+            imm12: 0,
+        },
+        Mem::Immediate {
+            add: false,
+            imm12: 4095,
+        },
+        Mem::Register {
+            add: true,
+            rm: R::R5,
+            shift: Shift::Lsl(3),
+        },
+        Mem::Register {
+            add: false,
+            rm: R::R6,
+            shift: Shift::Asr(31),
+        },
+    ] {
+        instructions.push(Pld_A1(R::R0, offset));
+        instructions.push(Pldw_A1(R::R1, offset));
+        instructions.push(Pli_A1(R::R2, offset));
+    }
+    for mode in [
+        IncrementAfter,
+        IncrementBefore,
+        DecrementAfter,
+        DecrementBefore,
+    ] {
+        for wb in [false, true] {
+            instructions.push(Rfe_A1(mode, R::R3, wb));
+            instructions.push(Srs_A1(mode, wb, 0x1F));
+        }
+    }
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 preload/rfe/srs round-trip mismatch"
+        );
+    }
+}
+
+// ---- A16: ARMv8-A AArch32 additions (CRC32, load-acquire/store-release, SEVL) ----
+
+#[test]
+fn encode__a32_armv8_additions_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(
+        Crc32b_A1(al, R::R0, R::R1, R::R2).encode().unwrap(),
+        le(0xE101_0042)
+    ); // crc32b  r0, r1, r2
+    assert_eq!(
+        Crc32w_A1(al, R::R3, R::R4, R::R5).encode().unwrap(),
+        le(0xE144_3045)
+    ); // crc32w  r3, r4, r5
+    assert_eq!(
+        Crc32cb_A1(al, R::R0, R::R1, R::R2).encode().unwrap(),
+        le(0xE101_0242)
+    ); // crc32cb r0, r1, r2
+    assert_eq!(Lda_A1(al, R::R0, R::R1).encode().unwrap(), le(0xE191_0C9F)); // lda     r0, [r1]
+    assert_eq!(Stl_A1(al, R::R0, R::R1).encode().unwrap(), le(0xE181_FC90)); // stl     r0, [r1]
+    assert_eq!(
+        Ldaex_A1(al, R::R0, R::R1).encode().unwrap(),
+        le(0xE191_0E9F)
+    ); // ldaex   r0, [r1]
+    assert_eq!(
+        Stlex_A1(al, R::R0, R::R1, R::R2).encode().unwrap(),
+        le(0xE182_0E91)
+    ); // stlex   r0, r1, [r2]
+    assert_eq!(Sevl_A1(al).encode().unwrap(), le(0xE320_F005)); // sevl
+}
+
+#[test]
+fn round_trip__a32_armv8_additions() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let instructions = [
+        Crc32b_A1(al, R::R0, R::R1, R::R2),
+        Crc32h_A1(al, R::R3, R::R4, R::R5),
+        Crc32w_A1(al, R::R6, R::R7, R::R8),
+        Crc32cb_A1(al, R::R0, R::R1, R::R2),
+        Crc32ch_A1(al, R::R3, R::R4, R::R5),
+        Crc32cw_A1(Cond::NotEqual, R::R6, R::R7, R::R8),
+        Lda_A1(al, R::R0, R::R1),
+        Ldab_A1(al, R::R2, R::R3),
+        Ldah_A1(al, R::R4, R::R5),
+        Stl_A1(al, R::R6, R::R7),
+        Stlb_A1(al, R::R8, R::R9),
+        Stlh_A1(al, R::R10, R::R11),
+        Ldaex_A1(al, R::R0, R::R1),
+        Ldaexb_A1(al, R::R2, R::R3),
+        Ldaexh_A1(al, R::R4, R::R5),
+        Ldaexd_A1(al, R::R6, R::R7),
+        Stlex_A1(al, R::R0, R::R1, R::R2),
+        Stlexb_A1(al, R::R3, R::R4, R::R5),
+        Stlexh_A1(al, R::R6, R::R7, R::R8),
+        Stlexd_A1(al, R::R9, R::R10, R::R11),
+        Sevl_A1(al),
+    ];
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 ARMv8 additions round-trip mismatch"
+        );
+    }
+}
+
+// ---- N1a: VFP scalar load/store ----
+
+#[test]
+fn encode__a32_vfp_load_store_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(
+        Vldr_Single_A1(al, s(0), R::R0, 0).encode().unwrap(),
+        le(0xED90_0A00)
+    ); // vldr   s0, [r0]
+    assert_eq!(
+        Vldr_Single_A1(al, s(1), R::R1, 4).encode().unwrap(),
+        le(0xEDD1_0A01)
+    ); // vldr   s1, [r1, #4]
+    assert_eq!(
+        Vstr_Single_A1(al, s(7), R::R0, 1020).encode().unwrap(),
+        le(0xEDC0_3AFF)
+    ); // vstr   s7, [r0, #1020]
+    assert_eq!(
+        Vldr_Double_A1(al, d(0), R::R0, 0).encode().unwrap(),
+        le(0xED90_0B00)
+    ); // vldr   d0, [r0]
+    assert_eq!(
+        Vldr_Double_A1(al, d(5), R::R3, 16).encode().unwrap(),
+        le(0xED93_5B04)
+    ); // vldr   d5, [r3, #16]
+    assert_eq!(
+        Vldm_Single_A1(al, R::R0, false, false, s(0), 4)
+            .encode()
+            .unwrap(),
+        le(0xEC90_0A04)
+    ); // vldmia r0, {s0-s3}
+    assert_eq!(
+        Vldm_Single_A1(al, R::R0, true, false, s(4), 4)
+            .encode()
+            .unwrap(),
+        le(0xECB0_2A04)
+    ); // vldmia r0!, {s4-s7}
+    assert_eq!(
+        Vstm_Single_A1(al, R::R13, true, true, s(0), 4)
+            .encode()
+            .unwrap(),
+        le(0xED2D_0A04)
+    ); // vpush {s0-s3}
+    assert_eq!(
+        Vldm_Double_A1(al, R::R0, false, false, d(0), 2)
+            .encode()
+            .unwrap(),
+        le(0xEC90_0B04)
+    ); // vldmia r0, {d0-d1}
+}
+
+#[test]
+fn round_trip__a32_vfp_load_store() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let instructions = [
+        Vldr_Single_A1(al, s(0), R::R0, 0),
+        Vldr_Single_A1(al, s(31), R::R2, -8),
+        Vstr_Single_A1(Cond::NotEqual, s(15), R::R1, 1020),
+        Vldr_Double_A1(al, d(0), R::R0, 0),
+        Vstr_Double_A1(al, d(15), R::R4, -256),
+        Vldm_Single_A1(al, R::R0, false, false, s(0), 4),
+        Vstm_Single_A1(al, R::R1, true, false, s(8), 2),
+        Vldm_Single_A1(al, R::R13, true, false, s(0), 4), // vpop {s0-s3}
+        Vstm_Single_A1(al, R::R13, true, true, s(0), 4),  // vpush {s0-s3}
+        Vldm_Double_A1(al, R::R0, false, false, d(0), 2),
+        Vstm_Double_A1(al, R::R3, true, true, d(5), 3),
+    ];
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 VFP load/store round-trip mismatch"
+        );
+    }
+}
+
