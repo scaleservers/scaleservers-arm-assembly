@@ -819,3 +819,406 @@ fn mve_vmov_two_lanes() {
     }
 }
 
+#[test]
+fn encode__mve_load_store_exact_bytes() {
+    use Arm32MveSize::*;
+    use ArmT32IndexMode::*;
+    use ArmT32Instruction::MveLoadStore as LS;
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb)
+    assert_eq!(
+        LS(true, I32, q(0), R::R0, 0, Offset).encode().unwrap(),
+        vec![0x90, 0xed, 0x00, 0x1f]
+    ); // vldrw.u32 q0, [r0]
+    assert_eq!(
+        LS(true, I32, q(0), R::R0, 16, Offset).encode().unwrap(),
+        vec![0x90, 0xed, 0x04, 0x1f]
+    ); // vldrw.u32 q0, [r0, #16]
+    assert_eq!(
+        LS(true, I32, q(0), R::R0, -32, Offset).encode().unwrap(),
+        vec![0x10, 0xed, 0x08, 0x1f]
+    ); // vldrw.u32 q0, [r0, #-32]
+    assert_eq!(
+        LS(true, I32, q(0), R::R0, 16, PreIndex).encode().unwrap(),
+        vec![0xb0, 0xed, 0x04, 0x1f]
+    ); // vldrw.u32 q0, [r0, #16]!
+    assert_eq!(
+        LS(true, I32, q(0), R::R0, 16, PostIndex).encode().unwrap(),
+        vec![0xb0, 0xec, 0x04, 0x1f]
+    ); // vldrw.u32 q0, [r0], #16
+    assert_eq!(
+        LS(false, I32, q(0), R::R0, 0, Offset).encode().unwrap(),
+        vec![0x80, 0xed, 0x00, 0x1f]
+    ); // vstrw.32  q0, [r0]
+    assert_eq!(
+        LS(true, I8, q(0), R::R0, 0, Offset).encode().unwrap(),
+        vec![0x90, 0xed, 0x00, 0x1e]
+    ); // vldrb.u8  q0, [r0]
+    assert_eq!(
+        LS(true, I16, q(0), R::R0, 16, Offset).encode().unwrap(),
+        vec![0x90, 0xed, 0x88, 0x1e]
+    ); // vldrh.u16 q0, [r0, #16]
+    assert_eq!(
+        LS(false, I8, q(0), R::R0, 10, Offset).encode().unwrap(),
+        vec![0x80, 0xed, 0x0a, 0x1e]
+    ); // vstrb.8   q0, [r0, #10]
+}
+
+#[test]
+fn round_trip__mve_load_store() {
+    let modes = [
+        ArmT32IndexMode::Offset,
+        ArmT32IndexMode::PreIndex,
+        ArmT32IndexMode::PostIndex,
+    ];
+    for is_load in [true, false] {
+        for size in [Arm32MveSize::I8, Arm32MveSize::I16, Arm32MveSize::I32] {
+            let step: i32 = match size {
+                Arm32MveSize::I8 => 1,
+                Arm32MveSize::I16 => 2,
+                Arm32MveSize::I32 => 4,
+            };
+            for offset in [0, step, -step, 5 * step, -127 * step, 127 * step] {
+                for mode in modes {
+                    for (d, n) in [(0u8, 0u8), (7, 5), (3, 14)] {
+                        round_trip(&ArmT32Instruction::MveLoadStore(
+                            is_load,
+                            size,
+                            q(d),
+                            R::from_operand_bits(n),
+                            offset,
+                            mode,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn encode__mve_reductions_exact_bytes() {
+    use Arm32MveReduceOp::*;
+    use Arm32MveSize::*;
+    use ArmT32Instruction::{MveReduce, MveVabav};
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb)
+    assert_eq!(
+        MveReduce(VaddvS, I8, R::R0, q(1)).encode().unwrap(),
+        vec![0xf1, 0xee, 0x02, 0x0f]
+    ); // vaddv.s8  r0, q1
+    assert_eq!(
+        MveReduce(VaddvU, I32, R::R0, q(1)).encode().unwrap(),
+        vec![0xf9, 0xfe, 0x02, 0x0f]
+    ); // vaddv.u32 r0, q1
+    assert_eq!(
+        MveReduce(VaddvaS, I32, R::R0, q(1)).encode().unwrap(),
+        vec![0xf9, 0xee, 0x22, 0x0f]
+    ); // vaddva.s32 r0, q1
+    assert_eq!(
+        MveReduce(VminvS, I8, R::R0, q(1)).encode().unwrap(),
+        vec![0xe2, 0xee, 0x82, 0x0f]
+    ); // vminv.s8  r0, q1
+    assert_eq!(
+        MveReduce(VmaxvU, I8, R::R0, q(1)).encode().unwrap(),
+        vec![0xe2, 0xfe, 0x02, 0x0f]
+    ); // vmaxv.u8  r0, q1
+    assert_eq!(
+        MveReduce(Vminav, I8, R::R0, q(1)).encode().unwrap(),
+        vec![0xe0, 0xee, 0x82, 0x0f]
+    ); // vminav.s8 r0, q1
+    assert_eq!(
+        MveReduce(Vmaxav, I32, R::R0, q(1)).encode().unwrap(),
+        vec![0xe8, 0xee, 0x02, 0x0f]
+    ); // vmaxav.s32 r0, q1
+    assert_eq!(
+        MveVabav(true, I8, R::R0, q(1), q(2)).encode().unwrap(),
+        vec![0x82, 0xee, 0x05, 0x0f]
+    ); // vabav.s8  r0, q1, q2
+    assert_eq!(
+        MveVabav(false, I16, R::R0, q(1), q(2)).encode().unwrap(),
+        vec![0x92, 0xfe, 0x05, 0x0f]
+    ); // vabav.u16 r0, q1, q2
+}
+
+#[test]
+fn round_trip__mve_reductions() {
+    let even_regs = [R::R0, R::R2, R::R4, R::R12];
+    for op in Arm32MveReduceOp::ALL {
+        for size in [Arm32MveSize::I8, Arm32MveSize::I16, Arm32MveSize::I32] {
+            for rd in even_regs {
+                for m in [1u8, 5, 7] {
+                    round_trip(&ArmT32Instruction::MveReduce(op, size, rd, q(m)));
+                }
+            }
+        }
+    }
+    for signed in [true, false] {
+        for size in [Arm32MveSize::I8, Arm32MveSize::I16, Arm32MveSize::I32] {
+            for rd in [R::R0, R::R1, R::R7, R::R14] {
+                round_trip(&ArmT32Instruction::MveVabav(signed, size, rd, q(2), q(5)));
+            }
+        }
+    }
+}
+
+#[test]
+fn encode__mve_vrint_vcvt_exact_bytes() {
+    use Arm32MveFloatSize::*;
+    use Arm32MveVrintOp::*;
+    use ArmT32Instruction::{MveVcvtFloatInt, MveVrint};
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb)
+    assert_eq!(
+        MveVrint(Vrintn, F32, q(0), q(1)).encode().unwrap(),
+        vec![0xba, 0xff, 0x42, 0x04]
+    ); // vrintn.f32 q0, q1
+    assert_eq!(
+        MveVrint(Vrinta, F32, q(0), q(1)).encode().unwrap(),
+        vec![0xba, 0xff, 0x42, 0x05]
+    ); // vrinta.f32 q0, q1
+    assert_eq!(
+        MveVrint(Vrintx, F32, q(0), q(1)).encode().unwrap(),
+        vec![0xba, 0xff, 0xc2, 0x04]
+    ); // vrintx.f32 q0, q1
+    assert_eq!(
+        MveVrint(Vrintz, F32, q(0), q(1)).encode().unwrap(),
+        vec![0xba, 0xff, 0xc2, 0x05]
+    ); // vrintz.f32 q0, q1
+    assert_eq!(
+        MveVrint(Vrintm, F32, q(0), q(1)).encode().unwrap(),
+        vec![0xba, 0xff, 0xc2, 0x06]
+    ); // vrintm.f32 q0, q1
+    assert_eq!(
+        MveVrint(Vrintp, F32, q(0), q(1)).encode().unwrap(),
+        vec![0xba, 0xff, 0xc2, 0x07]
+    ); // vrintp.f32 q0, q1
+    assert_eq!(
+        MveVrint(Vrintn, F16, q(0), q(1)).encode().unwrap(),
+        vec![0xb6, 0xff, 0x42, 0x04]
+    ); // vrintn.f16 q0, q1
+    // VCVT float<->int
+    assert_eq!(
+        MveVcvtFloatInt(false, false, F32, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0xbb, 0xff, 0x42, 0x06]
+    ); // vcvt.f32.s32 q0, q1
+    assert_eq!(
+        MveVcvtFloatInt(false, true, F32, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0xbb, 0xff, 0xc2, 0x06]
+    ); // vcvt.f32.u32 q0, q1
+    assert_eq!(
+        MveVcvtFloatInt(true, false, F32, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0xbb, 0xff, 0x42, 0x07]
+    ); // vcvt.s32.f32 q0, q1
+    assert_eq!(
+        MveVcvtFloatInt(true, true, F32, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0xbb, 0xff, 0xc2, 0x07]
+    ); // vcvt.u32.f32 q0, q1
+    assert_eq!(
+        MveVcvtFloatInt(false, false, F16, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0xb7, 0xff, 0x42, 0x06]
+    ); // vcvt.f16.s16 q0, q1
+}
+
+#[test]
+fn round_trip__mve_vrint_vcvt() {
+    for op in Arm32MveVrintOp::ALL {
+        for size in [Arm32MveFloatSize::F16, Arm32MveFloatSize::F32] {
+            for (d, m) in [(0u8, 0u8), (7, 1), (3, 5)] {
+                round_trip(&ArmT32Instruction::MveVrint(op, size, q(d), q(m)));
+            }
+        }
+    }
+    for to_int in [false, true] {
+        for unsigned in [false, true] {
+            for size in [Arm32MveFloatSize::F16, Arm32MveFloatSize::F32] {
+                for (d, m) in [(0u8, 0u8), (7, 1), (4, 6)] {
+                    round_trip(&ArmT32Instruction::MveVcvtFloatInt(
+                        to_int,
+                        unsigned,
+                        size,
+                        q(d),
+                        q(m),
+                    ));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn encode__mve_vmovl_vmovn_vaddlv_exact_bytes() {
+    use Arm32MveSize::*;
+    use ArmT32Instruction::{MveVaddlv, MveVmovl, MveVmovn};
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb)
+    assert_eq!(
+        MveVmovl(false, false, I8, q(0), q(1)).encode().unwrap(),
+        vec![0xa8, 0xee, 0x42, 0x0f]
+    ); // vmovlb.s8  q0, q1
+    assert_eq!(
+        MveVmovl(true, false, I8, q(0), q(1)).encode().unwrap(),
+        vec![0xa8, 0xee, 0x42, 0x1f]
+    ); // vmovlt.s8  q0, q1
+    assert_eq!(
+        MveVmovl(false, true, I8, q(0), q(1)).encode().unwrap(),
+        vec![0xa8, 0xfe, 0x42, 0x0f]
+    ); // vmovlb.u8  q0, q1
+    assert_eq!(
+        MveVmovl(false, false, I16, q(0), q(1)).encode().unwrap(),
+        vec![0xb0, 0xee, 0x42, 0x0f]
+    ); // vmovlb.s16 q0, q1
+    assert_eq!(
+        MveVmovl(true, true, I16, q(0), q(1)).encode().unwrap(),
+        vec![0xb0, 0xfe, 0x42, 0x1f]
+    ); // vmovlt.u16 q0, q1
+    assert_eq!(
+        MveVmovn(false, I16, q(0), q(1)).encode().unwrap(),
+        vec![0x31, 0xfe, 0x83, 0x0e]
+    ); // vmovnb.i16 q0, q1
+    assert_eq!(
+        MveVmovn(true, I16, q(0), q(1)).encode().unwrap(),
+        vec![0x31, 0xfe, 0x83, 0x1e]
+    ); // vmovnt.i16 q0, q1
+    assert_eq!(
+        MveVmovn(false, I32, q(0), q(1)).encode().unwrap(),
+        vec![0x35, 0xfe, 0x83, 0x0e]
+    ); // vmovnb.i32 q0, q1
+    assert_eq!(
+        MveVaddlv(false, false, R::R0, R::R1, q(2))
+            .encode()
+            .unwrap(),
+        vec![0x89, 0xee, 0x04, 0x0f]
+    ); // vaddlv.s32  r0, r1, q2
+    assert_eq!(
+        MveVaddlv(false, true, R::R0, R::R1, q(2)).encode().unwrap(),
+        vec![0x89, 0xfe, 0x04, 0x0f]
+    ); // vaddlv.u32  r0, r1, q2
+    assert_eq!(
+        MveVaddlv(true, false, R::R0, R::R1, q(2)).encode().unwrap(),
+        vec![0x89, 0xee, 0x24, 0x0f]
+    ); // vaddlva.s32 r0, r1, q2
+    assert_eq!(
+        MveVaddlv(false, false, R::R4, R::R5, q(2))
+            .encode()
+            .unwrap(),
+        vec![0xa9, 0xee, 0x04, 0x4f]
+    ); // vaddlv.s32  r4, r5, q2
+    // RdLo and RdHi are INDEPENDENT (even/odd, not necessarily consecutive)
+    assert_eq!(
+        MveVaddlv(false, false, R::R2, R::R5, q(2))
+            .encode()
+            .unwrap(),
+        vec![0xa9, 0xee, 0x04, 0x2f]
+    ); // vaddlv.s32  r2, r5, q2
+    assert_eq!(
+        MveVaddlv(false, false, R::R12, R::R1, q(2))
+            .encode()
+            .unwrap(),
+        vec![0x89, 0xee, 0x04, 0xcf]
+    ); // vaddlv.s32 r12, r1, q2
+}
+
+#[test]
+fn encode__mve_vqmovn_vqmovun_exact_bytes() {
+    use Arm32MveQMovnKind::*;
+    use Arm32MveSize::*;
+    use ArmT32Instruction::MveVqmovn;
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb)
+    assert_eq!(
+        MveVqmovn(Vqmovn, false, false, I16, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0x33, 0xee, 0x03, 0x0e]
+    ); // vqmovnb.s16  q0, q1
+    assert_eq!(
+        MveVqmovn(Vqmovn, false, true, I16, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0x33, 0xee, 0x03, 0x1e]
+    ); // vqmovnt.s16  q0, q1
+    assert_eq!(
+        MveVqmovn(Vqmovn, false, false, I32, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0x37, 0xee, 0x03, 0x0e]
+    ); // vqmovnb.s32  q0, q1
+    assert_eq!(
+        MveVqmovn(Vqmovn, true, false, I16, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0x33, 0xfe, 0x03, 0x0e]
+    ); // vqmovnb.u16  q0, q1
+    assert_eq!(
+        MveVqmovn(Vqmovn, true, true, I32, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0x37, 0xfe, 0x03, 0x1e]
+    ); // vqmovnt.u32  q0, q1
+    assert_eq!(
+        MveVqmovn(Vqmovun, false, false, I16, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0x31, 0xee, 0x83, 0x0e]
+    ); // vqmovunb.s16 q0, q1
+    assert_eq!(
+        MveVqmovn(Vqmovun, false, true, I16, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0x31, 0xee, 0x83, 0x1e]
+    ); // vqmovunt.s16 q0, q1
+    assert_eq!(
+        MveVqmovn(Vqmovun, false, false, I32, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0x35, 0xee, 0x83, 0x0e]
+    ); // vqmovunb.s32 q0, q1
+    // register placement (Qd[15:13], Qm[3:1])
+    assert_eq!(
+        MveVqmovn(Vqmovn, false, false, I16, q(4), q(5))
+            .encode()
+            .unwrap(),
+        vec![0x33, 0xee, 0x0b, 0x8e]
+    ); // vqmovnb.s16  q4, q5
+    assert_eq!(
+        MveVqmovn(Vqmovn, false, false, I16, q(2), q(7))
+            .encode()
+            .unwrap(),
+        vec![0x33, 0xee, 0x0f, 0x4e]
+    ); // vqmovnb.s16  q2, q7
+}
+
+#[test]
+fn round_trip__mve_vqmovn_vqmovun() {
+    for top in [false, true] {
+        for size in [Arm32MveSize::I16, Arm32MveSize::I32] {
+            for (d, m) in [(0u8, 0u8), (7, 1), (2, 7), (4, 5)] {
+                for unsigned in [false, true] {
+                    round_trip(&ArmT32Instruction::MveVqmovn(
+                        Arm32MveQMovnKind::Vqmovn,
+                        unsigned,
+                        top,
+                        size,
+                        q(d),
+                        q(m),
+                    ));
+                }
+                round_trip(&ArmT32Instruction::MveVqmovn(
+                    Arm32MveQMovnKind::Vqmovun,
+                    false,
+                    top,
+                    size,
+                    q(d),
+                    q(m),
+                ));
+            }
+        }
+    }
+}
+
