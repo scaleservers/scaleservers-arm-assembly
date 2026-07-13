@@ -3267,3 +3267,407 @@ fn encode__a32_neon_load_store_exact_bytes() {
     ); // vld1.8 {d0[]}, [r0]
 }
 
+#[test]
+fn round_trip__a32_neon_load_store() {
+    use ArmA32Instruction::*;
+    let addresses = [
+        NLsa::Offset,
+        NLsa::IncrementWriteback,
+        NLsa::PostIndexed(R::R2),
+        NLsa::PostIndexed(R::R9),
+    ];
+    let mut instructions = Vec::new();
+    // multiple-element: all 16 type codes (round-trip is field-exact), sizes, a few aligns
+    for is_load in [false, true] {
+        for type_bits in 0..16u8 {
+            for size in [NSz::I8, NSz::I16, NSz::I32, NSz::I64] {
+                for align in [0u8, 1, 3] {
+                    instructions.push(NeonLoadStoreMultiple_A1(
+                        is_load,
+                        type_bits,
+                        size,
+                        align,
+                        d(20),
+                        R::R1,
+                        addresses[(type_bits as usize) % 4],
+                    ));
+                }
+            }
+        }
+    }
+    // single-lane: struct 1..4, size 0..2, several index_align values
+    for is_load in [false, true] {
+        for struct_count in 1..=4u8 {
+            for size in 0..3u8 {
+                for index_align in [0u8, 1, 6, 8, 0xF] {
+                    instructions.push(NeonLoadStoreSingleLane_A1(
+                        is_load,
+                        struct_count,
+                        size,
+                        index_align,
+                        d(7),
+                        R::R3,
+                        addresses[index_align as usize % 4],
+                    ));
+                }
+            }
+        }
+    }
+    // all-lanes: struct 1..4, size 0..2, t/a bits
+    for struct_count in 1..=4u8 {
+        for size in 0..3u8 {
+            for t in [false, true] {
+                for a in [false, true] {
+                    instructions.push(NeonLoadStoreAllLanes_A1(
+                        struct_count,
+                        size,
+                        t,
+                        a,
+                        d(31),
+                        R::R5,
+                        addresses[(struct_count as usize) % 4],
+                    ));
+                }
+            }
+        }
+    }
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 NEON load/store round-trip mismatch"
+        );
+    }
+}
+
+// ---- N2d: ARMv8 cryptography extension ----
+
+#[test]
+fn encode__a32_neon_crypto_exact_bytes() {
+    use ArmA32Instruction::*;
+    assert_eq!(
+        NeonAes_A1(NAes::Aese, q(0), q(1)).encode().unwrap(),
+        le(0xF3B0_0302)
+    ); // aese.8 q0,q1
+    assert_eq!(
+        NeonAes_A1(NAes::Aesd, q(2), q(3)).encode().unwrap(),
+        le(0xF3B0_4346)
+    ); // aesd.8 q2,q3
+    assert_eq!(
+        NeonSha3Reg_A1(NSha3::Sha1c, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        le(0xF202_0C44)
+    ); // sha1c.32 q0,q1,q2
+    assert_eq!(
+        NeonSha3Reg_A1(NSha3::Sha256h, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        le(0xF302_0C44)
+    ); // sha256h.32 q0,q1,q2
+    assert_eq!(
+        NeonSha2Reg_A1(NSha2::Sha1h, q(0), q(1)).encode().unwrap(),
+        le(0xF3B9_02C2)
+    ); // sha1h.32 q0,q1
+    assert_eq!(
+        NeonDiffLong_A1(NDL::VmullP, NSz::I32, q(0), d(1), d(2))
+            .encode()
+            .unwrap(),
+        le(0xF2A1_0E02)
+    ); // vmull.p64 q0,d1,d2
+}
+
+#[test]
+fn round_trip__a32_neon_crypto() {
+    use ArmA32Instruction::*;
+    let mut instructions = Vec::new();
+    for op in [NAes::Aese, NAes::Aesd, NAes::Aesmc, NAes::Aesimc] {
+        instructions.push(NeonAes_A1(op, q(3), q(12)));
+    }
+    for op in [
+        NSha3::Sha1c,
+        NSha3::Sha1p,
+        NSha3::Sha1m,
+        NSha3::Sha1su0,
+        NSha3::Sha256h,
+        NSha3::Sha256h2,
+        NSha3::Sha256su1,
+    ] {
+        instructions.push(NeonSha3Reg_A1(op, q(1), q(8), q(15)));
+    }
+    for op in [NSha2::Sha1h, NSha2::Sha1su1, NSha2::Sha256su0] {
+        instructions.push(NeonSha2Reg_A1(op, q(2), q(9)));
+    }
+    instructions.push(NeonDiffLong_A1(NDL::VmullP, NSz::I32, q(5), d(20), d(7))); // VMULL.p64
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(decoded, instruction, "A32 NEON crypto round-trip mismatch");
+    }
+}
+
+// ---- Banked MRS / MSR (ARMv7VE) ----
+
+#[test]
+fn encode__a32_banked_mrs_msr_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(
+        MrsBanked_A1(al, false, 5, R::R0).encode().unwrap(),
+        le(0xE105_0200)
+    ); // mrs r0, SP_usr
+    assert_eq!(
+        MrsBanked_A1(al, false, 16, R::R1).encode().unwrap(),
+        le(0xE100_1300)
+    ); // mrs r1, LR_irq
+    assert_eq!(
+        MrsBanked_A1(al, true, 30, R::R2).encode().unwrap(),
+        le(0xE14E_2300)
+    ); // mrs r2, SPSR_hyp
+    assert_eq!(
+        MsrBanked_A1(al, false, 5, R::R0).encode().unwrap(),
+        le(0xE125_F200)
+    ); // msr SP_usr, r0
+    assert_eq!(
+        MsrBanked_A1(al, true, 30, R::R2).encode().unwrap(),
+        le(0xE16E_F302)
+    ); // msr SPSR_hyp, r2
+}
+
+#[test]
+fn round_trip__a32_banked_mrs_msr() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let mut instructions = Vec::new();
+    for spsr in [false, true] {
+        for sysm in [0u8, 5, 6, 14, 16, 22, 28, 30, 31] {
+            instructions.push(MrsBanked_A1(al, spsr, sysm, R::R3));
+            instructions.push(MsrBanked_A1(Cond::NotEqual, spsr, sysm, R::R4));
+        }
+    }
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 banked MRS/MSR round-trip mismatch"
+        );
+    }
+}
+
+// VMOV core <-> scalar-lane (Advanced SIMD): VMOV.<size> Dd[x], Rt and VMOV.<dt> Rt, Dn[x]. Every exact byte is
+// confirmed byte-identical against BOTH arm-none-eabi-as AND llvm-mc (-triple=armv8a). The width + lane index
+// pack into opc1[22:21]/opc2[6:5]; the from-scalar .8/.16 forms sign/zero-extend via U[23].
+#[test]
+fn encode__a32_vmov_core_scalar_lane_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    // core -> scalar (Rt -> Dd[x])
+    assert_eq!(
+        Vmov_Core_To_Scalar_A1(al, VLS::Word, 0, d(0), R::R1)
+            .encode()
+            .unwrap(),
+        le(0xEE00_1B10)
+    ); // vmov.32 d0[0], r1
+    assert_eq!(
+        Vmov_Core_To_Scalar_A1(al, VLS::Word, 1, d(0), R::R1)
+            .encode()
+            .unwrap(),
+        le(0xEE20_1B10)
+    ); // vmov.32 d0[1], r1
+    assert_eq!(
+        Vmov_Core_To_Scalar_A1(al, VLS::Byte, 0, d(0), R::R1)
+            .encode()
+            .unwrap(),
+        le(0xEE40_1B10)
+    ); // vmov.8  d0[0], r1
+    assert_eq!(
+        Vmov_Core_To_Scalar_A1(al, VLS::Byte, 7, d(0), R::R1)
+            .encode()
+            .unwrap(),
+        le(0xEE60_1B70)
+    ); // vmov.8  d0[7], r1
+    assert_eq!(
+        Vmov_Core_To_Scalar_A1(al, VLS::Half, 0, d(0), R::R1)
+            .encode()
+            .unwrap(),
+        le(0xEE00_1B30)
+    ); // vmov.16 d0[0], r1
+    assert_eq!(
+        Vmov_Core_To_Scalar_A1(al, VLS::Half, 3, d(0), R::R1)
+            .encode()
+            .unwrap(),
+        le(0xEE20_1B70)
+    ); // vmov.16 d0[3], r1
+    // scalar -> core (Dn[x] -> Rt), with sign/zero extend for .8/.16
+    assert_eq!(
+        Vmov_Scalar_To_Core_A1(al, false, VLS::Word, 0, R::R2, d(3))
+            .encode()
+            .unwrap(),
+        le(0xEE13_2B10)
+    ); // vmov.32 r2, d3[0]
+    assert_eq!(
+        Vmov_Scalar_To_Core_A1(al, false, VLS::Word, 1, R::R2, d(3))
+            .encode()
+            .unwrap(),
+        le(0xEE33_2B10)
+    ); // vmov.32 r2, d3[1]
+    assert_eq!(
+        Vmov_Scalar_To_Core_A1(al, false, VLS::Byte, 5, R::R2, d(3))
+            .encode()
+            .unwrap(),
+        le(0xEE73_2B30)
+    ); // vmov.s8  r2, d3[5]
+    assert_eq!(
+        Vmov_Scalar_To_Core_A1(al, true, VLS::Byte, 5, R::R2, d(3))
+            .encode()
+            .unwrap(),
+        le(0xEEF3_2B30)
+    ); // vmov.u8  r2, d3[5]
+    assert_eq!(
+        Vmov_Scalar_To_Core_A1(al, false, VLS::Half, 2, R::R2, d(3))
+            .encode()
+            .unwrap(),
+        le(0xEE33_2B30)
+    ); // vmov.s16 r2, d3[2]
+    assert_eq!(
+        Vmov_Scalar_To_Core_A1(al, true, VLS::Half, 2, R::R2, d(3))
+            .encode()
+            .unwrap(),
+        le(0xEEB3_2B30)
+    ); // vmov.u16 r2, d3[2]
+}
+
+#[test]
+fn a32_vmov_scalar_lane_emit_requirement_reject_roundtrip() {
+    use crate::emit::ArmAssemblySyntax::Gnu;
+    use crate::targets::{ArmCpuFeature, ArmInstructionRequirement, ArmIsaVersion};
+    let al = Cond::AlwaysUnconditional;
+    // emit
+    assert_eq!(
+        ArmA32Instruction::Vmov_Core_To_Scalar_A1(al, VLS::Word, 0, d(0), R::R1)
+            .to_assembly_string(Gnu),
+        "vmov.32 d0[0], r1"
+    );
+    assert_eq!(
+        ArmA32Instruction::Vmov_Scalar_To_Core_A1(al, false, VLS::Byte, 5, R::R2, d(3))
+            .to_assembly_string(Gnu),
+        "vmov.s8 r2, d3[5]"
+    );
+    assert_eq!(
+        ArmA32Instruction::Vmov_Scalar_To_Core_A1(al, true, VLS::Half, 2, R::R2, d(3))
+            .to_assembly_string(Gnu),
+        "vmov.u16 r2, d3[2]"
+    );
+    assert_eq!(
+        ArmA32Instruction::Vmov_Scalar_To_Core_A1(al, false, VLS::Word, 1, R::R2, d(3))
+            .to_assembly_string(Gnu),
+        "vmov.32 r2, d3[1]"
+    );
+    // requirement: Advanced SIMD
+    assert_eq!(
+        ArmA32Instruction::Vmov_Core_To_Scalar_A1(al, VLS::Word, 0, d(0), R::R1).requirement(),
+        ArmInstructionRequirement::new(ArmIsaVersion::Armv7AR, &[ArmCpuFeature::AdvancedSimd])
+    );
+    // reject: lane index out of range for the width
+    assert!(
+        ArmA32Instruction::Vmov_Core_To_Scalar_A1(al, VLS::Word, 2, d(0), R::R1)
+            .encode()
+            .is_err()
+    );
+    assert!(
+        ArmA32Instruction::Vmov_Scalar_To_Core_A1(al, false, VLS::Half, 4, R::R2, d(3))
+            .encode()
+            .is_err()
+    );
+    assert!(
+        ArmA32Instruction::Vmov_Core_To_Scalar_A1(al, VLS::Byte, 8, d(0), R::R1)
+            .encode()
+            .is_err()
+    );
+    // round-trip over every width x valid lane x direction (x sign for from-scalar)
+    for (size, lanes) in [(VLS::Byte, 8u8), (VLS::Half, 4), (VLS::Word, 2)] {
+        for index in 0..lanes {
+            let to = ArmA32Instruction::Vmov_Core_To_Scalar_A1(al, size, index, d(7), R::R9);
+            let e = to.encode().unwrap();
+            let mut o = 0;
+            assert_eq!(
+                ArmA32Instruction::decode(&mut e.iter(), &mut o)
+                    .unwrap()
+                    .unwrap(),
+                to,
+                "to-scalar {size:?}[{index}]"
+            );
+            // .32 has no sign bit; .8/.16 carry signed/unsigned.
+            let signs: &[bool] = if matches!(size, VLS::Word) {
+                &[false]
+            } else {
+                &[false, true]
+            };
+            for &unsigned in signs {
+                let from = ArmA32Instruction::Vmov_Scalar_To_Core_A1(
+                    al,
+                    unsigned,
+                    size,
+                    index,
+                    R::R9,
+                    d(7),
+                );
+                let e = from.encode().unwrap();
+                let mut o = 0;
+                assert_eq!(
+                    ArmA32Instruction::decode(&mut e.iter(), &mut o)
+                        .unwrap()
+                        .unwrap(),
+                    from,
+                    "from-scalar u={unsigned} {size:?}[{index}]"
+                );
+            }
+        }
+    }
+}
+
+// CSDB / ESB (A32) -- the ARM-state siblings of Csdb_T1 / Esb_T1. NOP-compatible hints in the 0x0320_F0xx space.
+// Bytes confirmed against arm-none-eabi-as (-march=armv8.2-a) AND llvm-mc (-triple=armv8a -mattr=+ras).
+#[test]
+fn a32_csdb_esb() {
+    use crate::emit::ArmAssemblySyntax::Gnu;
+    use crate::targets::{ArmInstructionRequirement, ArmIsaVersion};
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(Csdb_A1(al).encode().unwrap(), le(0xE320_F014)); // csdb
+    assert_eq!(Esb_A1(al).encode().unwrap(), le(0xE320_F010)); // esb
+    assert_eq!(Csdb_A1(al).to_assembly_string(Gnu), "csdb");
+    assert_eq!(Esb_A1(al).to_assembly_string(Gnu), "esb");
+    assert_eq!(
+        Csdb_A1(al).requirement(),
+        ArmInstructionRequirement::new(ArmIsaVersion::Armv7AR, &[])
+    );
+    assert_eq!(
+        Esb_A1(al).requirement(),
+        ArmInstructionRequirement::new(ArmIsaVersion::Armv8A, &[])
+    );
+    for instr in [Csdb_A1(al), Esb_A1(al)] {
+        let e = instr.encode().unwrap();
+        let mut o = 0;
+        assert_eq!(
+            ArmA32Instruction::decode(&mut e.iter(), &mut o)
+                .unwrap()
+                .unwrap(),
+            instr
+        );
+    }
+}
