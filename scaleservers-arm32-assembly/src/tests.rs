@@ -61,6 +61,7 @@ pub mod wfi_instruction_tests;
 pub mod yield_instruction_tests;
 
 // cross-cutting tests (not tied to a single mnemonic)
+pub mod arma32_tests;
 pub mod armv7em_tests;
 pub mod armv7m_tests;
 pub mod armv8m_tests;
@@ -68,5 +69,6 @@ pub mod coverage_tests;
 pub mod emit_tests;
 pub mod encode_error_tests;
 pub mod modified_immediate_tests;
+pub mod mve_tests;
 pub mod robustness_tests;
 pub mod targets_tests;
