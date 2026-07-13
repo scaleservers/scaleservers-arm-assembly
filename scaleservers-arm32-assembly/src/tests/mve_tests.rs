@@ -2786,3 +2786,357 @@ fn encode__mve_vcmp_exact_bytes() {
     ); // vcmp.f32 eq, q0, r2
 }
 
+#[test]
+fn round_trip__mve_vcmp() {
+    let conds = Arm32MveVcmpCondition::ALL;
+    for cond in conds {
+        for size in [Arm32MveSize::I8, Arm32MveSize::I16, Arm32MveSize::I32] {
+            for (n, m) in [(0u8, 0u8), (7, 1), (3, 5)] {
+                round_trip(&ArmT32Instruction::MveVcmpReg(cond, size, q(n), q(m)));
+            }
+            for (n, rm) in [(0u8, R::R0), (5, R::R7), (7, R::R14)] {
+                round_trip(&ArmT32Instruction::MveVcmpScalar(cond, size, q(n), rm));
+            }
+        }
+        // float VCMP supports only eq/ne/ge/lt/gt/le (not the cs/hi slots, which are reserved/VPSEL)
+        if !matches!(cond, Arm32MveVcmpCondition::Cs | Arm32MveVcmpCondition::Hi) {
+            for size in [Arm32MveFloatSize::F16, Arm32MveFloatSize::F32] {
+                round_trip(&ArmT32Instruction::MveVcmpFloatReg(cond, size, q(2), q(4)));
+                round_trip(&ArmT32Instruction::MveVcmpFloatScalar(
+                    cond,
+                    size,
+                    q(1),
+                    R::R3,
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn encode_round_trip__mve_vpst() {
+    use ArmT32Instruction::MveVpst;
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb)
+    assert_eq!(
+        MveVpst(0b1000).encode().unwrap(),
+        vec![0x71, 0xfe, 0x4d, 0x0f]
+    ); // vpst
+    assert_eq!(
+        MveVpst(0b0100).encode().unwrap(),
+        vec![0x31, 0xfe, 0x4d, 0x8f]
+    ); // vpstt
+    assert_eq!(
+        MveVpst(0b1100).encode().unwrap(),
+        vec![0x71, 0xfe, 0x4d, 0x8f]
+    ); // vpste
+    assert_eq!(
+        MveVpst(0b1110).encode().unwrap(),
+        vec![0x71, 0xfe, 0x4d, 0xcf]
+    ); // vpstet
+    assert_eq!(
+        MveVpst(0b0001).encode().unwrap(),
+        vec![0x31, 0xfe, 0x4d, 0x2f]
+    ); // vpstttt
+    assert_eq!(
+        MveVpst(0b1001).encode().unwrap(),
+        vec![0x71, 0xfe, 0x4d, 0x2f]
+    ); // vpsteee
+    // mask 0 still decodes as VPNOT (VPST and VPNOT share the opcode)
+    round_trip(&ArmT32Instruction::MveVpnot);
+    for mask in 1..=15u8 {
+        round_trip(&ArmT32Instruction::MveVpst(mask));
+    }
+}
+
+#[test]
+fn encode__mve_vpt_exact_bytes() {
+    use Arm32MveFloatSize::{F16, F32};
+    use Arm32MveSize::*;
+    use Arm32MveVcmpCondition::*;
+    use ArmT32Instruction::{MveVptFloatReg, MveVptFloatScalar, MveVptReg, MveVptScalar};
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb); VPT = VCMP | mask bits
+    assert_eq!(
+        MveVptReg(Eq, I16, q(0), q(1), 0b1000).encode().unwrap(),
+        vec![0x51, 0xfe, 0x02, 0x0f]
+    ); // vpt.i16 eq, q0, q1
+    assert_eq!(
+        MveVptReg(Ne, I32, q(2), q(3), 0b0100).encode().unwrap(),
+        vec![0x25, 0xfe, 0x86, 0x8f]
+    ); // vptt.i32 ne, q2, q3
+    assert_eq!(
+        MveVptReg(Gt, I8, q(0), q(1), 0b1100).encode().unwrap(),
+        vec![0x41, 0xfe, 0x03, 0x9f]
+    ); // vpte.s8 gt, q0, q1
+    assert_eq!(
+        MveVptScalar(Eq, I32, q(0), R::R2, 0b1000).encode().unwrap(),
+        vec![0x61, 0xfe, 0x42, 0x0f]
+    ); // vpt.i32 eq, q0, r2
+    assert_eq!(
+        MveVptFloatReg(Ge, F32, q(0), q(1), 0b0100)
+            .encode()
+            .unwrap(),
+        vec![0x31, 0xee, 0x02, 0x9f]
+    ); // vptt.f32 ge, q0, q1
+    assert_eq!(
+        MveVptFloatScalar(Eq, F16, q(0), R::R2, 0b1000)
+            .encode()
+            .unwrap(),
+        vec![0x71, 0xfe, 0x42, 0x0f]
+    ); // vpt.f16 eq, q0, r2
+}
+
+#[test]
+fn round_trip__mve_vpt() {
+    for cond in Arm32MveVcmpCondition::ALL {
+        for mask in 1..=15u8 {
+            for size in [Arm32MveSize::I8, Arm32MveSize::I16, Arm32MveSize::I32] {
+                round_trip(&ArmT32Instruction::MveVptReg(cond, size, q(0), q(1), mask));
+                round_trip(&ArmT32Instruction::MveVptScalar(
+                    cond,
+                    size,
+                    q(2),
+                    R::R5,
+                    mask,
+                ));
+            }
+            // float VPT excludes the cs/hi conditions (reserved slots)
+            if !matches!(cond, Arm32MveVcmpCondition::Cs | Arm32MveVcmpCondition::Hi) {
+                for size in [Arm32MveFloatSize::F16, Arm32MveFloatSize::F32] {
+                    round_trip(&ArmT32Instruction::MveVptFloatReg(
+                        cond,
+                        size,
+                        q(3),
+                        q(4),
+                        mask,
+                    ));
+                    round_trip(&ArmT32Instruction::MveVptFloatScalar(
+                        cond,
+                        size,
+                        q(1),
+                        R::R7,
+                        mask,
+                    ));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn encode_round_trip__mve_float_reductions() {
+    use Arm32MveFloatReduceOp::*;
+    use Arm32MveFloatSize::{F16, F32};
+    use ArmT32Instruction::MveFloatReduce;
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb)
+    assert_eq!(
+        MveFloatReduce(Vmaxnmv, F32, R::R0, q(1)).encode().unwrap(),
+        vec![0xee, 0xee, 0x02, 0x0f]
+    ); // vmaxnmv.f32  r0, q1
+    assert_eq!(
+        MveFloatReduce(Vminnmv, F32, R::R0, q(1)).encode().unwrap(),
+        vec![0xee, 0xee, 0x82, 0x0f]
+    ); // vminnmv.f32  r0, q1
+    assert_eq!(
+        MveFloatReduce(Vmaxnmav, F32, R::R0, q(1)).encode().unwrap(),
+        vec![0xec, 0xee, 0x02, 0x0f]
+    ); // vmaxnmav.f32 r0, q1
+    assert_eq!(
+        MveFloatReduce(Vminnmav, F32, R::R0, q(1)).encode().unwrap(),
+        vec![0xec, 0xee, 0x82, 0x0f]
+    ); // vminnmav.f32 r0, q1
+    assert_eq!(
+        MveFloatReduce(Vmaxnmv, F16, R::R0, q(1)).encode().unwrap(),
+        vec![0xee, 0xfe, 0x02, 0x0f]
+    ); // vmaxnmv.f16  r0, q1
+    assert_eq!(
+        MveFloatReduce(Vmaxnmv, F32, R::R4, q(7)).encode().unwrap(),
+        vec![0xee, 0xee, 0x0e, 0x4f]
+    ); // vmaxnmv.f32  r4, q7
+    for op in Arm32MveFloatReduceOp::ALL {
+        for size in [F16, F32] {
+            for rd in [R::R0, R::R1, R::R8, R::R14] {
+                for m in [0u8, 3, 7] {
+                    round_trip(&MveFloatReduce(op, size, rd, q(m)));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn encode_round_trip__mve_vcvt_round() {
+    use Arm32MveFloatSize::{F16, F32};
+    use ArmT32Instruction::MveVcvtRound;
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb).
+    // rounding: 0=a 1=n 2=p 3=m, second arg = unsigned.
+    assert_eq!(
+        MveVcvtRound(0, false, F32, q(0), q(1)).encode().unwrap(),
+        vec![0xbb, 0xff, 0x42, 0x00]
+    ); // vcvta.s32.f32 q0, q1
+    assert_eq!(
+        MveVcvtRound(1, false, F32, q(0), q(1)).encode().unwrap(),
+        vec![0xbb, 0xff, 0x42, 0x01]
+    ); // vcvtn.s32.f32 q0, q1
+    assert_eq!(
+        MveVcvtRound(2, false, F32, q(0), q(1)).encode().unwrap(),
+        vec![0xbb, 0xff, 0x42, 0x02]
+    ); // vcvtp.s32.f32 q0, q1
+    assert_eq!(
+        MveVcvtRound(3, false, F32, q(0), q(1)).encode().unwrap(),
+        vec![0xbb, 0xff, 0x42, 0x03]
+    ); // vcvtm.s32.f32 q0, q1
+    assert_eq!(
+        MveVcvtRound(0, true, F32, q(0), q(1)).encode().unwrap(),
+        vec![0xbb, 0xff, 0xc2, 0x00]
+    ); // vcvta.u32.f32 q0, q1
+    assert_eq!(
+        MveVcvtRound(3, true, F32, q(0), q(1)).encode().unwrap(),
+        vec![0xbb, 0xff, 0xc2, 0x03]
+    ); // vcvtm.u32.f32 q0, q1
+    assert_eq!(
+        MveVcvtRound(0, false, F16, q(0), q(1)).encode().unwrap(),
+        vec![0xb7, 0xff, 0x42, 0x00]
+    ); // vcvta.s16.f16 q0, q1
+    assert_eq!(
+        MveVcvtRound(3, true, F16, q(0), q(1)).encode().unwrap(),
+        vec![0xb7, 0xff, 0xc2, 0x03]
+    ); // vcvtm.u16.f16 q0, q1
+    assert_eq!(
+        MveVcvtRound(0, false, F32, q(2), q(5)).encode().unwrap(),
+        vec![0xbb, 0xff, 0x4a, 0x40]
+    ); // vcvta.s32.f32 q2, q5
+    assert_eq!(
+        MveVcvtRound(2, true, F16, q(7), q(3)).encode().unwrap(),
+        vec![0xb7, 0xff, 0xc6, 0xe2]
+    ); // vcvtp.u16.f16 q7, q3
+    for rounding in 0u8..4 {
+        for unsigned in [false, true] {
+            for size in [F16, F32] {
+                for d in [0u8, 3, 7] {
+                    for m in [0u8, 4, 7] {
+                        round_trip(&MveVcvtRound(rounding, unsigned, size, q(d), q(m)));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn encode_round_trip__mve_dual_mac() {
+    use Arm32MveSize::{I8, I16, I32};
+    use ArmT32Instruction::MveDualMac;
+    // MveDualMac(subtract, exchange, accumulate, unsigned, size, rda, qn, qm).
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb).
+    assert_eq!(
+        MveDualMac(false, false, false, false, I16, R::R0, q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0xf2, 0xee, 0x04, 0x0e]
+    ); // vmladav.s16   r0, q1, q2
+    assert_eq!(
+        MveDualMac(false, false, true, false, I16, R::R14, q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0xf2, 0xee, 0x24, 0xee]
+    ); // vmladava.s16  lr, q1, q2
+    assert_eq!(
+        MveDualMac(false, true, false, false, I16, R::R4, q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0xf2, 0xee, 0x04, 0x5e]
+    ); // vmladavx.s16  r4, q1, q2
+    assert_eq!(
+        MveDualMac(false, true, true, false, I16, R::R0, q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0xf2, 0xee, 0x24, 0x1e]
+    ); // vmladavax.s16 r0, q1, q2
+    assert_eq!(
+        MveDualMac(false, false, false, true, I16, R::R0, q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0xf2, 0xfe, 0x04, 0x0e]
+    ); // vmladav.u16   r0, q1, q2
+    assert_eq!(
+        MveDualMac(true, false, false, false, I16, R::R0, q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0xf2, 0xee, 0x05, 0x0e]
+    ); // vmlsdav.s16   r0, q1, q2
+    assert_eq!(
+        MveDualMac(true, true, false, false, I16, R::R0, q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0xf2, 0xee, 0x05, 0x1e]
+    ); // vmlsdavx.s16  r0, q1, q2
+    // the subtract form's size encoding is irregular: .s8 sets bit28 (not bit8), .s32 sets bit16
+    assert_eq!(
+        MveDualMac(true, false, false, false, I8, R::R0, q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0xf2, 0xfe, 0x05, 0x0e]
+    ); // vmlsdav.s8    r0, q1, q2
+    assert_eq!(
+        MveDualMac(true, false, false, false, I32, R::R0, q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0xf3, 0xee, 0x05, 0x0e]
+    ); // vmlsdav.s32   r0, q1, q2
+    assert_eq!(
+        MveDualMac(false, false, false, false, I8, R::R0, q(3), q(4))
+            .encode()
+            .unwrap(),
+        vec![0xf6, 0xee, 0x08, 0x0f]
+    ); // vmladav.s8    r0, q3, q4
+    assert_eq!(
+        MveDualMac(false, false, false, false, I32, R::R0, q(7), q(0))
+            .encode()
+            .unwrap(),
+        vec![0xff, 0xee, 0x00, 0x0e]
+    ); // vmladav.s32   r0, q7, q0
+    assert_eq!(
+        MveDualMac(false, false, false, true, I32, R::R2, q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0xf3, 0xfe, 0x04, 0x2e]
+    ); // vmladav.u32   r2, q1, q2
+    // exhaustive round-trip over the VALID matrix (exchange & subtract are signed-only; unsigned has neither)
+    for size in [I8, I16, I32] {
+        for rda in [R::R0, R::R2, R::R12, R::R14] {
+            for n in [0u8, 3, 7] {
+                for m in [0u8, 4, 7] {
+                    for &(subtract, exchange) in
+                        &[(false, false), (false, true), (true, false), (true, true)]
+                    {
+                        for accumulate in [false, true] {
+                            round_trip(&MveDualMac(
+                                subtract,
+                                exchange,
+                                accumulate,
+                                false,
+                                size,
+                                rda,
+                                q(n),
+                                q(m),
+                            ));
+                        }
+                    }
+                    for accumulate in [false, true] {
+                        round_trip(&MveDualMac(
+                            false,
+                            false,
+                            accumulate,
+                            true,
+                            size,
+                            rda,
+                            q(n),
+                            q(m),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
