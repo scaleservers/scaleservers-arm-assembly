@@ -2465,3 +2465,387 @@ fn round_trip__a32_v8_fp() {
     }
 }
 
+// ---- N2a: NEON 3-reg-same-length data-processing ----
+
+#[test]
+fn encode__a32_neon_3same_exact_bytes() {
+    use ArmA32Instruction::*;
+    assert_eq!(
+        NeonInt3Same_D_A1(NInt::Vadd, NSz::I8, d(0), d(1), d(2))
+            .encode()
+            .unwrap(),
+        le(0xF201_0802)
+    ); // vadd.i8 d0,d1,d2
+    assert_eq!(
+        NeonInt3Same_Q_A1(NInt::Vadd, NSz::I32, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        le(0xF222_0844)
+    ); // vadd.i32 q0,q1,q2
+    assert_eq!(
+        NeonInt3Same_D_A1(NInt::Vsub, NSz::I8, d(3), d(4), d(5))
+            .encode()
+            .unwrap(),
+        le(0xF304_3805)
+    ); // vsub.i8 d3,d4,d5
+    assert_eq!(
+        NeonInt3Same_D_A1(NInt::VqaddS, NSz::I8, d(0), d(1), d(2))
+            .encode()
+            .unwrap(),
+        le(0xF201_0012)
+    ); // vqadd.s8 d0,d1,d2
+    assert_eq!(
+        NeonFloat3Same_D_A1(NFlt::Vadd, d(0), d(1), d(2))
+            .encode()
+            .unwrap(),
+        le(0xF201_0D02)
+    ); // vadd.f32 d0,d1,d2
+    assert_eq!(
+        NeonBitwise3Same_D_A1(NBit::Vand, d(0), d(1), d(2))
+            .encode()
+            .unwrap(),
+        le(0xF201_0112)
+    ); // vand d0,d1,d2
+    assert_eq!(
+        NeonBitwise3Same_D_A1(NBit::Vorr, d(0), d(1), d(2))
+            .encode()
+            .unwrap(),
+        le(0xF221_0112)
+    ); // vorr d0,d1,d2
+    assert_eq!(
+        NeonBitwise3Same_D_A1(NBit::Veor, d(0), d(1), d(2))
+            .encode()
+            .unwrap(),
+        le(0xF301_0112)
+    ); // veor d0,d1,d2
+}
+
+#[test]
+fn round_trip__a32_neon_3same() {
+    use ArmA32Instruction::*;
+    let int_ops = [
+        NInt::Vadd,
+        NInt::Vsub,
+        NInt::Vtst,
+        NInt::Vceq,
+        NInt::Vmla,
+        NInt::Vmls,
+        NInt::Vmul,
+        NInt::VmulPoly,
+        NInt::VqaddS,
+        NInt::VqaddU,
+        NInt::VhaddS,
+        NInt::VhaddU,
+        NInt::VqsubS,
+        NInt::VqsubU,
+        NInt::VhsubS,
+        NInt::VhsubU,
+        NInt::VrhaddS,
+        NInt::VrhaddU,
+        NInt::VabdS,
+        NInt::VabdU,
+        NInt::VabaS,
+        NInt::VabaU,
+        NInt::VmaxS,
+        NInt::VmaxU,
+        NInt::VminS,
+        NInt::VminU,
+        NInt::VcgeS,
+        NInt::VcgeU,
+        NInt::VcgtS,
+        NInt::VcgtU,
+        NInt::Vpadd,
+        NInt::VpmaxS,
+        NInt::VpmaxU,
+        NInt::VpminS,
+        NInt::VpminU,
+        NInt::VqdmulhS,
+        NInt::VqrdmulhS,
+    ];
+    let float_ops = [
+        NFlt::Vadd,
+        NFlt::Vsub,
+        NFlt::Vmul,
+        NFlt::Vmla,
+        NFlt::Vmls,
+        NFlt::Vabd,
+        NFlt::Vpadd,
+        NFlt::Vceq,
+        NFlt::Vcge,
+        NFlt::Vcgt,
+        NFlt::Vmax,
+        NFlt::Vmin,
+        NFlt::Vpmax,
+        NFlt::Vpmin,
+        NFlt::Vrecps,
+        NFlt::Vrsqrts,
+        NFlt::Vfma,
+        NFlt::Vfms,
+    ];
+    let bitwise_ops = [
+        NBit::Vand,
+        NBit::Vbic,
+        NBit::Vorr,
+        NBit::Vorn,
+        NBit::Veor,
+        NBit::Vbsl,
+        NBit::Vbit,
+        NBit::Vbif,
+    ];
+
+    let mut instructions = Vec::new();
+    for op in int_ops {
+        for size in [NSz::I8, NSz::I16, NSz::I32, NSz::I64] {
+            instructions.push(NeonInt3Same_D_A1(op, size, d(1), d(20), d(7)));
+            instructions.push(NeonInt3Same_Q_A1(op, size, q(2), q(8), q(15)));
+        }
+    }
+    for op in float_ops {
+        instructions.push(NeonFloat3Same_D_A1(op, d(0), d(17), d(31)));
+        instructions.push(NeonFloat3Same_Q_A1(op, q(1), q(9), q(14)));
+    }
+    for op in bitwise_ops {
+        instructions.push(NeonBitwise3Same_D_A1(op, d(3), d(4), d(5)));
+        instructions.push(NeonBitwise3Same_Q_A1(op, q(0), q(7), q(12)));
+    }
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 NEON 3-reg-same round-trip mismatch"
+        );
+    }
+}
+
+// ---- N2b: NEON 2-reg-misc ----
+
+#[test]
+fn encode__a32_neon_2misc_exact_bytes() {
+    use ArmA32Instruction::*;
+    assert_eq!(
+        NeonMisc2Sized_D_A1(NMS::Vrev64, NSz::I8, d(0), d(1))
+            .encode()
+            .unwrap(),
+        le(0xF3B0_0001)
+    ); // vrev64.8 d0,d1
+    assert_eq!(
+        NeonMisc2Fixed_D_A1(NMF::Vmvn, d(0), d(1)).encode().unwrap(),
+        le(0xF3B0_0581)
+    ); // vmvn d0,d1
+    assert_eq!(
+        NeonMisc2Narrow_A1(NMN::Vmovn, NSz::I16, d(0), q(1))
+            .encode()
+            .unwrap(),
+        le(0xF3B2_0202)
+    ); // vmovn.i16 d0,q1
+    assert_eq!(
+        NeonShllMax_A1(NSz::I8, q(0), d(1)).encode().unwrap(),
+        le(0xF3B2_0301)
+    ); // vshll.i8 q0,d1,#8
+    assert_eq!(
+        NeonMisc2Fixed_D_A1(NMF::VcvtaS, d(0), d(1))
+            .encode()
+            .unwrap(),
+        le(0xF3BB_0001)
+    ); // vcvta.s32.f32 d0,d1
+    assert_eq!(
+        NeonMisc2Fixed_Q_A1(NMF::VrintA, q(0), q(1))
+            .encode()
+            .unwrap(),
+        le(0xF3BA_0542)
+    ); // vrinta.f32 q0,q1
+}
+
+#[test]
+fn round_trip__a32_neon_2misc() {
+    use ArmA32Instruction::*;
+    let sized_ops = [
+        NMS::Vrev64,
+        NMS::Vrev32,
+        NMS::Vrev16,
+        NMS::VpaddlS,
+        NMS::VpaddlU,
+        NMS::VclsS,
+        NMS::VclzI,
+        NMS::VpadalS,
+        NMS::VpadalU,
+        NMS::VqabsS,
+        NMS::VqnegS,
+        NMS::VcgtZeroS,
+        NMS::VcgeZeroS,
+        NMS::VceqZeroI,
+        NMS::VcleZeroS,
+        NMS::VcltZeroS,
+        NMS::VabsS,
+        NMS::VnegS,
+        NMS::Vtrn,
+        NMS::Vuzp,
+        NMS::Vzip,
+    ];
+    let fixed_ops = [
+        NMF::Vmvn,
+        NMF::Vswp,
+        NMF::Vcnt,
+        NMF::VcgtZeroF,
+        NMF::VcgeZeroF,
+        NMF::VceqZeroF,
+        NMF::VcleZeroF,
+        NMF::VcltZeroF,
+        NMF::VabsF,
+        NMF::VnegF,
+        NMF::VrintN,
+        NMF::VrintX,
+        NMF::VrintA,
+        NMF::VrintZ,
+        NMF::VrintM,
+        NMF::VrintP,
+        NMF::VrecpeU,
+        NMF::VrsqrteU,
+        NMF::VrecpeF,
+        NMF::VrsqrteF,
+        NMF::VcvtF32FromS32,
+        NMF::VcvtF32FromU32,
+        NMF::VcvtS32FromF32,
+        NMF::VcvtU32FromF32,
+        NMF::VcvtaS,
+        NMF::VcvtaU,
+        NMF::VcvtnS,
+        NMF::VcvtnU,
+        NMF::VcvtpS,
+        NMF::VcvtpU,
+        NMF::VcvtmS,
+        NMF::VcvtmU,
+    ];
+    let narrow_ops = [NMN::Vmovn, NMN::Vqmovun, NMN::VqmovnS, NMN::VqmovnU];
+
+    let mut instructions = Vec::new();
+    for op in sized_ops {
+        for size in [NSz::I8, NSz::I16, NSz::I32] {
+            instructions.push(NeonMisc2Sized_D_A1(op, size, d(2), d(19)));
+            instructions.push(NeonMisc2Sized_Q_A1(op, size, q(3), q(11)));
+        }
+    }
+    for op in fixed_ops {
+        instructions.push(NeonMisc2Fixed_D_A1(op, d(0), d(31)));
+        instructions.push(NeonMisc2Fixed_Q_A1(op, q(1), q(15)));
+    }
+    for op in narrow_ops {
+        for size in [NSz::I16, NSz::I32, NSz::I64] {
+            instructions.push(NeonMisc2Narrow_A1(op, size, d(5), q(6)));
+        }
+    }
+    for size in [NSz::I8, NSz::I16, NSz::I32] {
+        instructions.push(NeonShllMax_A1(size, q(2), d(9)));
+    }
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 NEON 2-reg-misc round-trip mismatch"
+        );
+    }
+}
+
+// ---- N2b: NEON 3-reg-different-length ----
+
+#[test]
+fn encode__a32_neon_3diff_exact_bytes() {
+    use ArmA32Instruction::*;
+    assert_eq!(
+        NeonDiffLong_A1(NDL::VaddlS, NSz::I8, q(0), d(1), d(2))
+            .encode()
+            .unwrap(),
+        le(0xF281_0002)
+    ); // vaddl.s8 q0,d1,d2
+    assert_eq!(
+        NeonDiffLong_A1(NDL::VmullP, NSz::I8, q(0), d(1), d(2))
+            .encode()
+            .unwrap(),
+        le(0xF281_0E02)
+    ); // vmull.p8 q0,d1,d2
+    assert_eq!(
+        NeonDiffLong_A1(NDL::Vqdmull, NSz::I16, q(0), d(1), d(2))
+            .encode()
+            .unwrap(),
+        le(0xF291_0D02)
+    ); // vqdmull.s16 q0,d1,d2
+    assert_eq!(
+        NeonDiffWide_A1(NDW::VaddwS, NSz::I8, q(0), q(1), d(2))
+            .encode()
+            .unwrap(),
+        le(0xF282_0102)
+    ); // vaddw.s8 q0,q1,d2
+    assert_eq!(
+        NeonDiffNarrow_A1(NDN::Vaddhn, NSz::I16, d(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        le(0xF282_0404)
+    ); // vaddhn.i16 d0,q1,q2
+}
+
+#[test]
+fn round_trip__a32_neon_3diff() {
+    use ArmA32Instruction::*;
+    let long_ops = [
+        NDL::VaddlS,
+        NDL::VaddlU,
+        NDL::VsublS,
+        NDL::VsublU,
+        NDL::VabalS,
+        NDL::VabalU,
+        NDL::VabdlS,
+        NDL::VabdlU,
+        NDL::VmlalS,
+        NDL::VmlalU,
+        NDL::VmlslS,
+        NDL::VmlslU,
+        NDL::VmullS,
+        NDL::VmullU,
+        NDL::VmullP,
+        NDL::Vqdmlal,
+        NDL::Vqdmlsl,
+        NDL::Vqdmull,
+    ];
+    let wide_ops = [NDW::VaddwS, NDW::VaddwU, NDW::VsubwS, NDW::VsubwU];
+    let narrow_ops = [NDN::Vaddhn, NDN::Vraddhn, NDN::Vsubhn, NDN::Vrsubhn];
+
+    let mut instructions = Vec::new();
+    for op in long_ops {
+        for size in [NSz::I8, NSz::I16, NSz::I32] {
+            instructions.push(NeonDiffLong_A1(op, size, q(3), d(20), d(7)));
+        }
+    }
+    for op in wide_ops {
+        for size in [NSz::I8, NSz::I16, NSz::I32] {
+            instructions.push(NeonDiffWide_A1(op, size, q(2), q(8), d(31)));
+        }
+    }
+    for op in narrow_ops {
+        for size in [NSz::I16, NSz::I32, NSz::I64] {
+            instructions.push(NeonDiffNarrow_A1(op, size, d(5), q(6), q(11)));
+        }
+    }
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 NEON 3-reg-different round-trip mismatch"
+        );
+    }
+}
+
