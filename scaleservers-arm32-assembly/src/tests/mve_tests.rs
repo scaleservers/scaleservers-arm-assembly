@@ -3555,3 +3555,397 @@ fn encode_round_trip__mve_viddup() {
     }
 }
 
+#[test]
+fn encode_round_trip__mve_vbrsr() {
+    use Arm32MveSize::{I8, I16, I32};
+    use ArmT32Instruction::MveVbrsr;
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb).
+    assert_eq!(
+        MveVbrsr(I8, q(0), q(1), R::R2).encode().unwrap(),
+        vec![0x03, 0xfe, 0x62, 0x1e]
+    ); // vbrsr.8  q0,q1,r2
+    assert_eq!(
+        MveVbrsr(I16, q(0), q(1), R::R2).encode().unwrap(),
+        vec![0x13, 0xfe, 0x62, 0x1e]
+    ); // vbrsr.16 q0,q1,r2
+    assert_eq!(
+        MveVbrsr(I32, q(0), q(1), R::R2).encode().unwrap(),
+        vec![0x23, 0xfe, 0x62, 0x1e]
+    ); // vbrsr.32 q0,q1,r2
+    assert_eq!(
+        MveVbrsr(I32, q(3), q(5), R::R7).encode().unwrap(),
+        vec![0x2b, 0xfe, 0x67, 0x7e]
+    ); // vbrsr.32 q3,q5,r7
+    assert_eq!(
+        MveVbrsr(I32, q(7), q(0), R::R0).encode().unwrap(),
+        vec![0x21, 0xfe, 0x60, 0xfe]
+    ); // vbrsr.32 q7,q0,r0
+    assert_eq!(
+        MveVbrsr(I32, q(0), q(0), R::R14).encode().unwrap(),
+        vec![0x21, 0xfe, 0x6e, 0x1e]
+    ); // vbrsr.32 q0,q0,lr
+    for size in [I8, I16, I32] {
+        for d in [0u8, 3, 7] {
+            for n in [0u8, 4, 7] {
+                for rm in [R::R0, R::R5, R::R12, R::R14] {
+                    round_trip(&MveVbrsr(size, q(d), q(n), rm));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn encode_round_trip__mve_gather_scatter() {
+    use ArmT32Instruction::MveGatherScatter;
+    // MveGatherScatter(is_load, unsigned, esize, msize, scaled, qd, rn, qm).
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb).
+    assert_eq!(
+        MveGatherScatter(true, true, 8, 8, false, q(0), R::R0, q(1))
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xfc, 0x02, 0x0e]
+    ); // vldrb.u8 q0,[r0,q1]
+    assert_eq!(
+        MveGatherScatter(true, false, 16, 8, false, q(0), R::R0, q(1))
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xec, 0x82, 0x0e]
+    ); // vldrb.s16 q0,[r0,q1]
+    assert_eq!(
+        MveGatherScatter(true, true, 32, 8, false, q(0), R::R0, q(1))
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xfc, 0x02, 0x0f]
+    ); // vldrb.u32 q0,[r0,q1]
+    assert_eq!(
+        MveGatherScatter(true, true, 16, 16, false, q(0), R::R0, q(1))
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xfc, 0x92, 0x0e]
+    ); // vldrh.u16 q0,[r0,q1]
+    assert_eq!(
+        MveGatherScatter(true, true, 32, 32, false, q(0), R::R0, q(1))
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xfc, 0x42, 0x0f]
+    ); // vldrw.u32 q0,[r0,q1]
+    assert_eq!(
+        MveGatherScatter(true, true, 64, 64, false, q(0), R::R0, q(1))
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xfc, 0xd2, 0x0f]
+    ); // vldrd.u64 q0,[r0,q1]
+    // scaled (uxtw)
+    assert_eq!(
+        MveGatherScatter(true, true, 16, 16, true, q(0), R::R0, q(1))
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xfc, 0x93, 0x0e]
+    ); // vldrh.u16 q0,[r0,q1,uxtw #1]
+    assert_eq!(
+        MveGatherScatter(true, true, 32, 32, true, q(0), R::R0, q(1))
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xfc, 0x43, 0x0f]
+    ); // vldrw.u32 q0,[r0,q1,uxtw #2]
+    assert_eq!(
+        MveGatherScatter(true, true, 64, 64, true, q(0), R::R0, q(1))
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xfc, 0xd3, 0x0f]
+    ); // vldrd.u64 q0,[r0,q1,uxtw #3]
+    // stores (unsigned = false); vstrb.16 is a narrowing scatter
+    assert_eq!(
+        MveGatherScatter(false, false, 8, 8, false, q(0), R::R0, q(1))
+            .encode()
+            .unwrap(),
+        vec![0x80, 0xec, 0x02, 0x0e]
+    ); // vstrb.8 q0,[r0,q1]
+    assert_eq!(
+        MveGatherScatter(false, false, 16, 8, false, q(0), R::R0, q(1))
+            .encode()
+            .unwrap(),
+        vec![0x80, 0xec, 0x82, 0x0e]
+    ); // vstrb.16 q0,[r0,q1]
+    assert_eq!(
+        MveGatherScatter(false, false, 32, 32, true, q(0), R::R0, q(1))
+            .encode()
+            .unwrap(),
+        vec![0x80, 0xec, 0x43, 0x0f]
+    ); // vstrw.32 q0,[r0,q1,uxtw #2]
+    assert_eq!(
+        MveGatherScatter(true, true, 32, 32, false, q(7), R::R3, q(5))
+            .encode()
+            .unwrap(),
+        vec![0x93, 0xfc, 0x4a, 0xef]
+    ); // vldrw.u32 q7,[r3,q5]
+    // round-trip over the valid (esize >= msize; 64-bit same-size only; byte access never scaled) matrix
+    let load_combos: &[(bool, u8, u8)] = &[
+        (true, 8, 8),
+        (false, 16, 8),
+        (true, 16, 8),
+        (false, 32, 8),
+        (true, 32, 8),
+        (true, 16, 16),
+        (false, 32, 16),
+        (true, 32, 16),
+        (true, 32, 32),
+        (true, 64, 64),
+    ];
+    let store_combos: &[(u8, u8)] = &[
+        (8, 8),
+        (16, 8),
+        (32, 8),
+        (16, 16),
+        (32, 16),
+        (32, 32),
+        (64, 64),
+    ];
+    for &(unsigned, esize, msize) in load_combos {
+        for &scaled in if msize == 8 {
+            &[false][..]
+        } else {
+            &[false, true][..]
+        } {
+            for (d, rn, m) in [(0u8, R::R0, 0u8), (7, R::R12, 7)] {
+                round_trip(&MveGatherScatter(
+                    true,
+                    unsigned,
+                    esize,
+                    msize,
+                    scaled,
+                    q(d),
+                    rn,
+                    q(m),
+                ));
+            }
+        }
+    }
+    for &(esize, msize) in store_combos {
+        for &scaled in if msize == 8 {
+            &[false][..]
+        } else {
+            &[false, true][..]
+        } {
+            for (d, rn, m) in [(0u8, R::R0, 0u8), (7, R::R12, 7)] {
+                round_trip(&MveGatherScatter(
+                    false,
+                    false,
+                    esize,
+                    msize,
+                    scaled,
+                    q(d),
+                    rn,
+                    q(m),
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn encode_round_trip__mve_gather_scatter_vbase() {
+    use ArmT32Instruction::MveGatherScatterBase;
+    // MveGatherScatterBase(is_load, is_dword, writeback, qd, qn, offset).
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb).
+    assert_eq!(
+        MveGatherScatterBase(true, false, false, q(0), q(1), 0)
+            .encode()
+            .unwrap(),
+        vec![0x92, 0xfd, 0x00, 0x1e]
+    ); // vldrw.u32 q0,[q1]
+    assert_eq!(
+        MveGatherScatterBase(true, false, false, q(0), q(1), 4)
+            .encode()
+            .unwrap(),
+        vec![0x92, 0xfd, 0x01, 0x1e]
+    ); // vldrw.u32 q0,[q1,#4]
+    assert_eq!(
+        MveGatherScatterBase(true, false, false, q(0), q(1), -4)
+            .encode()
+            .unwrap(),
+        vec![0x12, 0xfd, 0x01, 0x1e]
+    ); // vldrw.u32 q0,[q1,#-4]
+    assert_eq!(
+        MveGatherScatterBase(true, false, false, q(0), q(1), 508)
+            .encode()
+            .unwrap(),
+        vec![0x92, 0xfd, 0x7f, 0x1e]
+    ); // vldrw.u32 q0,[q1,#508]
+    assert_eq!(
+        MveGatherScatterBase(true, true, false, q(0), q(1), 8)
+            .encode()
+            .unwrap(),
+        vec![0x92, 0xfd, 0x01, 0x1f]
+    ); // vldrd.u64 q0,[q1,#8]
+    assert_eq!(
+        MveGatherScatterBase(true, true, false, q(0), q(1), 1016)
+            .encode()
+            .unwrap(),
+        vec![0x92, 0xfd, 0x7f, 0x1f]
+    ); // vldrd.u64 q0,[q1,#1016]
+    assert_eq!(
+        MveGatherScatterBase(true, false, true, q(0), q(1), 4)
+            .encode()
+            .unwrap(),
+        vec![0xb2, 0xfd, 0x01, 0x1e]
+    ); // vldrw.u32 q0,[q1,#4]!
+    assert_eq!(
+        MveGatherScatterBase(true, false, false, q(3), q(5), 16)
+            .encode()
+            .unwrap(),
+        vec![0x9a, 0xfd, 0x04, 0x7e]
+    ); // vldrw.u32 q3,[q5,#16]
+    assert_eq!(
+        MveGatherScatterBase(true, false, false, q(7), q(0), 0)
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xfd, 0x00, 0xfe]
+    ); // vldrw.u32 q7,[q0]
+    assert_eq!(
+        MveGatherScatterBase(false, false, false, q(0), q(1), 4)
+            .encode()
+            .unwrap(),
+        vec![0x82, 0xfd, 0x01, 0x1e]
+    ); // vstrw.32 q0,[q1,#4]
+    assert_eq!(
+        MveGatherScatterBase(false, true, true, q(0), q(1), 8)
+            .encode()
+            .unwrap(),
+        vec![0xa2, 0xfd, 0x01, 0x1f]
+    ); // vstrd.64 q0,[q1,#8]!
+    for is_load in [true, false] {
+        for is_dword in [false, true] {
+            for writeback in [false, true] {
+                let scale = if is_dword { 8 } else { 4 };
+                for k in [0i32, 1, -1, 5, 127, -100] {
+                    for d in [0u8, 3, 7] {
+                        for n in [0u8, 5] {
+                            round_trip(&MveGatherScatterBase(
+                                is_load,
+                                is_dword,
+                                writeback,
+                                q(d),
+                                q(n),
+                                k * scale,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn encode_round_trip__mve_interleave() {
+    use Arm32MveSize::{I8, I16, I32};
+    use ArmT32Instruction::MveInterleave;
+    // MveInterleave(is_load, is_quad, pass, size, qd, rn, writeback).
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb).
+    assert_eq!(
+        MveInterleave(true, false, 0, I8, q(0), R::R0, false)
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xfc, 0x00, 0x1e]
+    ); // vld20.8 {q0,q1},[r0]
+    assert_eq!(
+        MveInterleave(true, false, 1, I8, q(0), R::R0, false)
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xfc, 0x20, 0x1e]
+    ); // vld21.8 {q0,q1},[r0]
+    assert_eq!(
+        MveInterleave(true, false, 0, I16, q(0), R::R0, false)
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xfc, 0x80, 0x1e]
+    ); // vld20.16 {q0,q1},[r0]
+    assert_eq!(
+        MveInterleave(true, false, 0, I32, q(0), R::R0, false)
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xfc, 0x00, 0x1f]
+    ); // vld20.32 {q0,q1},[r0]
+    assert_eq!(
+        MveInterleave(true, false, 0, I8, q(2), R::R4, false)
+            .encode()
+            .unwrap(),
+        vec![0x94, 0xfc, 0x00, 0x5e]
+    ); // vld20.8 {q2,q3},[r4]
+    assert_eq!(
+        MveInterleave(true, false, 0, I8, q(0), R::R0, true)
+            .encode()
+            .unwrap(),
+        vec![0xb0, 0xfc, 0x00, 0x1e]
+    ); // vld20.8 {q0,q1},[r0]!
+    assert_eq!(
+        MveInterleave(true, true, 0, I8, q(0), R::R0, false)
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xfc, 0x01, 0x1e]
+    ); // vld40.8 {q0..q3},[r0]
+    assert_eq!(
+        MveInterleave(true, true, 3, I8, q(0), R::R0, false)
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xfc, 0x61, 0x1e]
+    ); // vld43.8 {q0..q3},[r0]
+    assert_eq!(
+        MveInterleave(true, true, 0, I32, q(0), R::R0, true)
+            .encode()
+            .unwrap(),
+        vec![0xb0, 0xfc, 0x01, 0x1f]
+    ); // vld40.32 {q0..q3},[r0]!
+    assert_eq!(
+        MveInterleave(true, true, 0, I8, q(4), R::R0, false)
+            .encode()
+            .unwrap(),
+        vec![0x90, 0xfc, 0x01, 0x9e]
+    ); // vld40.8 {q4..q7},[r0]
+    assert_eq!(
+        MveInterleave(false, false, 0, I8, q(0), R::R0, false)
+            .encode()
+            .unwrap(),
+        vec![0x80, 0xfc, 0x00, 0x1e]
+    ); // vst20.8 {q0,q1},[r0]
+    assert_eq!(
+        MveInterleave(false, false, 1, I16, q(4), R::R2, false)
+            .encode()
+            .unwrap(),
+        vec![0x82, 0xfc, 0xa0, 0x9e]
+    ); // vst21.16 {q4,q5},[r2]
+    assert_eq!(
+        MveInterleave(false, true, 3, I32, q(0), R::R0, true)
+            .encode()
+            .unwrap(),
+        vec![0xa0, 0xfc, 0x61, 0x1f]
+    ); // vst43.32 {q0..q3},[r0]!
+    for is_load in [true, false] {
+        for is_quad in [false, true] {
+            let max_pass: u8 = if is_quad { 4 } else { 2 };
+            let max_qd: u8 = if is_quad { 4 } else { 6 };
+            for pass in 0..max_pass {
+                for size in [I8, I16, I32] {
+                    for writeback in [false, true] {
+                        for qd in [0u8, max_qd] {
+                            for rn in [R::R0, R::R10] {
+                                round_trip(&MveInterleave(
+                                    is_load,
+                                    is_quad,
+                                    pass,
+                                    size,
+                                    q(qd),
+                                    rn,
+                                    writeback,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
