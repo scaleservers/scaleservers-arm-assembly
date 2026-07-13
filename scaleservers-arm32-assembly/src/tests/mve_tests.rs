@@ -1222,3 +1222,383 @@ fn round_trip__mve_vqmovn_vqmovun() {
     }
 }
 
+#[test]
+fn encode__mve_vmull_vmulh_vqdmull_exact_bytes() {
+    use Arm32MveSize::*;
+    use ArmT32Instruction::{MveVmulh, MveVmull, MveVqdmull, MveVqdmullScalar};
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb)
+    // VMULL integer (widening, b/t): U=bit28, size[21:20]
+    assert_eq!(
+        MveVmull(false, false, false, I8, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x03, 0xee, 0x04, 0x0e]
+    ); // vmullb.s8  q0,q1,q2
+    assert_eq!(
+        MveVmull(false, false, true, I8, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x03, 0xee, 0x04, 0x1e]
+    ); // vmullt.s8  q0,q1,q2
+    assert_eq!(
+        MveVmull(false, false, false, I16, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x13, 0xee, 0x04, 0x0e]
+    ); // vmullb.s16 q0,q1,q2
+    assert_eq!(
+        MveVmull(false, false, false, I32, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x23, 0xee, 0x04, 0x0e]
+    ); // vmullb.s32 q0,q1,q2
+    assert_eq!(
+        MveVmull(false, true, false, I8, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x03, 0xfe, 0x04, 0x0e]
+    ); // vmullb.u8  q0,q1,q2
+    // VMULL polynomial: size[21:20]=11, bit28 = P8(0)/P16(1)
+    assert_eq!(
+        MveVmull(true, false, false, I8, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x33, 0xee, 0x04, 0x0e]
+    ); // vmullb.p8  q0,q1,q2
+    assert_eq!(
+        MveVmull(true, false, true, I8, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x33, 0xee, 0x04, 0x1e]
+    ); // vmullt.p8  q0,q1,q2
+    assert_eq!(
+        MveVmull(true, false, false, I16, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x33, 0xfe, 0x04, 0x0e]
+    ); // vmullb.p16 q0,q1,q2
+    // register placement (Qd[15:13], Qn[19:17], Qm[3:1])
+    assert_eq!(
+        MveVmull(false, false, false, I8, q(4), q(5), q(6))
+            .encode()
+            .unwrap(),
+        vec![0x0b, 0xee, 0x0c, 0x8e]
+    ); // vmullb.s8  q4,q5,q6
+    assert_eq!(
+        MveVmull(false, false, false, I8, q(3), q(0), q(7))
+            .encode()
+            .unwrap(),
+        vec![0x01, 0xee, 0x0e, 0x6e]
+    ); // vmullb.s8  q3,q0,q7
+    // VMULH / VRMULH (high half): U=bit28, rounding=bit12
+    assert_eq!(
+        MveVmulh(false, false, I8, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x03, 0xee, 0x05, 0x0e]
+    ); // vmulh.s8   q0,q1,q2
+    assert_eq!(
+        MveVmulh(false, true, I8, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x03, 0xfe, 0x05, 0x0e]
+    ); // vmulh.u8   q0,q1,q2
+    assert_eq!(
+        MveVmulh(false, false, I32, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x23, 0xee, 0x05, 0x0e]
+    ); // vmulh.s32  q0,q1,q2
+    assert_eq!(
+        MveVmulh(true, false, I8, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x03, 0xee, 0x05, 0x1e]
+    ); // vrmulh.s8  q0,q1,q2
+    assert_eq!(
+        MveVmulh(true, true, I16, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x13, 0xfe, 0x05, 0x1e]
+    ); // vrmulh.u16 q0,q1,q2
+    // VQDMULL (saturating doubling long): sz=bit28 (.s16=0/.s32=1), vector + scalar
+    assert_eq!(
+        MveVqdmull(false, false, q(0), q(1), q(2)).encode().unwrap(),
+        vec![0x32, 0xee, 0x05, 0x0f]
+    ); // vqdmullb.s16 q0,q1,q2
+    assert_eq!(
+        MveVqdmull(true, true, q(0), q(1), q(2)).encode().unwrap(),
+        vec![0x32, 0xfe, 0x05, 0x1f]
+    ); // vqdmullt.s32 q0,q1,q2
+    assert_eq!(
+        MveVqdmullScalar(false, false, q(0), q(1), R::R2)
+            .encode()
+            .unwrap(),
+        vec![0x32, 0xee, 0x62, 0x0f]
+    ); // vqdmullb.s16 q0,q1,r2
+    assert_eq!(
+        MveVqdmullScalar(true, true, q(0), q(1), R::R3)
+            .encode()
+            .unwrap(),
+        vec![0x32, 0xfe, 0x63, 0x1f]
+    ); // vqdmullt.s32 q0,q1,r3
+}
+
+#[test]
+fn round_trip__mve_vmull_vmulh_vqdmull() {
+    let regs = [(0u8, 0u8, 0u8), (7, 1, 3), (2, 5, 7), (4, 6, 1)];
+    for &(d, n, m) in &regs {
+        for top in [false, true] {
+            for size in [Arm32MveSize::I8, Arm32MveSize::I16, Arm32MveSize::I32] {
+                for unsigned in [false, true] {
+                    round_trip(&ArmT32Instruction::MveVmull(
+                        false,
+                        unsigned,
+                        top,
+                        size,
+                        q(d),
+                        q(n),
+                        q(m),
+                    ));
+                    round_trip(&ArmT32Instruction::MveVmulh(
+                        false,
+                        unsigned,
+                        size,
+                        q(d),
+                        q(n),
+                        q(m),
+                    ));
+                    round_trip(&ArmT32Instruction::MveVmulh(
+                        true,
+                        unsigned,
+                        size,
+                        q(d),
+                        q(n),
+                        q(m),
+                    ));
+                }
+            }
+            for size in [Arm32MveSize::I8, Arm32MveSize::I16] {
+                round_trip(&ArmT32Instruction::MveVmull(
+                    true,
+                    false,
+                    top,
+                    size,
+                    q(d),
+                    q(n),
+                    q(m),
+                )); // poly P8/P16
+            }
+            for size32 in [false, true] {
+                round_trip(&ArmT32Instruction::MveVqdmull(
+                    top,
+                    size32,
+                    q(d),
+                    q(n),
+                    q(m),
+                ));
+                round_trip(&ArmT32Instruction::MveVqdmullScalar(
+                    top,
+                    size32,
+                    q(d),
+                    q(n),
+                    R::from_operand_bits(n),
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn encode__mve_vqdmladh_vqdmlsdh_exact_bytes() {
+    use Arm32MveSize::*;
+    use ArmT32Instruction::MveVqdmladh;
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb)
+    // (subtract, rounding, exchange, size, qd, qn, qm)
+    assert_eq!(
+        MveVqdmladh(false, false, false, I8, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x02, 0xee, 0x04, 0x0e]
+    ); // vqdmladh.s8
+    assert_eq!(
+        MveVqdmladh(false, false, true, I8, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x02, 0xee, 0x04, 0x1e]
+    ); // vqdmladhx.s8
+    assert_eq!(
+        MveVqdmladh(false, false, false, I16, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x12, 0xee, 0x04, 0x0e]
+    ); // vqdmladh.s16
+    assert_eq!(
+        MveVqdmladh(false, false, false, I32, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x22, 0xee, 0x04, 0x0e]
+    ); // vqdmladh.s32
+    assert_eq!(
+        MveVqdmladh(false, true, false, I8, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x02, 0xee, 0x05, 0x0e]
+    ); // vqrdmladh.s8
+    assert_eq!(
+        MveVqdmladh(false, true, true, I8, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x02, 0xee, 0x05, 0x1e]
+    ); // vqrdmladhx.s8
+    assert_eq!(
+        MveVqdmladh(true, false, false, I8, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x02, 0xfe, 0x04, 0x0e]
+    ); // vqdmlsdh.s8
+    assert_eq!(
+        MveVqdmladh(true, false, true, I8, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x02, 0xfe, 0x04, 0x1e]
+    ); // vqdmlsdhx.s8
+    assert_eq!(
+        MveVqdmladh(true, false, false, I32, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x22, 0xfe, 0x04, 0x0e]
+    ); // vqdmlsdh.s32
+    assert_eq!(
+        MveVqdmladh(true, true, true, I16, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x12, 0xfe, 0x05, 0x1e]
+    ); // vqrdmlsdhx.s16
+    // register placement
+    assert_eq!(
+        MveVqdmladh(false, false, false, I8, q(4), q(5), q(6))
+            .encode()
+            .unwrap(),
+        vec![0x0a, 0xee, 0x0c, 0x8e]
+    ); // vqdmladh.s8 q4,q5,q6
+    assert_eq!(
+        MveVqdmladh(false, false, false, I8, q(3), q(0), q(7))
+            .encode()
+            .unwrap(),
+        vec![0x00, 0xee, 0x0e, 0x6e]
+    ); // vqdmladh.s8 q3,q0,q7
+}
+
+#[test]
+fn round_trip__mve_vqdmladh_vqdmlsdh() {
+    for &(d, n, m) in &[(0u8, 0u8, 0u8), (7, 1, 3), (2, 5, 7), (4, 6, 1)] {
+        for subtract in [false, true] {
+            for rounding in [false, true] {
+                for exchange in [false, true] {
+                    for size in [Arm32MveSize::I8, Arm32MveSize::I16, Arm32MveSize::I32] {
+                        round_trip(&ArmT32Instruction::MveVqdmladh(
+                            subtract,
+                            rounding,
+                            exchange,
+                            size,
+                            q(d),
+                            q(n),
+                            q(m),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn encode__mve_register_shifts_and_vshll_exact_bytes() {
+    use Arm32MveSize::*;
+    use ArmT32Instruction::{MveShiftByScalar, MveShiftByVector, MveVshll};
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb)
+    // by vector (rounding, saturating, unsigned, size, qd, qm, qn)
+    assert_eq!(
+        MveShiftByVector(false, false, false, I8, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x04, 0xef, 0x42, 0x04]
+    ); // vshl.s8   q0,q1,q2
+    assert_eq!(
+        MveShiftByVector(true, false, true, I16, q(3), q(4), q(5))
+            .encode()
+            .unwrap(),
+        vec![0x1a, 0xff, 0x48, 0x65]
+    ); // vrshl.u16 q3,q4,q5
+    assert_eq!(
+        MveShiftByVector(false, true, false, I32, q(7), q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0x22, 0xef, 0x50, 0xe4]
+    ); // vqshl.s32 q7,q0,q1
+    assert_eq!(
+        MveShiftByVector(true, true, true, I8, q(2), q(6), q(3))
+            .encode()
+            .unwrap(),
+        vec![0x06, 0xff, 0x5c, 0x45]
+    ); // vqrshl.u8 q2,q6,q3
+    // by GPR scalar (rounding, saturating, unsigned, size, qda, rm)
+    assert_eq!(
+        MveShiftByScalar(false, false, false, I8, q(0), R::R2)
+            .encode()
+            .unwrap(),
+        vec![0x31, 0xee, 0x62, 0x1e]
+    ); // vshl.s8   q0,r2
+    assert_eq!(
+        MveShiftByScalar(true, false, true, I32, q(5), R::R7)
+            .encode()
+            .unwrap(),
+        vec![0x3b, 0xfe, 0x67, 0xbe]
+    ); // vrshl.u32 q5,r7
+    assert_eq!(
+        MveShiftByScalar(false, true, false, I8, q(3), R::R10)
+            .encode()
+            .unwrap(),
+        vec![0x31, 0xee, 0xea, 0x7e]
+    ); // vqshl.s8  q3,r10
+    assert_eq!(
+        MveShiftByScalar(true, true, true, I16, q(6), R::R0)
+            .encode()
+            .unwrap(),
+        vec![0x37, 0xfe, 0xe0, 0xde]
+    ); // vqrshl.u16 q6,r0
+    // VSHLL T1 (shift 1..esize-1)
+    assert_eq!(
+        MveVshll(false, false, I8, 1, q(0), q(1)).encode().unwrap(),
+        vec![0xa9, 0xee, 0x42, 0x0f]
+    ); // vshllb.s8  q0,q1,#1
+    assert_eq!(
+        MveVshll(true, false, I16, 15, q(0), q(1)).encode().unwrap(),
+        vec![0xbf, 0xee, 0x42, 0x1f]
+    ); // vshllt.s16 q0,q1,#15
+    assert_eq!(
+        MveVshll(false, true, I8, 5, q(0), q(1)).encode().unwrap(),
+        vec![0xad, 0xfe, 0x42, 0x0f]
+    ); // vshllb.u8  q0,q1,#5
+    assert_eq!(
+        MveVshll(false, false, I8, 2, q(4), q(5)).encode().unwrap(),
+        vec![0xaa, 0xee, 0x4a, 0x8f]
+    ); // vshllb.s8  q4,q5,#2
+    // VSHLL T2 (shift == esize)
+    assert_eq!(
+        MveVshll(false, false, I8, 8, q(0), q(1)).encode().unwrap(),
+        vec![0x31, 0xee, 0x03, 0x0e]
+    ); // vshllb.s8  q0,q1,#8
+    assert_eq!(
+        MveVshll(false, false, I16, 16, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0x35, 0xee, 0x03, 0x0e]
+    ); // vshllb.s16 q0,q1,#16
+    assert_eq!(
+        MveVshll(false, true, I8, 8, q(0), q(1)).encode().unwrap(),
+        vec![0x31, 0xfe, 0x03, 0x0e]
+    ); // vshllb.u8  q0,q1,#8
+}
+
