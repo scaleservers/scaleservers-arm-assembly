@@ -810,3 +810,444 @@ fn round_trip__a32_parallel_and_sel() {
     );
 }
 
+// ---- A5: extend / reverse / CLZ ----
+
+#[test]
+fn encode__a32_extend_reverse_clz_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(
+        Extend_A1(al, Ext::Sxtb, R::R0, R::R1, 0).encode().unwrap(),
+        le(0xE6AF_0071)
+    ); // sxtb   r0, r1
+    assert_eq!(
+        Extend_A1(al, Ext::Sxtb, R::R0, R::R1, 8).encode().unwrap(),
+        le(0xE6AF_0471)
+    ); // sxtb   r0, r1, ror #8
+    assert_eq!(
+        Extend_A1(al, Ext::Sxth, R::R0, R::R1, 0).encode().unwrap(),
+        le(0xE6BF_0071)
+    ); // sxth   r0, r1
+    assert_eq!(
+        Extend_A1(al, Ext::Uxth, R::R3, R::R4, 0).encode().unwrap(),
+        le(0xE6FF_3074)
+    ); // uxth   r3, r4
+    assert_eq!(
+        Extend_A1(al, Ext::Uxtb16, R::R0, R::R1, 0)
+            .encode()
+            .unwrap(),
+        le(0xE6CF_0071)
+    ); // uxtb16 r0, r1
+    assert_eq!(
+        ExtendAndAdd_A1(al, Ext::Sxtb, R::R0, R::R1, R::R2, 0)
+            .encode()
+            .unwrap(),
+        le(0xE6A1_0072)
+    ); // sxtab r0, r1, r2
+    assert_eq!(Rev_A1(al, R::R0, R::R1).encode().unwrap(), le(0xE6BF_0F31)); // rev    r0, r1
+    assert_eq!(
+        Rev16_A1(al, R::R2, R::R3).encode().unwrap(),
+        le(0xE6BF_2FB3)
+    ); // rev16  r2, r3
+    assert_eq!(
+        Revsh_A1(al, R::R4, R::R5).encode().unwrap(),
+        le(0xE6FF_4FB5)
+    ); // revsh  r4, r5
+    assert_eq!(Rbit_A1(al, R::R6, R::R7).encode().unwrap(), le(0xE6FF_6F37)); // rbit   r6, r7
+    assert_eq!(Clz_A1(al, R::R0, R::R1).encode().unwrap(), le(0xE16F_0F11)); // clz    r0, r1
+}
+
+#[test]
+fn round_trip__a32_extend_reverse_clz() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let types = [
+        Ext::Sxtb16,
+        Ext::Sxtb,
+        Ext::Sxth,
+        Ext::Uxtb16,
+        Ext::Uxtb,
+        Ext::Uxth,
+    ];
+    let mut instructions = Vec::new();
+    for ty in types {
+        for rot in [0u8, 8, 16, 24] {
+            instructions.push(Extend_A1(al, ty, R::R0, R::R1, rot));
+            instructions.push(ExtendAndAdd_A1(al, ty, R::R2, R::R3, R::R4, rot));
+        }
+    }
+    instructions.push(Rev_A1(al, R::R0, R::R1));
+    instructions.push(Rev16_A1(Cond::NotEqual, R::R2, R::R3));
+    instructions.push(Revsh_A1(al, R::R4, R::R5));
+    instructions.push(Rbit_A1(al, R::R6, R::R7));
+    instructions.push(Clz_A1(al, R::R8, R::R9));
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 extend/reverse/clz round-trip mismatch"
+        );
+    }
+}
+
+// ---- A5: pack / saturate / sum-of-absolute-differences ----
+
+#[test]
+fn encode__a32_pack_saturate_sad_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(
+        Pkhbt_A1(al, R::R0, R::R1, R::R2, 0).encode().unwrap(),
+        le(0xE681_0012)
+    ); // pkhbt  r0, r1, r2
+    assert_eq!(
+        Pkhbt_A1(al, R::R0, R::R1, R::R2, 4).encode().unwrap(),
+        le(0xE681_0212)
+    ); // pkhbt  r0, r1, r2, lsl #4
+    assert_eq!(
+        Pkhtb_A1(al, R::R0, R::R1, R::R2, 1).encode().unwrap(),
+        le(0xE681_00D2)
+    ); // pkhtb  r0, r1, r2, asr #1
+    assert_eq!(
+        Ssat_A1(al, R::R0, 1, R::R1, Shift::Lsl(0))
+            .encode()
+            .unwrap(),
+        le(0xE6A0_0011)
+    ); // ssat   r0, #1, r1
+    assert_eq!(
+        Ssat_A1(al, R::R0, 32, R::R1, Shift::Asr(1))
+            .encode()
+            .unwrap(),
+        le(0xE6BF_00D1)
+    ); // ssat   r0, #32, r1, asr #1
+    assert_eq!(
+        Usat_A1(al, R::R0, 0, R::R1, Shift::Lsl(0))
+            .encode()
+            .unwrap(),
+        le(0xE6E0_0011)
+    ); // usat   r0, #0, r1
+    assert_eq!(
+        Usat_A1(al, R::R3, 15, R::R4, Shift::Lsl(5))
+            .encode()
+            .unwrap(),
+        le(0xE6EF_3294)
+    ); // usat   r3, #15, r4, lsl #5
+    assert_eq!(
+        Ssat16_A1(al, R::R0, 1, R::R1).encode().unwrap(),
+        le(0xE6A0_0F31)
+    ); // ssat16 r0, #1, r1
+    assert_eq!(
+        Usat16_A1(al, R::R2, 15, R::R3).encode().unwrap(),
+        le(0xE6EF_2F33)
+    ); // usat16 r2, #15, r3
+    assert_eq!(
+        Usad8_A1(al, R::R0, R::R1, R::R2).encode().unwrap(),
+        le(0xE780_F211)
+    ); // usad8  r0, r1, r2
+    assert_eq!(
+        Usada8_A1(al, R::R0, R::R1, R::R2, R::R3).encode().unwrap(),
+        le(0xE780_3211)
+    ); // usada8 r0, r1, r2, r3
+}
+
+#[test]
+fn round_trip__a32_pack_saturate_sad() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let instructions = [
+        Pkhbt_A1(al, R::R0, R::R1, R::R2, 0),
+        Pkhbt_A1(al, R::R3, R::R4, R::R5, 31),
+        Pkhtb_A1(al, R::R6, R::R7, R::R8, 1),
+        Pkhtb_A1(al, R::R9, R::R10, R::R11, 32),
+        Ssat_A1(al, R::R0, 1, R::R1, Shift::Lsl(0)),
+        Ssat_A1(al, R::R2, 32, R::R3, Shift::Lsl(31)),
+        Ssat_A1(al, R::R4, 16, R::R5, Shift::Asr(1)),
+        Ssat_A1(al, R::R6, 8, R::R7, Shift::Asr(32)),
+        Usat_A1(al, R::R0, 0, R::R1, Shift::Lsl(0)),
+        Usat_A1(al, R::R2, 31, R::R3, Shift::Asr(31)),
+        Ssat16_A1(al, R::R0, 1, R::R1),
+        Ssat16_A1(al, R::R2, 16, R::R3),
+        Usat16_A1(al, R::R4, 0, R::R5),
+        Usat16_A1(al, R::R6, 15, R::R7),
+        Usad8_A1(Cond::NotEqual, R::R0, R::R1, R::R2),
+        Usada8_A1(al, R::R3, R::R4, R::R5, R::R6),
+    ];
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 pack/saturate/sad round-trip mismatch"
+        );
+    }
+}
+
+// ---- A6: bitfield ----
+
+#[test]
+fn encode__a32_bitfield_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(Bfc_A1(al, R::R0, 0, 1).encode().unwrap(), le(0xE7C0_001F)); // bfc  r0, #0, #1
+    assert_eq!(
+        Bfi_A1(al, R::R2, R::R3, 4, 8).encode().unwrap(),
+        le(0xE7CB_2213)
+    ); // bfi  r2, r3, #4, #8
+    assert_eq!(
+        Sbfx_A1(al, R::R2, R::R3, 4, 8).encode().unwrap(),
+        le(0xE7A7_2253)
+    ); // sbfx r2, r3, #4, #8
+    assert_eq!(
+        Ubfx_A1(al, R::R0, R::R1, 0, 32).encode().unwrap(),
+        le(0xE7FF_0051)
+    ); // ubfx r0, r1, #0, #32
+}
+
+#[test]
+fn round_trip__a32_bitfield() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let instructions = [
+        Bfc_A1(al, R::R0, 0, 32),
+        Bfc_A1(al, R::R1, 31, 1),
+        Bfi_A1(al, R::R2, R::R3, 4, 8),
+        Bfi_A1(Cond::NotEqual, R::R5, R::R6, 0, 32),
+        Sbfx_A1(al, R::R0, R::R1, 0, 1),
+        Sbfx_A1(al, R::R2, R::R3, 31, 1),
+        Ubfx_A1(al, R::R4, R::R5, 8, 16),
+        Ubfx_A1(al, R::R6, R::R7, 0, 32),
+    ];
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(decoded, instruction, "A32 bitfield round-trip mismatch");
+    }
+}
+
+// ---- A7: load/store single (word/byte) ----
+
+#[test]
+fn encode__a32_load_store_word_byte_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let imm = |add, imm12| Mem::Immediate { add, imm12 };
+    assert_eq!(
+        Ldr_A1(al, R::R0, R::R1, imm(true, 0), Idx::Offset)
+            .encode()
+            .unwrap(),
+        le(0xE591_0000)
+    ); // ldr  r0, [r1]
+    assert_eq!(
+        Ldr_A1(al, R::R0, R::R1, imm(true, 4), Idx::Offset)
+            .encode()
+            .unwrap(),
+        le(0xE591_0004)
+    ); // ldr  r0, [r1, #4]
+    assert_eq!(
+        Ldr_A1(al, R::R0, R::R1, imm(false, 4), Idx::Offset)
+            .encode()
+            .unwrap(),
+        le(0xE511_0004)
+    ); // ldr  r0, [r1, #-4]
+    assert_eq!(
+        Str_A1(al, R::R2, R::R3, imm(true, 8), Idx::PreIndex)
+            .encode()
+            .unwrap(),
+        le(0xE5A3_2008)
+    ); // str  r2, [r3, #8]!
+    assert_eq!(
+        Ldr_A1(al, R::R0, R::R1, imm(true, 4), Idx::PostIndex)
+            .encode()
+            .unwrap(),
+        le(0xE491_0004)
+    ); // ldr  r0, [r1], #4
+    assert_eq!(
+        Ldrb_A1(
+            al,
+            R::R0,
+            R::R1,
+            Mem::Register {
+                add: true,
+                rm: R::R2,
+                shift: Shift::Lsl(0)
+            },
+            Idx::Offset
+        )
+        .encode()
+        .unwrap(),
+        le(0xE7D1_0002)
+    ); // ldrb r0, [r1, r2]
+    assert_eq!(
+        Ldr_A1(
+            al,
+            R::R0,
+            R::R1,
+            Mem::Register {
+                add: true,
+                rm: R::R2,
+                shift: Shift::Lsl(2)
+            },
+            Idx::Offset
+        )
+        .encode()
+        .unwrap(),
+        le(0xE791_0102)
+    ); // ldr  r0, [r1, r2, lsl #2]
+    assert_eq!(
+        Ldr_A1(al, R::R0, R::R15, imm(true, 8), Idx::Offset)
+            .encode()
+            .unwrap(),
+        le(0xE59F_0008)
+    ); // ldr  r0, [pc, #8]  (literal)
+    assert_eq!(
+        Ldrt_A1(al, R::R0, R::R1, imm(true, 4)).encode().unwrap(),
+        le(0xE4B1_0004)
+    ); // ldrt r0, [r1], #4
+}
+
+#[test]
+fn round_trip__a32_load_store_word_byte() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let imm_offsets = [
+        Mem::Immediate {
+            add: true,
+            imm12: 0,
+        },
+        Mem::Immediate {
+            add: true,
+            imm12: 4095,
+        },
+        Mem::Immediate {
+            add: false,
+            imm12: 100,
+        },
+    ];
+    let reg_offsets = [
+        Mem::Register {
+            add: true,
+            rm: R::R2,
+            shift: Shift::Lsl(0),
+        },
+        Mem::Register {
+            add: false,
+            rm: R::R3,
+            shift: Shift::Asr(31),
+        },
+        Mem::Register {
+            add: true,
+            rm: R::R4,
+            shift: Shift::Rrx,
+        },
+    ];
+    let modes = [Idx::Offset, Idx::PreIndex, Idx::PostIndex];
+    let mut instructions = Vec::new();
+    for off in imm_offsets.iter().chain(reg_offsets.iter()) {
+        for mode in modes {
+            instructions.push(Ldr_A1(al, R::R0, R::R1, *off, mode));
+            instructions.push(Str_A1(al, R::R5, R::R6, *off, mode));
+            instructions.push(Ldrb_A1(al, R::R7, R::R8, *off, mode));
+            instructions.push(Strb_A1(al, R::R9, R::R10, *off, mode));
+        }
+        instructions.push(Ldrt_A1(al, R::R0, R::R1, *off));
+        instructions.push(Strt_A1(al, R::R2, R::R3, *off));
+        instructions.push(Ldrbt_A1(al, R::R4, R::R5, *off));
+        instructions.push(Strbt_A1(al, R::R6, R::R7, *off));
+    }
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 load/store word/byte round-trip mismatch"
+        );
+    }
+}
+
+// ---- A8: load/store halfword / dual / signed ----
+
+#[test]
+fn encode__a32_load_store_halfword_dual_signed_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let imm = |add, imm8| Mem8::Immediate { add, imm8 };
+    assert_eq!(
+        Ldrh_A1(al, R::R0, R::R1, imm(true, 0), Idx::Offset)
+            .encode()
+            .unwrap(),
+        le(0xE1D1_00B0)
+    ); // ldrh  r0, [r1]
+    assert_eq!(
+        Ldrh_A1(al, R::R0, R::R1, imm(true, 4), Idx::Offset)
+            .encode()
+            .unwrap(),
+        le(0xE1D1_00B4)
+    ); // ldrh  r0, [r1, #4]
+    assert_eq!(
+        Ldrh_A1(al, R::R0, R::R1, imm(false, 8), Idx::Offset)
+            .encode()
+            .unwrap(),
+        le(0xE151_00B8)
+    ); // ldrh  r0, [r1, #-8]
+    assert_eq!(
+        Strh_A1(al, R::R2, R::R3, imm(true, 16), Idx::PreIndex)
+            .encode()
+            .unwrap(),
+        le(0xE1E3_21B0)
+    ); // strh  r2, [r3, #16]!
+    assert_eq!(
+        Ldrsb_A1(
+            al,
+            R::R0,
+            R::R1,
+            Mem8::Register {
+                add: true,
+                rm: R::R2
+            },
+            Idx::Offset
+        )
+        .encode()
+        .unwrap(),
+        le(0xE191_00D2)
+    ); // ldrsb r0, [r1, r2]
+    assert_eq!(
+        Ldrsh_A1(al, R::R4, R::R5, imm(true, 10), Idx::Offset)
+            .encode()
+            .unwrap(),
+        le(0xE1D5_40FA)
+    ); // ldrsh r4, [r5, #10]
+    assert_eq!(
+        Ldrd_A1(al, R::R0, R::R1, imm(true, 8), Idx::Offset)
+            .encode()
+            .unwrap(),
+        le(0xE1C1_00D8)
+    ); // ldrd  r0, r1, [r1, #8]
+    assert_eq!(
+        Strd_A1(al, R::R2, R::R3, imm(true, 16), Idx::Offset)
+            .encode()
+            .unwrap(),
+        le(0xE1C3_21F0)
+    ); // strd  r2, r3, [r3, #16]
+    assert_eq!(
+        Ldrht_A1(al, R::R0, R::R1, imm(true, 4)).encode().unwrap(),
+        le(0xE0F1_00B4)
+    ); // ldrht r0, [r1], #4
+}
+
