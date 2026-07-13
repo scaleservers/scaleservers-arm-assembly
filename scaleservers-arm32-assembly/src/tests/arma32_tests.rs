@@ -2060,3 +2060,408 @@ fn round_trip__a32_vfp_load_store() {
     }
 }
 
+// ---- N1b: VFP data-processing ----
+
+#[test]
+fn encode__a32_vfp_data_processing_exact_bytes() {
+    use crate::Arm32FpDataOperation2::*;
+    use crate::Arm32FpDataOperation3::*;
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(
+        FpDataProcess3_Single_A1(al, Vadd, s(0), s(1), s(2))
+            .encode()
+            .unwrap(),
+        le(0xEE30_0A81)
+    ); // vadd.f32 s0, s1, s2
+    assert_eq!(
+        FpDataProcess3_Single_A1(al, Vsub, s(3), s(4), s(5))
+            .encode()
+            .unwrap(),
+        le(0xEE72_1A62)
+    ); // vsub.f32 s3, s4, s5
+    assert_eq!(
+        FpDataProcess3_Single_A1(al, Vmul, s(6), s(7), s(8))
+            .encode()
+            .unwrap(),
+        le(0xEE23_3A84)
+    ); // vmul.f32 s6, s7, s8
+    assert_eq!(
+        FpDataProcess3_Single_A1(al, Vdiv, s(0), s(1), s(2))
+            .encode()
+            .unwrap(),
+        le(0xEE80_0A81)
+    ); // vdiv.f32 s0, s1, s2
+    assert_eq!(
+        FpDataProcess3_Double_A1(al, Vadd, d(0), d(1), d(2))
+            .encode()
+            .unwrap(),
+        le(0xEE31_0B02)
+    ); // vadd.f64 d0, d1, d2
+    assert_eq!(
+        FpDataProcess2_Single_A1(al, Vmov, s(10), s(11))
+            .encode()
+            .unwrap(),
+        le(0xEEB0_5A65)
+    ); // vmov.f32 s10, s11
+    assert_eq!(
+        FpDataProcess2_Single_A1(al, Vabs, s(0), s(1))
+            .encode()
+            .unwrap(),
+        le(0xEEB0_0AE0)
+    ); // vabs.f32 s0, s1
+    assert_eq!(
+        FpDataProcess2_Double_A1(al, Vsqrt, d(8), d(9))
+            .encode()
+            .unwrap(),
+        le(0xEEB1_8BC9)
+    ); // vsqrt.f64 d8, d9
+}
+
+#[test]
+fn round_trip__a32_vfp_data_processing() {
+    use crate::Arm32FpDataOperation2 as F2;
+    use crate::Arm32FpDataOperation3 as F3;
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let ops3 = [
+        F3::Vmla,
+        F3::Vmls,
+        F3::Vnmla,
+        F3::Vnmls,
+        F3::Vmul,
+        F3::Vnmul,
+        F3::Vadd,
+        F3::Vsub,
+        F3::Vdiv,
+        F3::Vfnma,
+        F3::Vfnms,
+        F3::Vfma,
+        F3::Vfms,
+    ];
+    let ops2 = [F2::Vmov, F2::Vabs, F2::Vneg, F2::Vsqrt];
+    let mut instructions = Vec::new();
+    for op in ops3 {
+        instructions.push(FpDataProcess3_Single_A1(al, op, s(0), s(1), s(2)));
+        instructions.push(FpDataProcess3_Double_A1(al, op, d(3), d(4), d(5)));
+    }
+    for op in ops2 {
+        instructions.push(FpDataProcess2_Single_A1(al, op, s(6), s(7)));
+        instructions.push(FpDataProcess2_Double_A1(Cond::NotEqual, op, d(8), d(9)));
+    }
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 VFP data-proc round-trip mismatch"
+        );
+    }
+}
+
+// ---- N1c: VFP compare / transfer / immediate ----
+
+#[test]
+fn encode__a32_vfp_transfer_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(
+        Vcmp_Single_A1(al, s(0), s(1), false).encode().unwrap(),
+        le(0xEEB4_0A60)
+    ); // vcmp.f32 s0, s1
+    assert_eq!(Vmrs_Apsr_Nzcv_A1(al).encode().unwrap(), le(0xEEF1_FA10)); // vmrs apsr_nzcv, fpscr
+    assert_eq!(Vmrs_A1(al, R::R0).encode().unwrap(), le(0xEEF1_0A10)); // vmrs r0, fpscr
+    assert_eq!(
+        Vmov_Core_To_Single_A1(al, s(0), R::R1).encode().unwrap(),
+        le(0xEE00_1A10)
+    ); // vmov s0, r1
+    assert_eq!(
+        Vmov_Immediate_Single_A1(al, s(0), 0x70).encode().unwrap(),
+        le(0xEEB7_0A00)
+    ); // vmov.f32 s0, #1.0
+    assert_eq!(
+        Vmov_CorePair_To_Double_A1(al, d(2), R::R0, R::R1)
+            .encode()
+            .unwrap(),
+        le(0xEC41_0B12)
+    ); // vmov d2, r0, r1
+}
+
+#[test]
+fn round_trip__a32_vfp_transfer() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let instructions = [
+        Vcmp_Single_A1(al, s(0), s(1), false),
+        Vcmp_Single_A1(al, s(2), s(3), true),
+        Vcmp_Double_A1(al, d(0), d(1), false),
+        Vcmp_Zero_Single_A1(al, s(4), true),
+        Vcmp_Zero_Double_A1(al, d(2), false),
+        Vmrs_A1(al, R::R0),
+        Vmrs_Apsr_Nzcv_A1(al),
+        Vmsr_A1(al, R::R1),
+        Vmov_Core_To_Single_A1(al, s(0), R::R1),
+        Vmov_Single_To_Core_A1(al, R::R2, s(3)),
+        Vmov_Immediate_Single_A1(al, s(0), 0x70),
+        Vmov_Immediate_Double_A1(al, d(0), 0x70),
+        Vmov_Double_To_CorePair_A1(al, R::R0, R::R1, d(2)),
+        Vmov_CorePair_To_Double_A1(al, d(3), R::R4, R::R5),
+        Vmov_Singles_To_CorePair_A1(al, R::R6, R::R7, s(8)),
+        Vmov_CorePair_To_Singles_A1(Cond::NotEqual, s(10), R::R2, R::R3),
+    ];
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(decoded, instruction, "A32 VFP transfer round-trip mismatch");
+    }
+}
+
+// ---- N1d: VFP conversions (VCVT) ----
+
+#[test]
+fn encode__a32_vcvt_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(
+        Vcvt_FloatToInt_FromSingle_A1(al, s(0), s(1), true, true)
+            .encode()
+            .unwrap(),
+        le(0xEEBD_0AE0)
+    ); // vcvt.s32.f32 s0, s1
+    assert_eq!(
+        Vcvt_IntToFloat_ToSingle_A1(al, s(0), s(1), true)
+            .encode()
+            .unwrap(),
+        le(0xEEB8_0AE0)
+    ); // vcvt.f32.s32 s0, s1
+    assert_eq!(
+        Vcvt_Single_To_Double_A1(al, d(0), s(1)).encode().unwrap(),
+        le(0xEEB7_0AE0)
+    ); // vcvt.f64.f32 d0, s1
+    assert_eq!(
+        Vcvt_HalfToSingle_A1(al, s(0), s(1), false)
+            .encode()
+            .unwrap(),
+        le(0xEEB2_0A60)
+    ); // vcvtb.f32.f16 s0, s1
+    assert_eq!(
+        Vcvt_HalfToDouble_A1(al, d(0), s(1), false)
+            .encode()
+            .unwrap(),
+        le(0xEEB2_0B60)
+    ); // vcvtb.f64.f16 d0, s1
+    assert_eq!(
+        Vcvt_HalfToDouble_A1(al, d(0), s(1), true).encode().unwrap(),
+        le(0xEEB2_0BE0)
+    ); // vcvtt.f64.f16 d0, s1
+    assert_eq!(
+        Vcvt_DoubleToHalf_A1(al, s(0), d(1), false)
+            .encode()
+            .unwrap(),
+        le(0xEEB3_0B41)
+    ); // vcvtb.f16.f64 s0, d1
+    assert_eq!(
+        Vcvt_DoubleToHalf_A1(al, s(0), d(1), true).encode().unwrap(),
+        le(0xEEB3_0BC1)
+    ); // vcvtt.f16.f64 s0, d1
+    assert_eq!(
+        Vcvt_HalfToDouble_A1(al, d(5), s(20), false)
+            .encode()
+            .unwrap(),
+        le(0xEEB2_5B4A)
+    ); // vcvtb.f64.f16 d5, s20
+    assert_eq!(
+        Vcvt_DoubleToHalf_A1(al, s(20), d(5), true)
+            .encode()
+            .unwrap(),
+        le(0xEEB3_ABC5)
+    ); // vcvtt.f16.f64 s20, d5
+    assert_eq!(
+        Vcvt_HalfToDouble_A1(al, d(0), s(1), false)
+            .to_assembly_string(crate::emit::ArmAssemblySyntax::Gnu),
+        "vcvtb.f64.f16 d0, s1"
+    );
+    assert_eq!(
+        Vcvt_DoubleToHalf_A1(al, s(20), d(5), true)
+            .to_assembly_string(crate::emit::ArmAssemblySyntax::Gnu),
+        "vcvtt.f16.f64 s20, d5"
+    );
+}
+
+#[test]
+fn round_trip__a32_vcvt() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let instructions = [
+        Vcvt_FloatToInt_FromSingle_A1(al, s(0), s(1), true, true),
+        Vcvt_FloatToInt_FromSingle_A1(al, s(2), s(3), false, false),
+        Vcvt_FloatToInt_FromDouble_A1(al, s(4), d(5), true, false),
+        Vcvt_IntToFloat_ToSingle_A1(al, s(0), s(1), true),
+        Vcvt_IntToFloat_ToSingle_A1(al, s(6), s(7), false),
+        Vcvt_IntToFloat_ToDouble_A1(al, d(0), s(1), true),
+        Vcvt_Single_To_Double_A1(al, d(0), s(1)),
+        Vcvt_Double_To_Single_A1(al, s(0), d(1)),
+        Vcvt_HalfToSingle_A1(al, s(0), s(1), false),
+        Vcvt_HalfToSingle_A1(Cond::NotEqual, s(2), s(3), true),
+        Vcvt_SingleToHalf_A1(al, s(0), s(1), true),
+        Vcvt_HalfToDouble_A1(al, d(0), s(1), false),
+        Vcvt_HalfToDouble_A1(Cond::NotEqual, d(5), s(20), true),
+        Vcvt_DoubleToHalf_A1(al, s(0), d(1), false),
+        Vcvt_DoubleToHalf_A1(Cond::SignedGreaterThan, s(20), d(5), true),
+        Vcvt_FloatToFixed_Single_A1(al, s(0), true, false, 1), // 16-bit, frac 1
+        Vcvt_FloatToFixed_Single_A1(al, s(5), false, true, 31), // 32-bit, frac 31
+        Vcvt_FloatToFixed_Double_A1(al, d(3), false, true, 4),
+        Vcvt_FixedToFloat_Single_A1(al, s(0), true, false, 16), // 16-bit, frac 16 (full)
+        Vcvt_FixedToFloat_Double_A1(al, d(2), false, true, 8),
+    ];
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(decoded, instruction, "A32 VCVT round-trip mismatch");
+    }
+}
+
+#[test]
+fn a32_sb_and_vjcvt() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    // dual-oracle (arm-none-eabi-as armv8.3-a+sb / -mfpu=fp-armv8 + llvm-mc armv8a/armv8.3a)
+    assert_eq!(Sb_A1.encode().unwrap(), le(0xF57F_F070)); // sb
+    assert_eq!(Vjcvt_A1(al, s(0), d(1)).encode().unwrap(), le(0xEEB9_0BC1)); // vjcvt.s32.f64 s0, d1
+    assert_eq!(Vjcvt_A1(al, s(3), d(5)).encode().unwrap(), le(0xEEF9_1BC5)); // vjcvt.s32.f64 s3, d5
+    assert_eq!(
+        Sb_A1.to_assembly_string(crate::emit::ArmAssemblySyntax::Gnu),
+        "sb"
+    );
+    assert_eq!(
+        Vjcvt_A1(al, s(0), d(1)).to_assembly_string(crate::emit::ArmAssemblySyntax::Gnu),
+        "vjcvt.s32.f64 s0, d1"
+    );
+    for instruction in [
+        Sb_A1,
+        Vjcvt_A1(al, s(0), d(1)),
+        Vjcvt_A1(Cond::NotEqual, s(31), d(15)),
+    ] {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4);
+        assert_eq!(decoded, instruction, "A32 SB/VJCVT round-trip mismatch");
+    }
+}
+
+// ---- N1e: ARMv8-A FP additions (VSEL / VMAXNM / VMINNM / VRINT / VCVTA-N-P-M) ----
+
+#[test]
+fn encode__a32_v8_fp_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(
+        Vsel_Single_A1(Vsel::GreaterEqual, s(0), s(1), s(2))
+            .encode()
+            .unwrap(),
+        le(0xFE20_0A81)
+    ); // vselge.f32 s0, s1, s2
+    assert_eq!(
+        Vmaxnm_Single_A1(s(0), s(1), s(2)).encode().unwrap(),
+        le(0xFE80_0A81)
+    ); // vmaxnm.f32 s0, s1, s2
+    assert_eq!(
+        Vminnm_Single_A1(s(3), s(4), s(5)).encode().unwrap(),
+        le(0xFEC2_1A62)
+    ); // vminnm.f32 s3, s4, s5
+    assert_eq!(
+        Vrint_Directed_Single_A1(DRnd::A, s(0), s(1))
+            .encode()
+            .unwrap(),
+        le(0xFEB8_0A60)
+    ); // vrinta.f32 s0, s1
+    assert_eq!(
+        Vrint_Cond_Single_A1(al, VRnd::R, s(0), s(1))
+            .encode()
+            .unwrap(),
+        le(0xEEB6_0A60)
+    ); // vrintr.f32 s0, s1
+    assert_eq!(
+        Vrint_Cond_Single_A1(al, VRnd::Z, s(2), s(3))
+            .encode()
+            .unwrap(),
+        le(0xEEB6_1AE1)
+    ); // vrintz.f32 s2, s3
+    assert_eq!(
+        Vrint_Cond_Single_A1(al, VRnd::X, s(4), s(5))
+            .encode()
+            .unwrap(),
+        le(0xEEB7_2A62)
+    ); // vrintx.f32 s4, s5
+    assert_eq!(
+        Vcvt_Directed_FromSingle_A1(DRnd::A, s(0), s(1), true)
+            .encode()
+            .unwrap(),
+        le(0xFEBC_0AE0)
+    ); // vcvta.s32.f32 s0, s1
+    assert_eq!(
+        Vcvt_Directed_FromDouble_A1(DRnd::A, s(0), d(1), true)
+            .encode()
+            .unwrap(),
+        le(0xFEBC_0BC1)
+    ); // vcvta.s32.f64 s0, d1
+}
+
+#[test]
+fn round_trip__a32_v8_fp() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let instructions = [
+        Vsel_Single_A1(Vsel::Equal, s(0), s(1), s(2)),
+        Vsel_Single_A1(Vsel::Overflow, s(6), s(7), s(8)),
+        Vsel_Single_A1(Vsel::GreaterEqual, s(3), s(4), s(5)),
+        Vsel_Single_A1(Vsel::GreaterThan, s(9), s(10), s(11)),
+        Vsel_Double_A1(Vsel::GreaterEqual, d(0), d(1), d(2)),
+        Vmaxnm_Single_A1(s(0), s(1), s(2)),
+        Vmaxnm_Double_A1(d(0), d(1), d(2)),
+        Vminnm_Single_A1(s(3), s(4), s(5)),
+        Vminnm_Double_A1(d(3), d(4), d(5)),
+        Vrint_Directed_Single_A1(DRnd::A, s(0), s(1)),
+        Vrint_Directed_Single_A1(DRnd::N, s(2), s(3)),
+        Vrint_Directed_Single_A1(DRnd::P, s(4), s(5)),
+        Vrint_Directed_Single_A1(DRnd::M, s(6), s(7)),
+        Vrint_Directed_Double_A1(DRnd::P, d(0), d(1)),
+        Vrint_Cond_Single_A1(al, VRnd::R, s(0), s(1)),
+        Vrint_Cond_Single_A1(Cond::NotEqual, VRnd::Z, s(2), s(3)),
+        Vrint_Cond_Single_A1(al, VRnd::X, s(4), s(5)),
+        Vrint_Cond_Double_A1(al, VRnd::R, d(0), d(1)),
+        Vrint_Cond_Double_A1(al, VRnd::Z, d(2), d(3)),
+        Vrint_Cond_Double_A1(al, VRnd::X, d(4), d(5)),
+        Vcvt_Directed_FromSingle_A1(DRnd::A, s(0), s(1), true),
+        Vcvt_Directed_FromSingle_A1(DRnd::N, s(2), s(3), false),
+        Vcvt_Directed_FromSingle_A1(DRnd::P, s(4), s(5), false),
+        Vcvt_Directed_FromSingle_A1(DRnd::M, s(6), s(7), true),
+        Vcvt_Directed_FromDouble_A1(DRnd::A, s(0), d(1), true),
+        Vcvt_Directed_FromDouble_A1(DRnd::M, s(2), d(3), false),
+    ];
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(decoded, instruction, "A32 v8 FP round-trip mismatch");
+    }
+}
+
