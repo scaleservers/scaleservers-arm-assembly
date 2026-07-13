@@ -1251,3 +1251,397 @@ fn encode__a32_load_store_halfword_dual_signed_exact_bytes() {
     ); // ldrht r0, [r1], #4
 }
 
+#[test]
+fn round_trip__a32_load_store_halfword_dual_signed() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let imm_offsets = [
+        Mem8::Immediate { add: true, imm8: 0 },
+        Mem8::Immediate {
+            add: true,
+            imm8: 255,
+        },
+        Mem8::Immediate {
+            add: false,
+            imm8: 50,
+        },
+    ];
+    let reg_offsets = [
+        Mem8::Register {
+            add: true,
+            rm: R::R2,
+        },
+        Mem8::Register {
+            add: false,
+            rm: R::R3,
+        },
+    ];
+    let modes = [Idx::Offset, Idx::PreIndex, Idx::PostIndex];
+    let mut instructions = Vec::new();
+    for off in imm_offsets.iter().chain(reg_offsets.iter()) {
+        for mode in modes {
+            instructions.push(Ldrh_A1(al, R::R0, R::R1, *off, mode));
+            instructions.push(Strh_A1(al, R::R4, R::R5, *off, mode));
+            instructions.push(Ldrsb_A1(al, R::R6, R::R7, *off, mode));
+            instructions.push(Ldrsh_A1(al, R::R8, R::R9, *off, mode));
+            instructions.push(Ldrd_A1(al, R::R0, R::R10, *off, mode));
+            instructions.push(Strd_A1(al, R::R2, R::R11, *off, mode));
+        }
+        instructions.push(Ldrht_A1(al, R::R0, R::R1, *off));
+        instructions.push(Strht_A1(al, R::R2, R::R3, *off));
+        instructions.push(Ldrsbt_A1(al, R::R4, R::R5, *off));
+        instructions.push(Ldrsht_A1(al, R::R6, R::R7, *off));
+    }
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 ls halfword/dual/signed round-trip mismatch"
+        );
+    }
+}
+
+// ---- A9: load/store multiple ----
+
+#[test]
+fn encode__a32_load_store_multiple_exact_bytes() {
+    use crate::Arm32BlockAddressMode::*;
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(
+        Ldm_A1(
+            al,
+            IncrementAfter,
+            R::R0,
+            false,
+            false,
+            vec![R::R1, R::R2, R::R3]
+        )
+        .encode()
+        .unwrap(),
+        le(0xE890_000E)
+    ); // ldm   r0, {r1, r2, r3}
+    assert_eq!(
+        Ldm_A1(
+            al,
+            IncrementAfter,
+            R::R0,
+            true,
+            false,
+            vec![R::R1, R::R2, R::R3]
+        )
+        .encode()
+        .unwrap(),
+        le(0xE8B0_000E)
+    ); // ldm   r0!, {r1, r2, r3}
+    assert_eq!(
+        Stm_A1(
+            al,
+            DecrementBefore,
+            R::R13,
+            true,
+            false,
+            vec![R::R4, R::R5, R::R14]
+        )
+        .encode()
+        .unwrap(),
+        le(0xE92D_4030)
+    ); // push  {r4, r5, lr}
+    assert_eq!(
+        Ldm_A1(
+            al,
+            IncrementAfter,
+            R::R13,
+            true,
+            false,
+            vec![R::R4, R::R5, R::R15]
+        )
+        .encode()
+        .unwrap(),
+        le(0xE8BD_8030)
+    ); // pop   {r4, r5, pc}
+    assert_eq!(
+        Ldm_A1(al, IncrementBefore, R::R0, false, false, vec![R::R1])
+            .encode()
+            .unwrap(),
+        le(0xE990_0002)
+    ); // ldmib r0, {r1}
+    assert_eq!(
+        Ldm_A1(al, DecrementAfter, R::R0, false, false, vec![R::R1])
+            .encode()
+            .unwrap(),
+        le(0xE810_0002)
+    ); // ldmda r0, {r1}
+    assert_eq!(
+        Ldm_A1(al, IncrementAfter, R::R0, false, true, vec![R::R1])
+            .encode()
+            .unwrap(),
+        le(0xE8D0_0002)
+    ); // ldm   r0, {r1}^
+}
+
+#[test]
+fn round_trip__a32_load_store_multiple() {
+    use crate::Arm32BlockAddressMode::*;
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let modes = [
+        IncrementAfter,
+        IncrementBefore,
+        DecrementAfter,
+        DecrementBefore,
+    ];
+    let lists = [
+        vec![R::R0],
+        vec![R::R1, R::R2, R::R3],
+        vec![R::R0, R::R7, R::R8, R::R15],
+        vec![R::R4, R::R5, R::R13, R::R14],
+    ];
+    let mut instructions = Vec::new();
+    for mode in modes {
+        for list in lists.iter() {
+            for wb in [false, true] {
+                for user in [false, true] {
+                    instructions.push(Ldm_A1(al, mode, R::R6, wb, user, list.clone()));
+                    instructions.push(Stm_A1(al, mode, R::R9, wb, user, list.clone()));
+                }
+            }
+        }
+    }
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 load/store-multiple round-trip mismatch"
+        );
+    }
+}
+
+// ---- A10: synchronization ----
+
+#[test]
+fn encode__a32_synchronization_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(
+        Ldrex_A1(al, R::R0, R::R1).encode().unwrap(),
+        le(0xE191_0F9F)
+    ); // ldrex   r0, [r1]
+    assert_eq!(
+        Strex_A1(al, R::R0, R::R1, R::R2).encode().unwrap(),
+        le(0xE182_0F91)
+    ); // strex   r0, r1, [r2]
+    assert_eq!(
+        Ldrexb_A1(al, R::R0, R::R1).encode().unwrap(),
+        le(0xE1D1_0F9F)
+    ); // ldrexb  r0, [r1]
+    assert_eq!(
+        Strexb_A1(al, R::R0, R::R1, R::R2).encode().unwrap(),
+        le(0xE1C2_0F91)
+    ); // strexb r0, r1, [r2]
+    assert_eq!(
+        Ldrexd_A1(al, R::R0, R::R1).encode().unwrap(),
+        le(0xE1B1_0F9F)
+    ); // ldrexd  r0, r1, [r1]
+    assert_eq!(
+        Ldrexh_A1(al, R::R0, R::R1).encode().unwrap(),
+        le(0xE1F1_0F9F)
+    ); // ldrexh  r0, [r1]
+    assert_eq!(
+        Swp_A1(al, R::R0, R::R1, R::R2).encode().unwrap(),
+        le(0xE102_0091)
+    ); // swp     r0, r1, [r2]
+    assert_eq!(
+        Swpb_A1(al, R::R0, R::R1, R::R2).encode().unwrap(),
+        le(0xE142_0091)
+    ); // swpb    r0, r1, [r2]
+    assert_eq!(Clrex_A1.encode().unwrap(), le(0xF57F_F01F)); // clrex
+}
+
+#[test]
+fn round_trip__a32_synchronization() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let instructions = [
+        Ldrex_A1(al, R::R0, R::R1),
+        Strex_A1(Cond::NotEqual, R::R2, R::R3, R::R4),
+        Ldrexb_A1(al, R::R5, R::R6),
+        Strexb_A1(al, R::R7, R::R8, R::R9),
+        Ldrexh_A1(al, R::R10, R::R11),
+        Strexh_A1(al, R::R0, R::R1, R::R2),
+        Ldrexd_A1(al, R::R0, R::R3),
+        Strexd_A1(al, R::R4, R::R5, R::R6),
+        Clrex_A1,
+        Swp_A1(al, R::R0, R::R1, R::R2),
+        Swpb_A1(Cond::CarrySet, R::R3, R::R4, R::R5),
+    ];
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 synchronization round-trip mismatch"
+        );
+    }
+}
+
+// ---- A11: branch / interwork ----
+
+#[test]
+fn encode__a32_branch_exact_bytes() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(B_A1(al, 8).encode().unwrap(), le(0xEA00_0002)); // b   .+8
+    assert_eq!(B_A1(al, -8).encode().unwrap(), le(0xEAFF_FFFE)); // b   .-8
+    assert_eq!(Bl_A1(al, 0).encode().unwrap(), le(0xEB00_0000)); // bl  .+0
+    assert_eq!(Bl_A1(al, 0x1000).encode().unwrap(), le(0xEB00_0400)); // bl  .+0x1000
+    assert_eq!(Blx_Immediate_A1(4).encode().unwrap(), le(0xFA00_0001)); // blx .+4
+    assert_eq!(Blx_Immediate_A1(6).encode().unwrap(), le(0xFB00_0001)); // blx .+6  (H=1)
+    assert_eq!(
+        Blx_Register_A1(al, R::R0).encode().unwrap(),
+        le(0xE12F_FF30)
+    ); // blx r0
+    assert_eq!(Bxj_A1(al, R::R2).encode().unwrap(), le(0xE12F_FF22)); // bxj r2
+    assert_eq!(B_A1(Cond::NotEqual, 12).encode().unwrap(), le(0x1A00_0003)); // bne .+12
+}
+
+#[test]
+fn round_trip__a32_branch() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let instructions = [
+        B_A1(al, 0),
+        B_A1(al, 8),
+        B_A1(al, -8),
+        B_A1(al, (1 << 25) - 4),
+        B_A1(al, -(1 << 25)),
+        Bl_A1(Cond::Equal, 0x100),
+        Bl_A1(al, -0x100),
+        Blx_Immediate_A1(0),
+        Blx_Immediate_A1(6),
+        Blx_Immediate_A1(-6),
+        Blx_Immediate_A1((1 << 25) - 2),
+        Bx_A1(al, R::R1),
+        Blx_Register_A1(al, R::R3),
+        Bxj_A1(al, R::R5),
+    ];
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(decoded, instruction, "A32 branch round-trip mismatch");
+    }
+}
+
+// ---- A12: status / system register access ----
+
+#[test]
+fn encode__a32_status_system_exact_bytes() {
+    use crate::Arm32CpsMode::*;
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    assert_eq!(Mrs_A1(al, false, R::R0).encode().unwrap(), le(0xE10F_0000)); // mrs  r0, cpsr
+    assert_eq!(Mrs_A1(al, true, R::R1).encode().unwrap(), le(0xE14F_1000)); // mrs  r1, spsr
+    assert_eq!(
+        Msr_Register_A1(al, false, 0b1000, R::R0).encode().unwrap(),
+        le(0xE128_F000)
+    ); // msr cpsr_f, r0
+    assert_eq!(
+        Msr_Register_A1(al, false, 0b1001, R::R1).encode().unwrap(),
+        le(0xE129_F001)
+    ); // msr cpsr_fc, r1
+    assert_eq!(
+        Msr_Register_A1(al, true, 0b1111, R::R2).encode().unwrap(),
+        le(0xE16F_F002)
+    ); // msr spsr_fsxc, r2
+    assert_eq!(
+        Msr_Immediate_A1(al, false, 0b1000, 0xF000_0000)
+            .encode()
+            .unwrap(),
+        le(0xE328_F20F)
+    ); // msr cpsr_f, #0xf0000000
+    assert_eq!(
+        Cps_A1(Enable, false, true, false, None).encode().unwrap(),
+        le(0xF108_0080)
+    ); // cpsie i
+    assert_eq!(
+        Cps_A1(Disable, false, true, true, None).encode().unwrap(),
+        le(0xF10C_00C0)
+    ); // cpsid if
+    assert_eq!(
+        Cps_A1(NoChange, false, false, false, Some(0x13))
+            .encode()
+            .unwrap(),
+        le(0xF102_0013)
+    ); // cps #0x13
+    assert_eq!(Setend_A1(true).encode().unwrap(), le(0xF101_0200)); // setend be
+    assert_eq!(Setend_A1(false).encode().unwrap(), le(0xF101_0000)); // setend le
+}
+
+#[test]
+fn from_imod_bits__round_trips_masks_high_bits_and_rejects_reserved() {
+    use crate::Arm32CpsMode::{self, Disable, Enable, NoChange};
+    // the three valid imod values round-trip
+    for mode in [NoChange, Enable, Disable] {
+        assert_eq!(Arm32CpsMode::from_imod_bits(mode.imod_bits()), Some(mode));
+    }
+    // 0b01 is the reserved imod value -> None
+    assert_eq!(Arm32CpsMode::from_imod_bits(0b01), None);
+    // higher bits a caller might pass are masked off (`& 0b11`); only the low two bits decide:
+    assert_eq!(Arm32CpsMode::from_imod_bits(0b100), Some(NoChange)); // 0b100 & 0b11 = 0b00
+    assert_eq!(Arm32CpsMode::from_imod_bits(0b110), Some(Enable)); // 0b110 & 0b11 = 0b10
+    assert_eq!(Arm32CpsMode::from_imod_bits(0b101), None); // 0b101 & 0b11 = 0b01 (reserved)
+    assert_eq!(Arm32CpsMode::from_imod_bits(u32::MAX), Some(Disable)); // ...11 & 0b11 = 0b11
+}
+
+#[test]
+fn round_trip__a32_status_system() {
+    use crate::Arm32CpsMode::*;
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    let instructions = [
+        Mrs_A1(al, false, R::R0),
+        Mrs_A1(Cond::NotEqual, true, R::R5),
+        Msr_Register_A1(al, false, 0b1000, R::R0),
+        Msr_Register_A1(al, true, 0b1111, R::R3),
+        Msr_Register_A1(al, false, 0b0001, R::R7),
+        Msr_Immediate_A1(al, false, 0b1000, 0xF000_0000),
+        Msr_Immediate_A1(al, true, 0b1001, 0xFF),
+        Cps_A1(Enable, true, true, true, None),
+        Cps_A1(Disable, false, true, false, None),
+        Cps_A1(Enable, true, false, false, Some(0x1F)),
+        Cps_A1(NoChange, false, false, false, Some(0x10)),
+        Setend_A1(true),
+        Setend_A1(false),
+    ];
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 status/system round-trip mismatch"
+        );
+    }
+}
+
