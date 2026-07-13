@@ -2849,3 +2849,421 @@ fn round_trip__a32_neon_3diff() {
     }
 }
 
+// ---- N2b: NEON 2-reg-and-a-scalar ----
+
+#[test]
+fn encode__a32_neon_scalar_exact_bytes() {
+    use ArmA32Instruction::*;
+    assert_eq!(
+        NeonScalar_D_A1(NSc::Vmul, NSz::I16, d(0), d(1), d(2), 0)
+            .encode()
+            .unwrap(),
+        le(0xF291_0842)
+    ); // vmul.i16 d0,d1,d2[0]
+    assert_eq!(
+        NeonScalar_Q_A1(NSc::VmulF, NSz::I32, q(0), q(1), d(2), 1)
+            .encode()
+            .unwrap(),
+        le(0xF3A2_0962)
+    ); // vmul.f32 q0,q1,d2[1]
+    assert_eq!(
+        NeonScalar_D_A1(NSc::Vmla, NSz::I16, d(0), d(1), d(2), 2)
+            .encode()
+            .unwrap(),
+        le(0xF291_0062)
+    ); // vmla.i16 d0,d1,d2[2]
+    assert_eq!(
+        NeonScalarLong_A1(NScL::VmullS, NSz::I16, q(0), d(1), d(2), 0)
+            .encode()
+            .unwrap(),
+        le(0xF291_0A42)
+    ); // vmull.s16 q0,d1,d2[0]
+    assert_eq!(
+        NeonScalarLong_A1(NScL::Vqdmull, NSz::I16, q(0), d(1), d(2), 1)
+            .encode()
+            .unwrap(),
+        le(0xF291_0B4A)
+    ); // vqdmull.s16 q0,d1,d2[1]
+}
+
+#[test]
+fn round_trip__a32_neon_scalar() {
+    use ArmA32Instruction::*;
+    let int_ops = [NSc::Vmla, NSc::Vmls, NSc::Vmul, NSc::Vqdmulh, NSc::Vqrdmulh];
+    let float_ops = [NSc::VmlaF, NSc::VmlsF, NSc::VmulF];
+    let long_ops = [
+        NScL::VmlalS,
+        NScL::VmlalU,
+        NScL::VmlslS,
+        NScL::VmlslU,
+        NScL::VmullS,
+        NScL::VmullU,
+        NScL::Vqdmlal,
+        NScL::Vqdmlsl,
+        NScL::Vqdmull,
+    ];
+    // (size, scalar Dm, index) tuples valid for that lane width
+    let lane16 = (NSz::I16, d(6), 2u8);
+    let lane32 = (NSz::I32, d(13), 1u8);
+
+    let mut instructions = Vec::new();
+    for op in int_ops {
+        for (size, dm, idx) in [lane16, lane32] {
+            instructions.push(NeonScalar_D_A1(op, size, d(1), d(20), dm, idx));
+            instructions.push(NeonScalar_Q_A1(op, size, q(2), q(8), dm, idx));
+        }
+    }
+    for op in float_ops {
+        let (size, dm, idx) = lane32;
+        instructions.push(NeonScalar_D_A1(op, size, d(0), d(17), dm, idx));
+        instructions.push(NeonScalar_Q_A1(op, size, q(1), q(9), dm, idx));
+    }
+    for op in long_ops {
+        for (size, dm, idx) in [lane16, lane32] {
+            instructions.push(NeonScalarLong_A1(op, size, q(3), d(7), dm, idx));
+        }
+    }
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 NEON 2-reg-scalar round-trip mismatch"
+        );
+    }
+}
+
+// ---- N2b: NEON 2-reg-and-a-shift-amount ----
+
+#[test]
+fn encode__a32_neon_shift_exact_bytes() {
+    use ArmA32Instruction::*;
+    assert_eq!(
+        NeonShift_D_A1(NSh::VshrS, NSz::I8, 1, d(0), d(1))
+            .encode()
+            .unwrap(),
+        le(0xF28F_0011)
+    ); // vshr.s8 d0,d1,#1
+    assert_eq!(
+        NeonShift_Q_A1(NSh::Vshl, NSz::I32, 5, q(0), q(1))
+            .encode()
+            .unwrap(),
+        le(0xF2A5_0552)
+    ); // vshl.i32 q0,q1,#5
+    assert_eq!(
+        NeonShift_D_A1(NSh::Vqshlu, NSz::I32, 4, d(0), d(1))
+            .encode()
+            .unwrap(),
+        le(0xF3A4_0611)
+    ); // vqshlu.s32 d0,d1,#4
+    assert_eq!(
+        NeonShiftNarrow_A1(NShN::Vshrn, NSz::I16, 2, d(0), q(1))
+            .encode()
+            .unwrap(),
+        le(0xF28E_0812)
+    ); // vshrn.i16 d0,q1,#2
+    assert_eq!(
+        NeonShiftLong_A1(false, NSz::I8, 3, q(0), d(1))
+            .encode()
+            .unwrap(),
+        le(0xF28B_0A11)
+    ); // vshll.s8 q0,d1,#3
+    assert_eq!(
+        NeonShiftLong_A1(false, NSz::I8, 0, q(0), d(1))
+            .encode()
+            .unwrap(),
+        le(0xF288_0A11)
+    ); // vmovl.s8 q0,d1
+}
+
+#[test]
+fn encode__a32_neon_shift_out_of_range_shift_errors() {
+    // A parsed/fuzzed model can carry an out-of-range shift -- e.g. `vrshr.s16 q0,q0,#4660`, where the parser
+    // truncates the immediate into the u8 shift field as 52 (> esize 16). `encode` must REJECT it, not
+    // under/overflow the `2*esize - shift` field computation. Regression for the `arm32_asm_parse` fuzz crash
+    // that panicked (subtract-with-overflow) in `arma32_instruction.rs`.
+    use crate::EncodeError::ImmediateOutOfRange;
+    use ArmA32Instruction::*;
+    assert!(matches!(
+        NeonShift_Q_A1(NSh::VrshrS, NSz::I16, 52, q(0), q(0)).encode(),
+        Err(ImmediateOutOfRange { .. })
+    )); // the exact crash
+    assert!(matches!(
+        NeonShift_D_A1(NSh::VshrS, NSz::I8, 9, d(0), d(1)).encode(),
+        Err(ImmediateOutOfRange { .. })
+    )); // right .I8: 9 > 8
+    assert!(matches!(
+        NeonShift_D_A1(NSh::VshrU, NSz::I8, 0, d(0), d(1)).encode(),
+        Err(ImmediateOutOfRange { .. })
+    )); // right: 0 is invalid
+    assert!(matches!(
+        NeonShift_Q_A1(NSh::Vshl, NSz::I32, 32, q(0), q(1)).encode(),
+        Err(ImmediateOutOfRange { .. })
+    )); // left .I32: 32 >= 32
+    assert!(matches!(
+        NeonShiftNarrow_A1(NShN::Vshrn, NSz::I16, 200, d(0), q(1)).encode(),
+        Err(ImmediateOutOfRange { .. })
+    )); // narrow: 200 > 16
+    // boundary values must still encode -- the fix must not over-reject
+    assert!(
+        NeonShift_D_A1(NSh::VshrS, NSz::I8, 8, d(0), d(1))
+            .encode()
+            .is_ok()
+    ); // right .I8: shift == esize is valid
+    assert!(
+        NeonShift_Q_A1(NSh::Vshl, NSz::I32, 31, q(0), q(1))
+            .encode()
+            .is_ok()
+    ); // left .I32: shift == esize-1 is valid
+}
+
+#[test]
+fn round_trip__a32_neon_shift() {
+    use ArmA32Instruction::*;
+    let right_ops = [
+        NSh::VshrS,
+        NSh::VshrU,
+        NSh::VsraS,
+        NSh::VsraU,
+        NSh::VrshrS,
+        NSh::VrshrU,
+        NSh::VrsraS,
+        NSh::VrsraU,
+        NSh::Vsri,
+    ];
+    let left_ops = [NSh::Vshl, NSh::Vsli, NSh::Vqshlu, NSh::VqshlS, NSh::VqshlU];
+    let narrow_ops = [
+        NShN::Vshrn,
+        NShN::Vrshrn,
+        NShN::Vqshrun,
+        NShN::Vqrshrun,
+        NShN::VqshrnS,
+        NShN::VqrshrnS,
+        NShN::VqshrnU,
+        NShN::VqrshrnU,
+    ];
+
+    let mut instructions = Vec::new();
+    // right shifts: amount 1..=esize
+    for op in right_ops {
+        for (size, shift) in [
+            (NSz::I8, 3u8),
+            (NSz::I16, 7),
+            (NSz::I32, 20),
+            (NSz::I64, 40),
+        ] {
+            instructions.push(NeonShift_D_A1(op, size, shift, d(1), d(20)));
+            instructions.push(NeonShift_Q_A1(op, size, shift, q(2), q(8)));
+        }
+    }
+    // left shifts: amount 0..esize-1
+    for op in left_ops {
+        for (size, shift) in [
+            (NSz::I8, 0u8),
+            (NSz::I16, 10),
+            (NSz::I32, 25),
+            (NSz::I64, 50),
+        ] {
+            instructions.push(NeonShift_D_A1(op, size, shift, d(3), d(17)));
+            instructions.push(NeonShift_Q_A1(op, size, shift, q(0), q(15)));
+        }
+    }
+    // narrowing: source .i16/.i32/.i64, amount 1..=result_esize
+    for op in narrow_ops {
+        for (size, shift) in [(NSz::I16, 3u8), (NSz::I32, 10), (NSz::I64, 20)] {
+            instructions.push(NeonShiftNarrow_A1(op, size, shift, d(5), q(6)));
+        }
+    }
+    // widening VSHLL/VMOVL: source .s8/.u8/.s16/..., amount 0..esize-1
+    for signed in [false, true] {
+        for (size, shift) in [(NSz::I8, 0u8), (NSz::I8, 5), (NSz::I16, 9), (NSz::I32, 20)] {
+            instructions.push(NeonShiftLong_A1(signed, size, shift, q(4), d(9)));
+        }
+    }
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 NEON shift-immediate round-trip mismatch"
+        );
+    }
+}
+
+// ---- N2b: NEON extract / table / duplicate / modified-immediate ----
+
+#[test]
+fn encode__a32_neon_ext_table_dup_imm_exact_bytes() {
+    use ArmA32Instruction::*;
+    assert_eq!(
+        NeonExt_D_A1(3, d(0), d(1), d(2)).encode().unwrap(),
+        le(0xF2B1_0302)
+    ); // vext.8 d0,d1,d2,#3
+    assert_eq!(
+        NeonTableLookup_A1(false, 1, d(0), d(1), d(2))
+            .encode()
+            .unwrap(),
+        le(0xF3B1_0802)
+    ); // vtbl.8 d0,{d1},d2
+    assert_eq!(
+        NeonTableLookup_A1(true, 3, d(0), d(2), d(5))
+            .encode()
+            .unwrap(),
+        le(0xF3B2_0A45)
+    ); // vtbx.8 d0,{d2,d3,d4},d5
+    assert_eq!(
+        NeonVdupScalar_D_A1(NSz::I8, 3, d(0), d(1))
+            .encode()
+            .unwrap(),
+        le(0xF3B7_0C01)
+    ); // vdup.8 d0,d1[3]
+    assert_eq!(
+        NeonVdupCore_Q_A1(Cond::AlwaysUnconditional, NSz::I16, q(0), R::R2)
+            .encode()
+            .unwrap(),
+        le(0xEEA0_2B30)
+    ); // vdup.16 q0,r2
+    assert_eq!(
+        NeonModifiedImmediate_D_A1(0b0000, false, 1, d(0))
+            .encode()
+            .unwrap(),
+        le(0xF280_0011)
+    ); // vmov.i32 d0,#1
+    assert_eq!(
+        NeonModifiedImmediate_D_A1(0b0000, true, 1, d(0))
+            .encode()
+            .unwrap(),
+        le(0xF280_0031)
+    ); // vmvn.i32 d0,#1
+}
+
+#[test]
+fn round_trip__a32_neon_ext_table_dup_imm() {
+    use ArmA32Instruction::*;
+    let mut instructions = Vec::new();
+    // VEXT: D byte offset 0..7, Q byte offset 0..15
+    for offset in 0..8u8 {
+        instructions.push(NeonExt_D_A1(offset, d(1), d(20), d(7)));
+    }
+    for offset in 0..16u8 {
+        instructions.push(NeonExt_Q_A1(offset, q(2), q(8), q(15)));
+    }
+    // VTBL / VTBX: length 1..=4
+    for is_vtbx in [false, true] {
+        for length in 1..=4u8 {
+            instructions.push(NeonTableLookup_A1(is_vtbx, length, d(0), d(3), d(17)));
+        }
+    }
+    // VDUP scalar: each size with valid index range, D and Q
+    for (size, max_idx) in [(NSz::I8, 8u8), (NSz::I16, 4), (NSz::I32, 2)] {
+        for index in 0..max_idx {
+            instructions.push(NeonVdupScalar_D_A1(size, index, d(5), d(9)));
+            instructions.push(NeonVdupScalar_Q_A1(size, index, q(3), d(31)));
+        }
+    }
+    // VDUP from core register: each size, D and Q, varied conditions
+    for size in [NSz::I8, NSz::I16, NSz::I32] {
+        instructions.push(NeonVdupCore_D_A1(
+            Cond::AlwaysUnconditional,
+            size,
+            d(0),
+            R::R1,
+        ));
+        instructions.push(NeonVdupCore_Q_A1(Cond::NotEqual, size, q(7), R::R10));
+    }
+    // modified immediate: all cmode / op / a few imm8, D and Q
+    for cmode in 0..16u8 {
+        for op in [false, true] {
+            for imm8 in [0x00u8, 0x55, 0xAB, 0xFF] {
+                instructions.push(NeonModifiedImmediate_D_A1(cmode, op, imm8, d(4)));
+                instructions.push(NeonModifiedImmediate_Q_A1(cmode, op, imm8, q(6)));
+            }
+        }
+    }
+    for instruction in instructions {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4, "decode consumed wrong byte count");
+        assert_eq!(
+            decoded, instruction,
+            "A32 NEON ext/table/dup/imm round-trip mismatch"
+        );
+    }
+}
+
+// ---- N2c: NEON element/structure load & store ----
+
+#[test]
+fn encode__a32_neon_load_store_exact_bytes() {
+    use ArmA32Instruction::*;
+    assert_eq!(
+        NeonLoadStoreMultiple_A1(true, 0b0111, NSz::I8, 0, d(0), R::R0, NLsa::Offset)
+            .encode()
+            .unwrap(),
+        le(0xF420_070F)
+    ); // vld1.8 {d0}, [r0]
+    assert_eq!(
+        NeonLoadStoreMultiple_A1(true, 0b1000, NSz::I8, 0, d(0), R::R0, NLsa::Offset)
+            .encode()
+            .unwrap(),
+        le(0xF420_080F)
+    ); // vld2.8 {d0,d1}, [r0]
+    assert_eq!(
+        NeonLoadStoreMultiple_A1(true, 0b0111, NSz::I8, 1, d(0), R::R0, NLsa::Offset)
+            .encode()
+            .unwrap(),
+        le(0xF420_071F)
+    ); // vld1.8 {d0}, [r0:64]
+    assert_eq!(
+        NeonLoadStoreMultiple_A1(
+            true,
+            0b0111,
+            NSz::I8,
+            0,
+            d(0),
+            R::R0,
+            NLsa::IncrementWriteback
+        )
+        .encode()
+        .unwrap(),
+        le(0xF420_070D)
+    ); // vld1.8 {d0}, [r0]!
+    assert_eq!(
+        NeonLoadStoreMultiple_A1(
+            true,
+            0b0111,
+            NSz::I8,
+            0,
+            d(0),
+            R::R0,
+            NLsa::PostIndexed(R::R2)
+        )
+        .encode()
+        .unwrap(),
+        le(0xF420_0702)
+    ); // vld1.8 {d0}, [r0], r2
+    assert_eq!(
+        NeonLoadStoreSingleLane_A1(true, 1, 0, 6, d(0), R::R0, NLsa::Offset)
+            .encode()
+            .unwrap(),
+        le(0xF4A0_006F)
+    ); // vld1.8 {d0[3]}, [r0]
+    assert_eq!(
+        NeonLoadStoreAllLanes_A1(1, 0, false, false, d(0), R::R0, NLsa::Offset)
+            .encode()
+            .unwrap(),
+        le(0xF4A0_0C0F)
+    ); // vld1.8 {d0[]}, [r0]
+}
+
