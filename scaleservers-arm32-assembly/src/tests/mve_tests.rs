@@ -3949,3 +3949,292 @@ fn encode_round_trip__mve_interleave() {
     }
 }
 
+#[test]
+fn encode_round_trip__low_overhead_loops() {
+    use ArmT32Instruction::{Lctp, LobEnd, LobStart, MveVctp};
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb).
+    assert_eq!(
+        LobStart(false, None, R::R0, 0).encode().unwrap(),
+        vec![0x40, 0xf0, 0x01, 0xe0]
+    ); // dls lr, r0
+    assert_eq!(
+        LobStart(false, Some(16), R::R3, 0).encode().unwrap(),
+        vec![0x13, 0xf0, 0x01, 0xe0]
+    ); // dlstp.16 lr, r3
+    assert_eq!(
+        LobStart(false, Some(64), R::R0, 0).encode().unwrap(),
+        vec![0x30, 0xf0, 0x01, 0xe0]
+    ); // dlstp.64 lr, r0
+    assert_eq!(Lctp.encode().unwrap(), vec![0x0f, 0xf0, 0x01, 0xe0]); // lctp
+    assert_eq!(
+        MveVctp(8, R::R0).encode().unwrap(),
+        vec![0x00, 0xf0, 0x01, 0xe8]
+    ); // vctp.8 r0
+    assert_eq!(
+        MveVctp(16, R::R1).encode().unwrap(),
+        vec![0x11, 0xf0, 0x01, 0xe8]
+    ); // vctp.16 r1
+    assert_eq!(
+        MveVctp(32, R::R2).encode().unwrap(),
+        vec![0x22, 0xf0, 0x01, 0xe8]
+    ); // vctp.32 r2
+    assert_eq!(
+        MveVctp(64, R::R0).encode().unwrap(),
+        vec![0x30, 0xf0, 0x01, 0xe8]
+    ); // vctp.64 r0
+    assert_eq!(
+        LobStart(true, None, R::R0, 12).encode().unwrap(),
+        vec![0x40, 0xf0, 0x07, 0xc0]
+    ); // wls lr, r0, .+16
+    assert_eq!(
+        LobStart(true, None, R::R0, 4).encode().unwrap(),
+        vec![0x40, 0xf0, 0x03, 0xc0]
+    ); // wls lr, r0, .+8
+    assert_eq!(
+        LobStart(true, Some(8), R::R2, 12).encode().unwrap(),
+        vec![0x02, 0xf0, 0x07, 0xc0]
+    ); // wlstp.8 lr, r2, .+16
+    assert_eq!(
+        LobEnd(false, -12).encode().unwrap(),
+        vec![0x0f, 0xf0, 0x07, 0xc0]
+    ); // le lr, .-8
+    assert_eq!(
+        LobEnd(true, -12).encode().unwrap(),
+        vec![0x1f, 0xf0, 0x07, 0xc0]
+    ); // letp lr, .-8
+    // round-trip
+    for tp_size in [None, Some(8), Some(16), Some(32), Some(64)] {
+        for rn in [R::R0, R::R5, R::R12] {
+            round_trip(&LobStart(false, tp_size, rn, 0)); // DLS / DLSTP (no branch)
+            for off in [0i32, 4, 12, 100, 4094] {
+                round_trip(&LobStart(true, tp_size, rn, off)); // WLS / WLSTP (forward)
+            }
+        }
+    }
+    for tail_predicated in [false, true] {
+        for off in [0i32, -4, -12, -100, -4094] {
+            round_trip(&LobEnd(tail_predicated, off));
+        }
+    }
+    round_trip(&Lctp);
+    for size in [8u8, 16, 32, 64] {
+        for rn in [R::R0, R::R7, R::R12] {
+            round_trip(&MveVctp(size, rn));
+        }
+    }
+}
+
+#[test]
+fn encode_round_trip__mve_vcvt_half() {
+    use ArmT32Instruction::MveVcvtHalf;
+    // Implemented from DDI0553 (GNU's encoding of this vector form is buggy, so these bytes are spec-derived,
+    // NOT from the GNU oracle). MveVcvtHalf(top, half_to_single, qd, qm).
+    assert_eq!(
+        MveVcvtHalf(false, false, q(0), q(1)).encode().unwrap(),
+        vec![0x3f, 0xee, 0x03, 0x0e]
+    ); // vcvtb.f16.f32 q0,q1
+    assert_eq!(
+        MveVcvtHalf(true, false, q(0), q(1)).encode().unwrap(),
+        vec![0x3f, 0xee, 0x03, 0x1e]
+    ); // vcvtt.f16.f32 q0,q1
+    assert_eq!(
+        MveVcvtHalf(false, true, q(0), q(1)).encode().unwrap(),
+        vec![0x3f, 0xfe, 0x03, 0x0e]
+    ); // vcvtb.f32.f16 q0,q1
+    assert_eq!(
+        MveVcvtHalf(true, true, q(7), q(3)).encode().unwrap(),
+        vec![0x3f, 0xfe, 0x07, 0xfe]
+    ); // vcvtt.f32.f16 q7,q3
+    assert_eq!(
+        MveVcvtHalf(false, false, q(2), q(5)).encode().unwrap(),
+        vec![0x3f, 0xee, 0x0b, 0x4e]
+    ); // vcvtb.f16.f32 q2,q5
+    for top in [false, true] {
+        for half_to_single in [false, true] {
+            for d in [0u8, 3, 7] {
+                for m in [0u8, 4, 7] {
+                    round_trip(&MveVcvtHalf(top, half_to_single, q(d), q(m)));
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn encode_round_trip__mve_shift_narrow() {
+    use Arm32MveShiftNarrowOp::*;
+    use ArmT32Instruction::MveShiftNarrow;
+    // Implemented from DDI0553; the saturating-non-rounding forms are spec-derived (GNU mis-sets the rounding
+    // bit). MveShiftNarrow(op, unsigned, top, src_is_32, shift, qd, qm).
+    assert_eq!(
+        MveShiftNarrow(Vqshrn, false, false, false, 1, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0x8f, 0xee, 0x42, 0x0f]
+    ); // vqshrnb.s16 q0,q1,#1
+    assert_eq!(
+        MveShiftNarrow(Vqrshrn, false, false, false, 1, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0x8f, 0xee, 0x43, 0x0f]
+    ); // vqrshrnb.s16 q0,q1,#1
+    assert_eq!(
+        MveShiftNarrow(Vqshrn, true, false, false, 1, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0x8f, 0xfe, 0x42, 0x0f]
+    ); // vqshrnb.u16 q0,q1,#1
+    assert_eq!(
+        MveShiftNarrow(Vshrn, false, false, false, 1, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0x8f, 0xee, 0xc3, 0x0f]
+    ); // vshrnb.i16 q0,q1,#1
+    assert_eq!(
+        MveShiftNarrow(Vrshrn, false, false, false, 1, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0x8f, 0xfe, 0xc3, 0x0f]
+    ); // vrshrnb.i16 q0,q1,#1
+    assert_eq!(
+        MveShiftNarrow(Vqshrun, false, false, false, 1, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0x8f, 0xee, 0xc2, 0x0f]
+    ); // vqshrunb.s16 q0,q1,#1
+    assert_eq!(
+        MveShiftNarrow(Vqrshrun, false, false, false, 1, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0x8f, 0xfe, 0xc2, 0x0f]
+    ); // vqrshrunb.s16 q0,q1,#1
+    assert_eq!(
+        MveShiftNarrow(Vqshrn, false, true, true, 1, q(0), q(1))
+            .encode()
+            .unwrap(),
+        vec![0x9f, 0xee, 0x42, 0x1f]
+    ); // vqshrnt.s32 q0,q1,#1
+    for op in [Vshrn, Vrshrn, Vqshrn, Vqrshrn, Vqshrun, Vqrshrun] {
+        let unsigned_opts: &[bool] = if matches!(op, Vqshrn | Vqrshrn) {
+            &[false, true]
+        } else {
+            &[false]
+        };
+        for &unsigned in unsigned_opts {
+            for top in [false, true] {
+                for (src_is_32, max) in [(false, 8u8), (true, 16)] {
+                    for shift in [1, max / 2, max] {
+                        for d in [0u8, 7] {
+                            for m in [0u8, 7] {
+                                round_trip(&MveShiftNarrow(
+                                    op,
+                                    unsigned,
+                                    top,
+                                    src_is_32,
+                                    shift,
+                                    q(d),
+                                    q(m),
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn vpt_block_predication_suffix_rendering() {
+    use crate::apply_vpt_block_suffix;
+    // the t/e letter is inserted into the mnemonic, just before the `.<type>` suffix
+    assert_eq!(
+        apply_vpt_block_suffix("vadd.i32 q2, q3, q4", 't'),
+        "vaddt.i32 q2, q3, q4"
+    );
+    assert_eq!(
+        apply_vpt_block_suffix("vsub.i16 q5, q6, q7", 'e'),
+        "vsube.i16 q5, q6, q7"
+    );
+    assert_eq!(
+        apply_vpt_block_suffix("vmovnt.i16 q0, q1", 't'),
+        "vmovntt.i16 q0, q1"
+    ); // a real trailing-t op
+    assert_eq!(
+        apply_vpt_block_suffix("vpsel q0, q1, q2", 't'),
+        "vpselt q0, q1, q2"
+    ); // no `.` suffix
+    // a VPST/VPT exposes the right per-member t/e pattern (the predicated bytes equal the plain form)
+    use crate::enums::mve_predicate_mask_from_suffix;
+    use ArmT32Instruction::MveVpst;
+    let collect = |suffix: &str| {
+        MveVpst(mve_predicate_mask_from_suffix(suffix).unwrap())
+            .vpt_block_member_suffixes()
+            .unwrap()
+    };
+    assert_eq!(collect("t"), vec!['t']); // vpst  -> block of 1: then
+    assert_eq!(collect("tt"), vec!['t', 't']); // vpstt -> then, then
+    assert_eq!(collect("te"), vec!['t', 'e']); // vpste -> then, else
+    assert_eq!(collect("tee"), vec!['t', 'e', 'e']);
+    // non-VPT instructions arm no block
+    assert!(
+        ArmT32Instruction::MveVpnot
+            .vpt_block_member_suffixes()
+            .is_none()
+    );
+}
+
+#[test]
+fn gating__mve_requires_v8_1m_and_mve_feature() {
+    let vadd_i = ArmT32Instruction::MveIntArith(
+        Arm32MveIntArithOp::Vadd,
+        Arm32MveSize::I32,
+        q(0),
+        q(1),
+        q(2),
+    );
+    assert_eq!(
+        vadd_i.requirement(),
+        ArmInstructionRequirement::new(ArmIsaVersion::Armv8_1MMainline, &[ArmCpuFeature::Mve])
+    );
+
+    // a plain ARMv8-M Mainline (Cortex-M33) target has neither the v8.1-M version nor a vector unit -> refused.
+    assert!(
+        vadd_i
+            .encode_for_target(&ArmTargetProfile::armv8m_mainline())
+            .is_err()
+    );
+    // a Cortex-M55/M85 profile with MVE accepts it.
+    assert_eq!(
+        vadd_i.encode_for_target(&ArmTargetProfile::armv8_1m_mve()),
+        vadd_i.encode()
+    );
+
+    // a v8.1-M core WITHOUT the MVE option still refuses it.
+    let no_mve = ArmTargetProfile::new(ArmIsaVersion::Armv8_1MMainline, &[]);
+    assert!(vadd_i.encode_for_target(&no_mve).is_err());
+
+    // the floating-point vector forms additionally need the MVE floating-point option: an MVE-integer-only
+    // core (Mve but not MveFloat) refuses .f32/.f16 vector ops.
+    let vadd_f = ArmT32Instruction::MveFloatArith(
+        Arm32MveFloatArithOp::Vadd,
+        Arm32MveFloatSize::F32,
+        q(0),
+        q(1),
+        q(2),
+    );
+    assert_eq!(
+        vadd_f.requirement(),
+        ArmInstructionRequirement::new(
+            ArmIsaVersion::Armv8_1MMainline,
+            &[ArmCpuFeature::Mve, ArmCpuFeature::MveFloat]
+        )
+    );
+    let integer_only =
+        ArmTargetProfile::new(ArmIsaVersion::Armv8_1MMainline, &[ArmCpuFeature::Mve]);
+    assert!(vadd_f.encode_for_target(&integer_only).is_err());
+    assert_eq!(
+        vadd_f.encode_for_target(&ArmTargetProfile::armv8_1m_mve()),
+        vadd_f.encode()
+    );
+}
