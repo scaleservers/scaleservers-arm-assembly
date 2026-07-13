@@ -2403,3 +2403,386 @@ fn encode_round_trip__fldmdbx() {
     }
 }
 
+#[test]
+fn encode_round_trip__vrintr() {
+    use ArmT32Instruction::{Vrintr_Double_T1, Vrintr_Single_T1};
+    let s = |n: u8| crate::enums::Arm32SinglePrecisionRegister::new(n).unwrap();
+    let d = |n: u8| crate::enums::Arm32DoublePrecisionRegister::new(n).unwrap();
+    assert_eq!(
+        Vrintr_Single_T1(s(0), s(1)).encode().unwrap(),
+        vec![0xb6, 0xee, 0x60, 0x0a]
+    ); // vrintr.f32 s0, s1
+    assert_eq!(
+        Vrintr_Double_T1(d(0), d(1)).encode().unwrap(),
+        vec![0xb6, 0xee, 0x41, 0x0b]
+    ); // vrintr.f64 d0, d1
+    assert_eq!(
+        Vrintr_Single_T1(s(5), s(10)).encode().unwrap(),
+        vec![0xf6, 0xee, 0x45, 0x2a]
+    ); // vrintr.f32 s5, s10
+    for &(a, b) in &[(0u8, 0u8), (31, 30), (15, 16)] {
+        round_trip(&ArmT32Instruction::Vrintr_Single_T1(s(a), s(b)));
+    }
+    for &(a, b) in &[(0u8, 0u8), (15, 14), (10, 5)] {
+        round_trip(&ArmT32Instruction::Vrintr_Double_T1(d(a), d(b)));
+    }
+}
+
+#[test]
+fn round_trip__saturating_shifts() {
+    for op in 0..=3u8 {
+        for rda in [0u8, 5, 12] {
+            for imm in 1..=31u8 {
+                round_trip(&ArmT32Instruction::SatShiftImm_T1(
+                    op,
+                    R::from_operand_bits(rda),
+                    imm,
+                ));
+            }
+        }
+        for &(lo, hi) in &[(0u8, 1u8), (4, 5), (10, 11)] {
+            for imm in 1..=31u8 {
+                round_trip(&ArmT32Instruction::SatShiftLongImm_T1(
+                    op,
+                    R::from_operand_bits(lo),
+                    R::from_operand_bits(hi),
+                    imm,
+                ));
+            }
+        }
+    }
+    for signed in [false, true] {
+        for &(rda, rm) in &[(0u8, 1u8), (5, 8), (12, 14)] {
+            round_trip(&ArmT32Instruction::SatShiftReg_T1(
+                signed,
+                R::from_operand_bits(rda),
+                R::from_operand_bits(rm),
+            ));
+        }
+        for &(lo, hi) in &[(0u8, 1u8), (4, 5), (10, 11)] {
+            for sat48 in [false, true] {
+                round_trip(&ArmT32Instruction::SatShiftLongReg_T1(
+                    signed,
+                    R::from_operand_bits(lo),
+                    R::from_operand_bits(hi),
+                    R::from_operand_bits(8),
+                    sat48,
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn round_trip__long_shifts() {
+    for op in 0..=2u8 {
+        for &(lo, hi) in &[(0u8, 1u8), (4, 5), (10, 11)] {
+            for imm in 1..=31u8 {
+                round_trip(&ArmT32Instruction::LongShiftImm_T1(
+                    op,
+                    R::from_operand_bits(lo),
+                    R::from_operand_bits(hi),
+                    imm,
+                ));
+            }
+            for rm in [0u8, 7, 12] {
+                round_trip(&ArmT32Instruction::LongShiftReg_T1(
+                    op,
+                    R::from_operand_bits(lo),
+                    R::from_operand_bits(hi),
+                    R::from_operand_bits(rm),
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn round_trip__csel_family() {
+    use crate::enums::ArmT32InstructionCondition as C;
+    let conds = [
+        C::Equal,
+        C::NotEqual,
+        C::SignedGreaterThanOrEqual,
+        C::SignedLessThan,
+        C::SignedGreaterThan,
+        C::SignedLessThanOrEqual,
+        C::CarrySet,
+        C::Overflow,
+    ];
+    for op in 0..=3u8 {
+        for &cond in &conds {
+            // Rd/Rn/Rm are GPRs (PC/SP excluded -- Rd=15 would alias the saturating shifts, which is UNPREDICTABLE)
+            for &(d, n, m) in &[(0u8, 1u8, 2u8), (14, 14, 14), (3, 3, 3), (12, 0, 8)] {
+                round_trip(&ArmT32Instruction::Csel_T1(
+                    op,
+                    R::from_operand_bits(d),
+                    R::from_operand_bits(n),
+                    R::from_operand_bits(m),
+                    cond,
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn round_trip__hints_barriers_clrm_vsel() {
+    let s = |n: u8| crate::enums::Arm32SinglePrecisionRegister::new(n).unwrap();
+    let d = |n: u8| crate::enums::Arm32DoublePrecisionRegister::new(n).unwrap();
+    for opt in 0..=15u8 {
+        round_trip(&ArmT32Instruction::Dbg_T1(opt));
+    }
+    round_trip(&ArmT32Instruction::Esb_T1);
+    round_trip(&ArmT32Instruction::Ssbb_T1);
+    round_trip(&ArmT32Instruction::Pssbb_T1);
+    round_trip(&ArmT32Instruction::Sb_T1);
+    for &(sd, dm) in &[(0u8, 1u8), (3, 5), (31, 15), (12, 8)] {
+        round_trip(&ArmT32Instruction::Vjcvt_T1(s(sd), d(dm)));
+    }
+    for list in [0x0007u16, 0x410F, 0x0001, 0xCFFF, 0x8000, 0x4000] {
+        round_trip(&ArmT32Instruction::Clrm_T1(list));
+    }
+    for cond in 0..=3u8 {
+        for &(a, b, c) in &[(0u8, 1u8, 2u8), (31, 30, 5), (10, 20, 15)] {
+            round_trip(&ArmT32Instruction::Vsel_Single_T1(cond, s(a), s(b), s(c)));
+        }
+        for &(a, b, c) in &[(0u8, 1u8, 2u8), (15, 14, 8), (10, 5, 12)] {
+            round_trip(&ArmT32Instruction::Vsel_Double_T1(cond, d(a), d(b), d(c)));
+        }
+    }
+}
+
+#[test]
+fn round_trip__lda_stl_acquire_release() {
+    for size in 0..=2u8 {
+        for &(a, b) in &[(0u8, 1u8), (3, 7), (10, 12)] {
+            round_trip(&ArmT32Instruction::LoadAcquire_T1(
+                size,
+                false,
+                R::from_operand_bits(a),
+                R::from_operand_bits(b),
+            ));
+            round_trip(&ArmT32Instruction::LoadAcquire_T1(
+                size,
+                true,
+                R::from_operand_bits(a),
+                R::from_operand_bits(b),
+            ));
+            round_trip(&ArmT32Instruction::StoreRelease_T1(
+                size,
+                R::from_operand_bits(a),
+                R::from_operand_bits(b),
+            ));
+            round_trip(&ArmT32Instruction::StoreReleaseExclusive_T1(
+                size,
+                R::from_operand_bits(a),
+                R::from_operand_bits(b),
+                R::from_operand_bits((a + 2) & 0xF),
+            ));
+        }
+    }
+}
+
+#[test]
+fn round_trip__mve_vmovl_vmovn_vaddlv() {
+    for top in [false, true] {
+        for unsigned in [false, true] {
+            for size in [Arm32MveSize::I8, Arm32MveSize::I16] {
+                for (d, m) in [(0u8, 0u8), (7, 1), (3, 5)] {
+                    round_trip(&ArmT32Instruction::MveVmovl(
+                        top,
+                        unsigned,
+                        size,
+                        q(d),
+                        q(m),
+                    ));
+                }
+            }
+        }
+        for size in [Arm32MveSize::I16, Arm32MveSize::I32] {
+            for (d, m) in [(0u8, 0u8), (7, 1), (4, 6)] {
+                round_trip(&ArmT32Instruction::MveVmovn(top, size, q(d), q(m)));
+            }
+        }
+    }
+    for accumulate in [false, true] {
+        for unsigned in [false, true] {
+            // RdLo even, RdHi odd, independent (covers consecutive and non-consecutive pairs)
+            for (lo, hi) in [(0u8, 1u8), (4, 5), (2, 7), (12, 1), (10, 13)] {
+                round_trip(&ArmT32Instruction::MveVaddlv(
+                    accumulate,
+                    unsigned,
+                    R::from_operand_bits(lo),
+                    R::from_operand_bits(hi),
+                    q(3),
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn encode__mve_complex_exact_bytes() {
+    use Arm32MveFloatSize::{F16, F32};
+    use Arm32MveSize as S;
+    use ArmT32Instruction::{MveVcaddFloat, MveVcaddInt, MveVcmla, MveVcmul};
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb)
+    assert_eq!(
+        MveVcaddInt(false, S::I8, false, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x02, 0xfe, 0x04, 0x0f]
+    ); // vcadd.i8 q0,q1,q2,#90
+    assert_eq!(
+        MveVcaddInt(false, S::I32, false, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x22, 0xfe, 0x04, 0x0f]
+    ); // vcadd.i32 q0,q1,q2,#90
+    assert_eq!(
+        MveVcaddInt(true, S::I16, true, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x12, 0xee, 0x04, 0x1f]
+    ); // vhcadd.s16 q0,q1,q2,#270
+    assert_eq!(
+        MveVcaddFloat(F16, false, q(0), q(1), q(2))
+            .encode()
+            .unwrap(),
+        vec![0x82, 0xfc, 0x44, 0x08]
+    ); // vcadd.f16 q0,q1,q2,#90
+    assert_eq!(
+        MveVcaddFloat(F32, true, q(0), q(1), q(2)).encode().unwrap(),
+        vec![0x92, 0xfd, 0x44, 0x08]
+    ); // vcadd.f32 q0,q1,q2,#270
+    assert_eq!(
+        MveVcmul(F32, 0, q(0), q(1), q(2)).encode().unwrap(),
+        vec![0x32, 0xfe, 0x04, 0x0e]
+    ); // vcmul.f32 q0,q1,q2,#0
+    assert_eq!(
+        MveVcmul(F32, 1, q(0), q(1), q(2)).encode().unwrap(),
+        vec![0x32, 0xfe, 0x05, 0x0e]
+    ); // vcmul.f32 q0,q1,q2,#90
+    assert_eq!(
+        MveVcmul(F16, 2, q(0), q(1), q(2)).encode().unwrap(),
+        vec![0x32, 0xee, 0x04, 0x1e]
+    ); // vcmul.f16 q0,q1,q2,#180
+    assert_eq!(
+        MveVcmla(F32, 0, q(0), q(1), q(2)).encode().unwrap(),
+        vec![0x32, 0xfc, 0x44, 0x08]
+    ); // vcmla.f32 q0,q1,q2,#0
+    assert_eq!(
+        MveVcmla(F32, 1, q(0), q(1), q(2)).encode().unwrap(),
+        vec![0xb2, 0xfc, 0x44, 0x08]
+    ); // vcmla.f32 q0,q1,q2,#90
+    assert_eq!(
+        MveVcmla(F16, 3, q(0), q(1), q(2)).encode().unwrap(),
+        vec![0xa2, 0xfd, 0x44, 0x08]
+    ); // vcmla.f16 q0,q1,q2,#270
+}
+
+#[test]
+fn round_trip__mve_complex() {
+    let triples = [(0u8, 0u8, 0u8), (7, 1, 2), (3, 5, 7)];
+    for halving in [false, true] {
+        for size in [Arm32MveSize::I8, Arm32MveSize::I16, Arm32MveSize::I32] {
+            for rot270 in [false, true] {
+                for (d, n, m) in triples {
+                    round_trip(&ArmT32Instruction::MveVcaddInt(
+                        halving,
+                        size,
+                        rot270,
+                        q(d),
+                        q(n),
+                        q(m),
+                    ));
+                }
+            }
+        }
+    }
+    for size in [Arm32MveFloatSize::F16, Arm32MveFloatSize::F32] {
+        for rot270 in [false, true] {
+            for (d, n, m) in triples {
+                round_trip(&ArmT32Instruction::MveVcaddFloat(
+                    size,
+                    rot270,
+                    q(d),
+                    q(n),
+                    q(m),
+                ));
+            }
+        }
+        for rotate in 0..4u8 {
+            for (d, n, m) in triples {
+                round_trip(&ArmT32Instruction::MveVcmul(size, rotate, q(d), q(n), q(m)));
+                round_trip(&ArmT32Instruction::MveVcmla(size, rotate, q(d), q(n), q(m)));
+            }
+        }
+    }
+}
+
+#[test]
+fn encode_round_trip__mve_vpsel_vpnot() {
+    use ArmT32Instruction::{MveVpnot, MveVpsel};
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb)
+    assert_eq!(
+        MveVpsel(q(0), q(1), q(2)).encode().unwrap(),
+        vec![0x33, 0xfe, 0x05, 0x0f]
+    ); // vpsel q0, q1, q2
+    assert_eq!(
+        MveVpsel(q(7), q(3), q(4)).encode().unwrap(),
+        vec![0x37, 0xfe, 0x09, 0xef]
+    ); // vpsel q7, q3, q4
+    assert_eq!(MveVpnot.encode().unwrap(), vec![0x31, 0xfe, 0x4d, 0x0f]); // vpnot
+    round_trip(&MveVpnot);
+    for d in 0..8u8 {
+        for n in 0..8u8 {
+            for m in 0..8u8 {
+                round_trip(&ArmT32Instruction::MveVpsel(q(d), q(n), q(m)));
+            }
+        }
+    }
+}
+
+#[test]
+fn encode__mve_vcmp_exact_bytes() {
+    use Arm32MveFloatSize::{F16, F32};
+    use Arm32MveSize::*;
+    use Arm32MveVcmpCondition::*;
+    use ArmT32Instruction::{MveVcmpFloatReg, MveVcmpFloatScalar, MveVcmpReg, MveVcmpScalar};
+    // bytes verified against `arm-none-eabi-as -march=armv8.1-m.main+mve.fp` (Thumb)
+    assert_eq!(
+        MveVcmpReg(Eq, I32, q(0), q(1)).encode().unwrap(),
+        vec![0x21, 0xfe, 0x02, 0x0f]
+    ); // vcmp.i32 eq, q0, q1
+    assert_eq!(
+        MveVcmpReg(Gt, I32, q(0), q(1)).encode().unwrap(),
+        vec![0x21, 0xfe, 0x03, 0x1f]
+    ); // vcmp.s32 gt, q0, q1
+    assert_eq!(
+        MveVcmpReg(Hi, I8, q(0), q(1)).encode().unwrap(),
+        vec![0x01, 0xfe, 0x83, 0x0f]
+    ); // vcmp.u8 hi, q0, q1
+    assert_eq!(
+        MveVcmpScalar(Eq, I32, q(0), R::R2).encode().unwrap(),
+        vec![0x21, 0xfe, 0x42, 0x0f]
+    ); // vcmp.i32 eq, q0, r2
+    assert_eq!(
+        MveVcmpScalar(Gt, I32, q(0), R::R2).encode().unwrap(),
+        vec![0x21, 0xfe, 0x62, 0x1f]
+    ); // vcmp.s32 gt, q0, r2
+    assert_eq!(
+        MveVcmpFloatReg(Eq, F32, q(0), q(1)).encode().unwrap(),
+        vec![0x31, 0xee, 0x02, 0x0f]
+    ); // vcmp.f32 eq, q0, q1
+    assert_eq!(
+        MveVcmpFloatReg(Ge, F16, q(0), q(1)).encode().unwrap(),
+        vec![0x31, 0xfe, 0x02, 0x1f]
+    ); // vcmp.f16 ge, q0, q1
+    assert_eq!(
+        MveVcmpFloatScalar(Eq, F32, q(0), R::R2).encode().unwrap(),
+        vec![0x31, 0xee, 0x42, 0x0f]
+    ); // vcmp.f32 eq, q0, r2
+}
+
