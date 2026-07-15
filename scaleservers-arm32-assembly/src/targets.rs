@@ -14,7 +14,7 @@ mod arm_instruction_requirement;
 pub use arm_instruction_requirement::ArmInstructionRequirement;
 
 mod arm_isa_version;
-pub use arm_isa_version::{ArmIsaVersion, ArmIsaLineage};
+pub use arm_isa_version::{ArmIsaLineage, ArmIsaVersion};
 
 mod arm_target_profile;
 pub use arm_target_profile::ArmTargetProfile;

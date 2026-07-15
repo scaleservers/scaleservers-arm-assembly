@@ -2364,6 +2364,41 @@ fn a32_sb_and_vjcvt() {
     }
 }
 
+#[test]
+fn a32_hlt_and_setpan() {
+    use ArmA32Instruction::*;
+    let al = Cond::AlwaysUnconditional;
+    // dual-oracle confirmed: arm-none-eabi-as -march=armv8.1-a + llvm-mc armv8.1a (byte-for-byte)
+    assert_eq!(Hlt_A1(al, 0).encode().unwrap(), le(0xE100_0070)); // hlt #0
+    assert_eq!(Hlt_A1(al, 0xABCD).encode().unwrap(), le(0xE10A_BC7D)); // hlt #0xabcd
+    assert_eq!(Hlt_A1(al, 0x1234).encode().unwrap(), le(0xE101_2374)); // hlt #0x1234
+    assert_eq!(Setpan_A1(false).encode().unwrap(), le(0xF110_0000)); // setpan #0
+    assert_eq!(Setpan_A1(true).encode().unwrap(), le(0xF110_0200)); // setpan #1
+    assert_eq!(
+        Hlt_A1(al, 5).to_assembly_string(crate::emit::ArmAssemblySyntax::Gnu),
+        "hlt #5"
+    );
+    assert_eq!(
+        Setpan_A1(true).to_assembly_string(crate::emit::ArmAssemblySyntax::Gnu),
+        "setpan #1"
+    );
+    for instruction in [
+        Hlt_A1(al, 0),
+        Hlt_A1(al, 0xFFFF),
+        Hlt_A1(al, 0xABCD),
+        Setpan_A1(false),
+        Setpan_A1(true),
+    ] {
+        let bytes = instruction.encode().unwrap();
+        let mut offset = 0;
+        let decoded = ArmA32Instruction::decode(&mut bytes.iter(), &mut offset)
+            .unwrap()
+            .unwrap();
+        assert_eq!(offset, 4);
+        assert_eq!(decoded, instruction, "A32 HLT/SETPAN round-trip mismatch");
+    }
+}
+
 // ---- N1e: ARMv8-A FP additions (VSEL / VMAXNM / VMINNM / VRINT / VCVTA-N-P-M) ----
 
 #[test]

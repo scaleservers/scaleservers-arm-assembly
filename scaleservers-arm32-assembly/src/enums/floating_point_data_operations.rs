@@ -8,7 +8,19 @@
 // Three-operand FP data-processing (`Vd, Vn, Vm`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArmT32FpDataOperation3 {
-    Vmla, Vmls, Vnmla, Vnmls, Vmul, Vnmul, Vadd, Vsub, Vdiv, Vfnma, Vfnms, Vfma, Vfms,
+    Vmla,
+    Vmls,
+    Vnmla,
+    Vnmls,
+    Vmul,
+    Vnmul,
+    Vadd,
+    Vsub,
+    Vdiv,
+    Vfnma,
+    Vfnms,
+    Vfma,
+    Vfms,
 }
 impl ArmT32FpDataOperation3 {
     // the opcode bits to OR into 0xEE000A00: ([23] << 23) | ([21:20] << 20) | (op[6] << 6).
@@ -33,9 +45,19 @@ impl ArmT32FpDataOperation3 {
 
     pub fn mnemonic(&self) -> &'static str {
         match self {
-            Self::Vmla => "vmla", Self::Vmls => "vmls", Self::Vnmla => "vnmla", Self::Vnmls => "vnmls",
-            Self::Vmul => "vmul", Self::Vnmul => "vnmul", Self::Vadd => "vadd", Self::Vsub => "vsub",
-            Self::Vdiv => "vdiv", Self::Vfnma => "vfnma", Self::Vfnms => "vfnms", Self::Vfma => "vfma", Self::Vfms => "vfms",
+            Self::Vmla => "vmla",
+            Self::Vmls => "vmls",
+            Self::Vnmla => "vnmla",
+            Self::Vnmls => "vnmls",
+            Self::Vmul => "vmul",
+            Self::Vnmul => "vnmul",
+            Self::Vadd => "vadd",
+            Self::Vsub => "vsub",
+            Self::Vdiv => "vdiv",
+            Self::Vfnma => "vfnma",
+            Self::Vfnms => "vfnms",
+            Self::Vfma => "vfma",
+            Self::Vfms => "vfms",
         }
     }
 
@@ -65,7 +87,10 @@ impl ArmT32FpDataOperation3 {
 // Two-operand FP "other" data-processing (`Vd, Vm`): register move, absolute, negate, square root.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArmT32FpDataOperation2 {
-    Vmov, Vabs, Vneg, Vsqrt,
+    Vmov,
+    Vabs,
+    Vneg,
+    Vsqrt,
 }
 impl ArmT32FpDataOperation2 {
     // the single-precision base word (the opcode with all register fields zero).
@@ -80,7 +105,10 @@ impl ArmT32FpDataOperation2 {
 
     pub fn mnemonic(&self) -> &'static str {
         match self {
-            Self::Vmov => "vmov", Self::Vabs => "vabs", Self::Vneg => "vneg", Self::Vsqrt => "vsqrt",
+            Self::Vmov => "vmov",
+            Self::Vabs => "vabs",
+            Self::Vneg => "vneg",
+            Self::Vsqrt => "vsqrt",
         }
     }
 

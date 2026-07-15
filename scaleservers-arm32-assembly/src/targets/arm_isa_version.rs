@@ -19,19 +19,19 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ArmIsaVersion {
     // ---- M-profile (Thumb-only) lineage ----
-    Armv6M,  // Cortex-M0 / M0+ / M1 -- the Thumb subset
-    Armv7M,  // Cortex-M3 -- adds the bulk of Thumb-2
-    Armv7EM, // Cortex-M4 / M7 -- adds the DSP (SIMD) extension
-    Armv8MBaseline, // Cortex-M23 -- v6-M superset + the optional Security Extension (TrustZone-M)
-    Armv8MMainline, // Cortex-M33 / M35P / M55 -- v7-M superset + optional Security / DSP / FP
+    Armv6M,           // Cortex-M0 / M0+ / M1 -- the Thumb subset
+    Armv7M,           // Cortex-M3 -- adds the bulk of Thumb-2
+    Armv7EM,          // Cortex-M4 / M7 -- adds the DSP (SIMD) extension
+    Armv8MBaseline,   // Cortex-M23 -- v6-M superset + the optional Security Extension (TrustZone-M)
+    Armv8MMainline,   // Cortex-M33 / M35P / M55 -- v7-M superset + optional Security / DSP / FP
     Armv8_1MMainline, // Cortex-M55 / M85 -- v8-M Mainline superset + optional MVE (Helium) / low-overhead loops
 
     // ---- A/R-profile lineage (A32 + Thumb) ----
     Armv4T,  // ARM7TDMI / ARM9 -- the classic A32 + Thumb-1 baseline
     Armv5TE, // ARM9E / ARM10E -- adds CLZ, the saturating/DSP (E) multiplies, BLX, BKPT, PLD
-    Armv6,   // ARM11 -- adds the media/SIMD (GE) instructions, REV, SETEND, SRS/RFE, exclusive access
+    Armv6, // ARM11 -- adds the media/SIMD (GE) instructions, REV, SETEND, SRS/RFE, exclusive access
     Armv7AR, // Cortex-A / Cortex-R -- the full A32 base ISA (MOVW/MOVT, bitfield, DMB/DSB/ISB, ...)
-    Armv8A,  // ARMv8-A AArch32 -- adds CRC32, the crypto extension, VSEL/VRINT/VMAXNM/VCVTA-N-P-M, ...
+    Armv8A, // ARMv8-A AArch32 -- adds CRC32, the crypto extension, VSEL/VRINT/VMAXNM/VCVTA-N-P-M, ...
 }
 
 // Which of the two non-comparable version lineages a version belongs to.
@@ -45,8 +45,15 @@ impl ArmIsaVersion {
     // which lineage this version belongs to
     pub fn lineage(self) -> ArmIsaLineage {
         match self {
-            Self::Armv6M | Self::Armv7M | Self::Armv7EM | Self::Armv8MBaseline | Self::Armv8MMainline | Self::Armv8_1MMainline => ArmIsaLineage::MProfile,
-            Self::Armv4T | Self::Armv5TE | Self::Armv6 | Self::Armv7AR | Self::Armv8A => ArmIsaLineage::ARProfile,
+            Self::Armv6M
+            | Self::Armv7M
+            | Self::Armv7EM
+            | Self::Armv8MBaseline
+            | Self::Armv8MMainline
+            | Self::Armv8_1MMainline => ArmIsaLineage::MProfile,
+            Self::Armv4T | Self::Armv5TE | Self::Armv6 | Self::Armv7AR | Self::Armv8A => {
+                ArmIsaLineage::ARProfile
+            }
         }
     }
 
@@ -73,6 +80,7 @@ impl ArmIsaVersion {
     // let an A/R target at v6T2+ also satisfy a Thumb-2 / M-profile requirement, since Cortex-A/R run
     // Thumb; that cross-lineage path is unused today and intentionally returns false.)
     pub fn satisfies(self, required: ArmIsaVersion) -> bool {
-        self.lineage() == required.lineage() && self.rank_within_lineage() >= required.rank_within_lineage()
+        self.lineage() == required.lineage()
+            && self.rank_within_lineage() >= required.rank_within_lineage()
     }
 }

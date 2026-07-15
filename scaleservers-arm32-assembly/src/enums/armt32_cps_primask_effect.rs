@@ -2,14 +2,14 @@
 
 #[derive(Debug, PartialEq)]
 pub enum ArmT32CpsPrimaskEffect {
-    InterruptEnable,    // IE (CPSIE i)
-    InterruptDisable,   // ID (CPSID i)
+    InterruptEnable,  // IE (CPSIE i)
+    InterruptDisable, // ID (CPSID i)
 }
 //
 impl ArmT32CpsPrimaskEffect {
     pub fn as_operand_bits(&self) -> u8 {
         match self {
-            Self::InterruptEnable  => 0b0,
+            Self::InterruptEnable => 0b0,
             Self::InterruptDisable => 0b1,
         }
     }

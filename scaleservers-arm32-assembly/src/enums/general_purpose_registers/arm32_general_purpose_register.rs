@@ -84,48 +84,48 @@ impl Arm32GeneralPurposeRegister {
     pub fn is_low_general_purpose_register(&self) -> bool {
         match self {
             // low registers
-            Self::R0 |
-            Self::R1 |
-            Self::R2 |
-            Self::R3 |
-            Self::R4 |
-            Self::R5 |
-            Self::R6 |
-            Self::R7 => true,
+            Self::R0
+            | Self::R1
+            | Self::R2
+            | Self::R3
+            | Self::R4
+            | Self::R5
+            | Self::R6
+            | Self::R7 => true,
             //
             // high registers
-            Self::R8 |
-            Self::R9 |
-            Self::R10 |
-            Self::R11 |
-            Self::R12 |
-            Self::R13 |
-            Self::R14 |
-            Self::R15 => false,
+            Self::R8
+            | Self::R9
+            | Self::R10
+            | Self::R11
+            | Self::R12
+            | Self::R13
+            | Self::R14
+            | Self::R15 => false,
         }
     }
 
     pub fn is_high_general_purpose_register(&self) -> bool {
         match self {
             // low registers
-            Self::R0 |
-            Self::R1 |
-            Self::R2 |
-            Self::R3 |
-            Self::R4 |
-            Self::R5 |
-            Self::R6 |
-            Self::R7 => false,
+            Self::R0
+            | Self::R1
+            | Self::R2
+            | Self::R3
+            | Self::R4
+            | Self::R5
+            | Self::R6
+            | Self::R7 => false,
             //
             // high registers
-            Self::R8 |
-            Self::R9 |
-            Self::R10 |
-            Self::R11 |
-            Self::R12 |
-            Self::R13 |
-            Self::R14 |
-            Self::R15 => true,
+            Self::R8
+            | Self::R9
+            | Self::R10
+            | Self::R11
+            | Self::R12
+            | Self::R13
+            | Self::R14
+            | Self::R15 => true,
         }
     }
 
@@ -142,14 +142,14 @@ impl Arm32GeneralPurposeRegister {
             Self::R7 => Some(Arm32LowGeneralPurposeRegister::R7),
             //
             // high registers
-            Self::R8 |
-            Self::R9 |
-            Self::R10 |
-            Self::R11 |
-            Self::R12 |
-            Self::R13 |
-            Self::R14 |
-            Self::R15 => None,
+            Self::R8
+            | Self::R9
+            | Self::R10
+            | Self::R11
+            | Self::R12
+            | Self::R13
+            | Self::R14
+            | Self::R15 => None,
         }
     }
 }

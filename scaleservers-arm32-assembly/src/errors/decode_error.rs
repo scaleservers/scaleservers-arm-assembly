@@ -19,11 +19,17 @@ impl fmt::Display for DecodeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::IncompleteInstruction => {
-                write!(formatter, "incomplete instruction: the input ended mid-instruction (a halfword or word was truncated)")
-            },
+                write!(
+                    formatter,
+                    "incomplete instruction: the input ended mid-instruction (a halfword or word was truncated)"
+                )
+            }
             Self::InvalidOpcode => {
-                write!(formatter, "invalid opcode: the bytes do not encode a recognized instruction")
-            },
+                write!(
+                    formatter,
+                    "invalid opcode: the bytes do not encode a recognized instruction"
+                )
+            }
         }
     }
 }

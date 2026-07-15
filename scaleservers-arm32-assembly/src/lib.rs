@@ -53,14 +53,68 @@ extern crate alloc;
 
 mod enums;
 pub use enums::{
-    Arm32GeneralPurposeRegister,
-    Arm32LowGeneralPurposeRegister,
-    Arm32SinglePrecisionRegister,
+    Arm32BlockAddressMode,
+    // neutral ARM-wide aliases (the 4-bit condition code and barrel-shift operand are shared by A32 + T32)
+    Arm32Condition,
+    Arm32CpsMode,
+    Arm32DirectedRound,
     Arm32DoublePrecisionRegister,
+    Arm32ExtendType,
+    Arm32FpDataOperation2,
+    Arm32FpDataOperation3,
+    Arm32GeneralPurposeRegister,
+    Arm32IndexMode,
+    Arm32LowGeneralPurposeRegister,
+    Arm32MemoryOffset,
+    Arm32MemoryOffset8,
+    Arm32MveBitwiseOp,
+    Arm32MveFloatArithOp,
+    Arm32MveFloatReduceOp,
+    Arm32MveFloatSize,
+    Arm32MveIntArithOp,
+    Arm32MveLongMacOp,
+    Arm32MveMisc2FloatOp,
+    Arm32MveMisc2Op,
+    Arm32MveQMovnKind,
+    Arm32MveReduceOp,
+    Arm32MveShiftImmOp,
+    Arm32MveShiftNarrowOp,
+    Arm32MveSize,
+    Arm32MveVcmpCondition,
+    Arm32MveVecScalarFloatOp,
+    Arm32MveVecScalarIntOp,
+    Arm32MveVectorRegister,
+    Arm32MveVrintOp,
+    Arm32NeonAesOp,
+    Arm32NeonBitwiseOp,
+    Arm32NeonDiffLongOp,
+    Arm32NeonDiffNarrowOp,
+    Arm32NeonDiffWideOp,
+    Arm32NeonFloatOp,
+    Arm32NeonIntegerOp,
+    Arm32NeonLoadStoreAddress,
+    Arm32NeonMisc2FixedOp,
+    Arm32NeonMisc2SizedOp,
+    Arm32NeonNarrowOp,
+    Arm32NeonScalarLongOp,
+    Arm32NeonScalarOp,
+    Arm32NeonSha2Op,
+    Arm32NeonSha3Op,
+    Arm32NeonShiftNarrowOp,
+    Arm32NeonShiftOp,
+    Arm32NeonSize,
+    Arm32ParallelOperation,
+    Arm32ParallelPrefix,
     Arm32QuadwordRegister,
+    Arm32RegisterShift,
+    Arm32ShiftType,
+    Arm32SinglePrecisionRegister,
+    Arm32VmovLaneSize,
+    Arm32VrintMode,
+    Arm32VselCondition,
     ArmT32CpsPrimaskEffect,
-    ArmT32FpDataOperation3,
     ArmT32FpDataOperation2,
+    ArmT32FpDataOperation3,
     ArmT32IndexMode,
     ArmT32InstructionCondition,
     ArmT32MemoryBarrierOption,
@@ -68,76 +122,11 @@ pub use enums::{
     ArmT32ParallelPrefix,
     ArmT32RegisterShift,
     ArmT32SpecialRegister,
-    // neutral ARM-wide aliases (the 4-bit condition code and barrel-shift operand are shared by A32 + T32)
-    Arm32Condition,
-    Arm32RegisterShift,
-    Arm32ShiftType,
-    Arm32ExtendType,
-    Arm32ParallelOperation,
-    Arm32ParallelPrefix,
-    Arm32IndexMode,
-    Arm32MemoryOffset,
-    Arm32MemoryOffset8,
-    Arm32BlockAddressMode,
-    Arm32CpsMode,
-    Arm32FpDataOperation3,
-    Arm32FpDataOperation2,
-    Arm32VselCondition,
-    Arm32DirectedRound,
-    Arm32VrintMode,
-    Arm32NeonSize,
-    Arm32NeonIntegerOp,
-    Arm32NeonFloatOp,
-    Arm32NeonBitwiseOp,
-    Arm32NeonMisc2SizedOp,
-    Arm32NeonMisc2FixedOp,
-    Arm32NeonNarrowOp,
-    Arm32NeonDiffLongOp,
-    Arm32NeonDiffWideOp,
-    Arm32NeonDiffNarrowOp,
-    Arm32NeonScalarOp,
-    Arm32NeonScalarLongOp,
-    Arm32NeonShiftOp,
-    Arm32NeonShiftNarrowOp,
-    Arm32NeonLoadStoreAddress,
-    Arm32NeonAesOp,
-    Arm32NeonSha3Op,
-    Arm32NeonSha2Op,
-    Arm32MveVectorRegister,
-    Arm32VmovLaneSize,
-    Arm32MveSize,
-    Arm32MveFloatSize,
-    Arm32MveIntArithOp,
-    Arm32MveBitwiseOp,
-    Arm32MveFloatArithOp,
-    Arm32MveVecScalarIntOp,
-    Arm32MveVecScalarFloatOp,
-    Arm32MveShiftImmOp,
-    Arm32MveMisc2Op,
-    Arm32MveMisc2FloatOp,
-    Arm32MveReduceOp,
-    Arm32MveLongMacOp,
-    Arm32MveShiftNarrowOp,
-    Arm32MveQMovnKind,
-    Arm32MveFloatReduceOp,
-    Arm32MveVrintOp,
-    Arm32MveVcmpCondition,
     mve_predicate_mask_from_suffix,
 };
 
 mod errors;
-pub use errors::{
-    DecodeError,
-    EncodeError,
-};
-
-pub mod targets;
-pub use targets::{
-    ArmCpuFeature,
-    ArmInstructionRequirement,
-    ArmIsaVersion,
-    ArmTargetProfile,
-};
+pub use errors::{DecodeError, EncodeError};
 
 // Decode-time context for the family-wide Rule R4 ("same bytes, different meaning" -> disambiguate by an
 // explicit decode context). Used by `ArmT32Instruction::decode_with` to choose between a CDE custom-datapath
@@ -158,7 +147,9 @@ pub use arm32_instruction::{Arm32Instruction, ArmInstructionSet};
 
 // The VFP modified-immediate codec for VMOV (immediate).
 pub mod floating_point_immediate;
-pub use floating_point_immediate::{vfp_expand_imm8_to_f32, vfp_expand_imm8_to_f64, vfp_encode_f64_to_imm8};
+pub use floating_point_immediate::{
+    vfp_encode_f64_to_imm8, vfp_expand_imm8_to_f32, vfp_expand_imm8_to_f64,
+};
 
 // Assembly-string emission (model -> UAL text). Adds `to_assembly_string` / `to_assembly_string_at`
 // inherent methods to ArmT32Instruction; the disassembler renders through this layer. `ArmAssemblySyntax`
@@ -168,6 +159,17 @@ pub use emit::ArmAssemblySyntax;
 pub use emit::apply_it_block_condition;
 pub use emit::apply_vpt_block_suffix;
 
-mod utils;
+// Target-architecture gating: restrict the emittable set to a
+// processor profile. The implemented set spans the full M-profile -- ARMv6-M, ARMv7-M, and ARMv7E-M
+// (DSP + floating-point) -- and the gate refuses any form the chosen profile can't run.
+pub mod targets;
+pub use targets::{ArmCpuFeature, ArmInstructionRequirement, ArmIsaVersion, ArmTargetProfile};
+
+// NOTE: the programmatic label/relocation backend + the ELF object writer live in the SEPARATE crate
+// `scaleservers-arm32-codegen`. Kept out of here so this crate stays a standalone, zero-dependency golden
+// sample (cargo requires optional path-deps to exist even for a no-feature build, so a `codegen` feature
+// here would couple every build to external crates).
 
 mod tests;
+
+mod utils;

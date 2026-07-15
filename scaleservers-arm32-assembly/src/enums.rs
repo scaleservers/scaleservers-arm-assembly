@@ -7,16 +7,15 @@ mod general_purpose_registers {
     mod arm32_low_general_purpose_register;
     pub use arm32_low_general_purpose_register::Arm32LowGeneralPurposeRegister;
 }
-pub use general_purpose_registers::{
-    Arm32GeneralPurposeRegister,
-    Arm32LowGeneralPurposeRegister,
-};
+pub use general_purpose_registers::{Arm32GeneralPurposeRegister, Arm32LowGeneralPurposeRegister};
 
 mod floating_point_registers;
-pub use floating_point_registers::{Arm32SinglePrecisionRegister, Arm32DoublePrecisionRegister, Arm32QuadwordRegister};
+pub use floating_point_registers::{
+    Arm32DoublePrecisionRegister, Arm32QuadwordRegister, Arm32SinglePrecisionRegister,
+};
 
 mod floating_point_data_operations;
-pub use floating_point_data_operations::{ArmT32FpDataOperation3, ArmT32FpDataOperation2};
+pub use floating_point_data_operations::{ArmT32FpDataOperation2, ArmT32FpDataOperation3};
 
 mod armt32_cps_primask_effect;
 pub use armt32_cps_primask_effect::ArmT32CpsPrimaskEffect;
@@ -71,12 +70,10 @@ pub use arm32_vrint_mode::Arm32VrintMode;
 
 mod arm32_neon_operations;
 pub use arm32_neon_operations::{
-    Arm32NeonSize, Arm32NeonIntegerOp, Arm32NeonFloatOp, Arm32NeonBitwiseOp,
-    Arm32NeonMisc2SizedOp, Arm32NeonMisc2FixedOp, Arm32NeonNarrowOp,
-    Arm32NeonDiffLongOp, Arm32NeonDiffWideOp, Arm32NeonDiffNarrowOp,
-    Arm32NeonScalarOp, Arm32NeonScalarLongOp,
-    Arm32NeonShiftOp, Arm32NeonShiftNarrowOp,
-    Arm32NeonAesOp, Arm32NeonSha3Op, Arm32NeonSha2Op,
+    Arm32NeonAesOp, Arm32NeonBitwiseOp, Arm32NeonDiffLongOp, Arm32NeonDiffNarrowOp,
+    Arm32NeonDiffWideOp, Arm32NeonFloatOp, Arm32NeonIntegerOp, Arm32NeonMisc2FixedOp,
+    Arm32NeonMisc2SizedOp, Arm32NeonNarrowOp, Arm32NeonScalarLongOp, Arm32NeonScalarOp,
+    Arm32NeonSha2Op, Arm32NeonSha3Op, Arm32NeonShiftNarrowOp, Arm32NeonShiftOp, Arm32NeonSize,
 };
 
 mod arm32_neon_load_store_address;
@@ -90,56 +87,40 @@ pub use arm32_vmov_lane_size::Arm32VmovLaneSize;
 
 mod arm32_mve_operations;
 pub use arm32_mve_operations::{
-    Arm32MveSize, Arm32MveFloatSize,
-    Arm32MveIntArithOp, Arm32MveBitwiseOp, Arm32MveFloatArithOp,
-    MVE_INT_SIGNATURE_MASK, MVE_BITWISE_SIGNATURE_MASK, MVE_FLOAT_SIGNATURE_MASK,
-    Arm32MveVecScalarIntOp, Arm32MveVecScalarFloatOp,
-    MVE_VBS_INT_SIGNATURE_MASK, MVE_VBS_FLOAT_SIGNATURE_MASK,
-    MVE_VDUP_MASK, MVE_VDUP_BASE, mve_vdup_size_bits, mve_vdup_size_from_bits,
-    MVE_VIDDUP_BASE, MVE_VIDDUP_MASK,
-    MVE_VBRSR_BASE, MVE_VBRSR_MASK,
-    MVE_GATHER_SCATTER_BASE, MVE_GATHER_SCATTER_MASK, mve_mem_size_log, mve_mem_size_from_log,
-    MVE_GATHER_VBASE_BASE, MVE_GATHER_VBASE_MASK,
-    MVE_INTERLEAVE_BASE, MVE_INTERLEAVE_MASK,
-    MVE_LCTP_WORD, MVE_VCTP_BASE, MVE_VCTP_MASK, MVE_LOB_DLS_BASE, MVE_LOB_DLS_MASK,
-    lob_size_field, lob_size_from_field, lob_branch_hw1, lob_branch_offset,
-    Arm32MveShiftImmOp, MVE_SHIFT_SIGNATURE_MASK,
-    mve_shift_esize, mve_shift_size_from_imm6,
-    Arm32MveMisc2Op, Arm32MveMisc2FloatOp,
-    MVE_MISC2_SIGNATURE_MASK, MVE_VMVN_REG_MASK, MVE_VMVN_REG_BASE,
-    mve_misc2_float_size_bits, mve_misc2_float_size_from_bits,
-    Arm32MveReduceOp, MVE_REDUCE_SIGNATURE_MASK,
-    Arm32MveFloatReduceOp, MVE_FLOAT_REDUCE_SIGNATURE_MASK,
-    MVE_VABAV_SIGNATURE_MASK, MVE_VABAV_BASE,
-    MVE_DUALMAC_BASE, MVE_DUALMAC_MASK, mve_dualmac_size_bits, mve_dualmac_decode_size,
-    Arm32MveLongMacOp, MVE_LONG_DUALMAC_BASE, MVE_LONG_DUALMAC_MASK, mve_long_dualmac_bits, mve_long_dualmac_decode,
-    Arm32MveVrintOp, MVE_VCVT_FI_BASE,
-    MVE_VCVT_FI_FIXED_MASK, MVE_VCVT_FI_FIXED_PATTERN,
-    MVE_VCVTR_BASE, MVE_VCVTR_MASK,
-    MVE_VCVT_FIXED_BASE, MVE_VCVT_FIXED_MASK,
-    MVE_VCVT_HALF_BASE, MVE_VCVT_HALF_MASK, MVE_SHIFT_NARROW_BASE, MVE_SHIFT_NARROW_MASK,
-    Arm32MveShiftNarrowOp,
-    MVE_VMOVL_BASE, MVE_VMOVL_MASK, MVE_VMOVN_BASE, MVE_VMOVN_MASK,
-    MVE_VADDLV_BASE, MVE_VADDLV_MASK,
-    MVE_VQMOVN_BASE, MVE_VQMOVN_MASK, MVE_VQMOVUN_BASE, MVE_VQMOVUN_MASK, Arm32MveQMovnKind,
+    Arm32MveBitwiseOp, Arm32MveFloatArithOp, Arm32MveFloatReduceOp, Arm32MveFloatSize,
+    Arm32MveIntArithOp, Arm32MveLongMacOp, Arm32MveMisc2FloatOp, Arm32MveMisc2Op,
+    Arm32MveQMovnKind, Arm32MveReduceOp, Arm32MveShiftImmOp, Arm32MveShiftNarrowOp, Arm32MveSize,
+    Arm32MveVcmpCondition, Arm32MveVecScalarFloatOp, Arm32MveVecScalarIntOp, Arm32MveVrintOp,
+    MVE_BITWISE_SIGNATURE_MASK, MVE_DUALMAC_BASE, MVE_DUALMAC_MASK,
+    MVE_FLOAT_REDUCE_SIGNATURE_MASK, MVE_FLOAT_SIGNATURE_MASK, MVE_GATHER_SCATTER_BASE,
+    MVE_GATHER_SCATTER_MASK, MVE_GATHER_VBASE_BASE, MVE_GATHER_VBASE_MASK, MVE_INT_SIGNATURE_MASK,
+    MVE_INTERLEAVE_BASE, MVE_INTERLEAVE_MASK, MVE_LCTP_WORD, MVE_LOB_DLS_BASE, MVE_LOB_DLS_MASK,
+    MVE_LONG_DUALMAC_BASE, MVE_LONG_DUALMAC_MASK, MVE_MISC2_SIGNATURE_MASK,
+    MVE_REDUCE_SIGNATURE_MASK, MVE_SHIFT_NARROW_BASE, MVE_SHIFT_NARROW_MASK, MVE_SHIFT_SCALAR_BASE,
+    MVE_SHIFT_SCALAR_MASK, MVE_SHIFT_SIGNATURE_MASK, MVE_SHIFT_VEC_BASE, MVE_SHIFT_VEC_MASK,
+    MVE_VABAV_BASE, MVE_VABAV_SIGNATURE_MASK, MVE_VADC_BASE, MVE_VADC_MASK, MVE_VADDLV_BASE,
+    MVE_VADDLV_MASK, MVE_VBRSR_BASE, MVE_VBRSR_MASK, MVE_VBS_FLOAT_SIGNATURE_MASK,
+    MVE_VBS_INT_SIGNATURE_MASK, MVE_VCADD_FLOAT_MASK, MVE_VCADD_FLOAT_PATTERN, MVE_VCADD_INT_MASK,
+    MVE_VCADD_INT_PATTERN, MVE_VCMLA_MASK, MVE_VCMLA_PATTERN, MVE_VCMP_FLOAT_BASE,
+    MVE_VCMP_FLOAT_MASK, MVE_VCMP_INT_BASE, MVE_VCMP_INT_MASK, MVE_VCMUL_MASK, MVE_VCMUL_PATTERN,
+    MVE_VCTP_BASE, MVE_VCTP_MASK, MVE_VCVT_FI_BASE, MVE_VCVT_FI_FIXED_MASK,
+    MVE_VCVT_FI_FIXED_PATTERN, MVE_VCVT_FIXED_BASE, MVE_VCVT_FIXED_MASK, MVE_VCVT_HALF_BASE,
+    MVE_VCVT_HALF_MASK, MVE_VCVTR_BASE, MVE_VCVTR_MASK, MVE_VDUP_BASE, MVE_VDUP_MASK,
+    MVE_VIDDUP_BASE, MVE_VIDDUP_MASK, MVE_VMOVL_BASE, MVE_VMOVL_MASK, MVE_VMOVN_BASE,
+    MVE_VMOVN_MASK, MVE_VMOVX_BASE, MVE_VMOVX_MASK, MVE_VMULH_BASE, MVE_VMULH_MASK,
     MVE_VMULL_INT_BASE, MVE_VMULL_INT_MASK, MVE_VMULL_POLY_BASE, MVE_VMULL_POLY_MASK,
-    MVE_VMULH_BASE, MVE_VMULH_MASK,
-    MVE_VQDMULL_VEC_BASE, MVE_VQDMULL_VEC_MASK, MVE_VQDMULL_SCALAR_BASE, MVE_VQDMULL_SCALAR_MASK,
-    MVE_VQDMLADH_BASE, MVE_VQDMLADH_MASK,
-    MVE_SHIFT_VEC_BASE, MVE_SHIFT_VEC_MASK, MVE_SHIFT_SCALAR_BASE, MVE_SHIFT_SCALAR_MASK,
-    MVE_VSHLL_T1_BASE, MVE_VSHLL_T1_MASK, MVE_VSHLL_T2_BASE, MVE_VSHLL_T2_MASK,
-    MVE_VMOVX_BASE, MVE_VMOVX_MASK,
-    MVE_VCADD_INT_MASK, MVE_VCADD_INT_PATTERN,
-    MVE_VCADD_FLOAT_MASK, MVE_VCADD_FLOAT_PATTERN,
-    MVE_VCMUL_MASK, MVE_VCMUL_PATTERN, MVE_VCMLA_MASK, MVE_VCMLA_PATTERN,
-    MVE_VPSEL_BASE, MVE_VPSEL_MASK, MVE_VPNOT_WORD,
-    MVE_VADC_BASE, MVE_VADC_MASK, MVE_VSHLC_BASE, MVE_VSHLC_MASK,
-    MVE_VPST_NOT_BASE, MVE_VPST_NOT_MASK,
-    mve_predicate_mask_bits, mve_predicate_mask_from_word,
-    mve_predicate_mask_suffix, mve_predicate_mask_from_suffix,
-    Arm32MveVcmpCondition,
-    MVE_VCMP_INT_BASE, MVE_VCMP_INT_MASK, MVE_VCMP_FLOAT_BASE, MVE_VCMP_FLOAT_MASK,
-    mve_vcmp_fc_bits, mve_vcmp_fc_from_word,
+    MVE_VMVN_REG_BASE, MVE_VMVN_REG_MASK, MVE_VPNOT_WORD, MVE_VPSEL_BASE, MVE_VPSEL_MASK,
+    MVE_VPST_NOT_BASE, MVE_VPST_NOT_MASK, MVE_VQDMLADH_BASE, MVE_VQDMLADH_MASK,
+    MVE_VQDMULL_SCALAR_BASE, MVE_VQDMULL_SCALAR_MASK, MVE_VQDMULL_VEC_BASE, MVE_VQDMULL_VEC_MASK,
+    MVE_VQMOVN_BASE, MVE_VQMOVN_MASK, MVE_VQMOVUN_BASE, MVE_VQMOVUN_MASK, MVE_VSHLC_BASE,
+    MVE_VSHLC_MASK, MVE_VSHLL_T1_BASE, MVE_VSHLL_T1_MASK, MVE_VSHLL_T2_BASE, MVE_VSHLL_T2_MASK,
+    lob_branch_hw1, lob_branch_offset, lob_size_field, lob_size_from_field,
+    mve_dualmac_decode_size, mve_dualmac_size_bits, mve_long_dualmac_bits, mve_long_dualmac_decode,
+    mve_mem_size_from_log, mve_mem_size_log, mve_misc2_float_size_bits,
+    mve_misc2_float_size_from_bits, mve_predicate_mask_bits, mve_predicate_mask_from_suffix,
+    mve_predicate_mask_from_word, mve_predicate_mask_suffix, mve_shift_esize,
+    mve_shift_size_from_imm6, mve_vcmp_fc_bits, mve_vcmp_fc_from_word, mve_vdup_size_bits,
+    mve_vdup_size_from_bits,
 };
 
 // ---- neutral ARM-wide aliases ----
@@ -152,8 +133,8 @@ pub use armt32_register_shift::ArmT32RegisterShift as Arm32RegisterShift;
 pub use armt32_parallel_arithmetic::ArmT32ParallelOperation as Arm32ParallelOperation;
 pub use armt32_parallel_arithmetic::ArmT32ParallelPrefix as Arm32ParallelPrefix;
 // the VFP data-processing operation taxonomy is identical in A32 and T32
-pub use floating_point_data_operations::ArmT32FpDataOperation3 as Arm32FpDataOperation3;
 pub use floating_point_data_operations::ArmT32FpDataOperation2 as Arm32FpDataOperation2;
+pub use floating_point_data_operations::ArmT32FpDataOperation3 as Arm32FpDataOperation3;
 // offset/pre-index/post-index is the same taxonomy in both sets (the A32 P/W bit mapping differs and is
 // handled in the A32 encoder)
 pub use armt32_index_mode::ArmT32IndexMode as Arm32IndexMode;

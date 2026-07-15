@@ -59,12 +59,12 @@ impl ArmT32ParallelOperation {
 // The signed/unsigned (and saturating / halving) prefix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArmT32ParallelPrefix {
-    Signed,              // S
-    SignedSaturating,    // Q
-    SignedHalving,       // SH
-    Unsigned,            // U
-    UnsignedSaturating,  // UQ
-    UnsignedHalving,     // UH
+    Signed,             // S
+    SignedSaturating,   // Q
+    SignedHalving,      // SH
+    Unsigned,           // U
+    UnsignedSaturating, // UQ
+    UnsignedHalving,    // UH
 }
 impl ArmT32ParallelPrefix {
     // the 3-bit selector at bits 6:4 of the second halfword

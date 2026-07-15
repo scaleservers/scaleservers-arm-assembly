@@ -4,9 +4,9 @@
 // relative to the base register Rn, encoded as the (P, U) pair. PUSH is STMDB sp! and POP is LDMIA sp!.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32BlockAddressMode {
-    IncrementAfter,  // IA / IncrementAfter  (P=0, U=1) -- the bare LDM/STM and the POP side
+    IncrementAfter, // IA / IncrementAfter  (P=0, U=1) -- the bare LDM/STM and the POP side
     IncrementBefore, // IB / IncrementBefore (P=1, U=1)
-    DecrementAfter,  // DA / DecrementAfter  (P=0, U=0)
+    DecrementAfter, // DA / DecrementAfter  (P=0, U=0)
     DecrementBefore, // DB / DecrementBefore (P=1, U=0) -- the PUSH side
 }
 impl Arm32BlockAddressMode {

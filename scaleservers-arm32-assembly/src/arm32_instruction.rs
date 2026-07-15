@@ -1,12 +1,8 @@
 // Copyright (c) Scaleservers LLC
 
 // `Vec` is not in the `no_std` prelude; pull it from `alloc`.
+use crate::{ArmA32Instruction, ArmT32Instruction, EncodeError};
 use alloc::vec::Vec;
-use crate::{
-    ArmA32Instruction,
-    ArmT32Instruction,
-    EncodeError,
-};
 
 /// Which ARM instruction set a code stream is in. A32 ("ARM" state) and T32 (Thumb state) are distinct
 /// instruction sets with incompatible encodings; a 32-bit ARM program selects between them at runtime

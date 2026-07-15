@@ -1,10 +1,6 @@
 // Copyright (c) Scaleservers LLC
 
-use crate::targets::{
-    ArmCpuFeature,
-    ArmInstructionRequirement,
-    ArmIsaVersion,
-};
+use crate::targets::{ArmCpuFeature, ArmInstructionRequirement, ArmIsaVersion};
 // A `BTreeSet` (from `alloc`, available under `no_std`) rather than a `std` `HashSet`: this is a CPU-feature
 // *membership* set queried only with `.contains()` (see `has_feature` / `supports`), so the tree's ordering
 // is irrelevant to behavior and never reaches an emitted byte. Requires `ArmCpuFeature: Ord` (derived).
@@ -45,7 +41,10 @@ impl ArmTargetProfile {
             return false;
         }
 
-        requirement.required_features.iter().all(|feature| self.features.contains(feature))
+        requirement
+            .required_features
+            .iter()
+            .all(|feature| self.features.contains(feature))
     }
 
     /* named convenience profiles */
@@ -72,7 +71,14 @@ impl ArmTargetProfile {
 
     // ARMv8-M Mainline (Cortex-M33): adds DSP, hardware FP, and the Security Extension.
     pub fn armv8m_mainline() -> Self {
-        Self::new(ArmIsaVersion::Armv8MMainline, &[ArmCpuFeature::DspExtension, ArmCpuFeature::FloatingPoint, ArmCpuFeature::Security])
+        Self::new(
+            ArmIsaVersion::Armv8MMainline,
+            &[
+                ArmCpuFeature::DspExtension,
+                ArmCpuFeature::FloatingPoint,
+                ArmCpuFeature::Security,
+            ],
+        )
     }
 
     // ARMv8.1-M Mainline with MVE (Cortex-M55 / M85): the v8-M Mainline superset plus the MVE "Helium"

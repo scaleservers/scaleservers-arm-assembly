@@ -39,17 +39,43 @@ impl Arm32NeonSize {
 // instruction, is part of the mnemonic (...S/...U) and is carried here because it sets the U bit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32NeonIntegerOp {
-    Vadd, Vsub, Vtst, Vceq,            // opc 1000
-    Vmla, Vmls, Vmul, VmulPoly,        // opc 1001
-    VqaddS, VqaddU, VhaddS, VhaddU,    // opc 0000
-    VqsubS, VqsubU, VhsubS, VhsubU,    // opc 0010
-    VrhaddS, VrhaddU,                  // opc 0001 (op 0)
-    VabdS, VabdU, VabaS, VabaU,        // opc 0111
-    VmaxS, VmaxU, VminS, VminU,        // opc 0110
-    VcgeS, VcgeU, VcgtS, VcgtU,        // opc 0011
-    Vpadd,                             // opc 1011 (op 1)
-    VpmaxS, VpmaxU, VpminS, VpminU,    // opc 1010
-    VqdmulhS, VqrdmulhS,               // opc 1011 (op 0)
+    Vadd,
+    Vsub,
+    Vtst,
+    Vceq, // opc 1000
+    Vmla,
+    Vmls,
+    Vmul,
+    VmulPoly, // opc 1001
+    VqaddS,
+    VqaddU,
+    VhaddS,
+    VhaddU, // opc 0000
+    VqsubS,
+    VqsubU,
+    VhsubS,
+    VhsubU, // opc 0010
+    VrhaddS,
+    VrhaddU, // opc 0001 (op 0)
+    VabdS,
+    VabdU,
+    VabaS,
+    VabaU, // opc 0111
+    VmaxS,
+    VmaxU,
+    VminS,
+    VminU, // opc 0110
+    VcgeS,
+    VcgeU,
+    VcgtS,
+    VcgtU, // opc 0011
+    Vpadd, // opc 1011 (op 1)
+    VpmaxS,
+    VpmaxU,
+    VpminS,
+    VpminU, // opc 1010
+    VqdmulhS,
+    VqrdmulhS, // opc 1011 (op 0)
 }
 impl Arm32NeonIntegerOp {
     // (U, opc, op)
@@ -142,10 +168,24 @@ impl Arm32NeonIntegerOp {
 // (bit 21) is ever set, as a sub-selector, so it is part of the op identity rather than an operand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32NeonFloatOp {
-    Vadd, Vsub, Vmul, Vmla, Vmls, Vabd, Vpadd,          // opc 1100/1101
-    Vceq, Vcge, Vcgt,                                   // opc 1110
-    Vmax, Vmin, Vpmax, Vpmin, Vrecps, Vrsqrts,          // opc 1111
-    Vfma, Vfms,                                         // opc 1100
+    Vadd,
+    Vsub,
+    Vmul,
+    Vmla,
+    Vmls,
+    Vabd,
+    Vpadd, // opc 1100/1101
+    Vceq,
+    Vcge,
+    Vcgt, // opc 1110
+    Vmax,
+    Vmin,
+    Vpmax,
+    Vpmin,
+    Vrecps,
+    Vrsqrts, // opc 1111
+    Vfma,
+    Vfms, // opc 1100
 }
 impl Arm32NeonFloatOp {
     // (U, opc, op, size)
@@ -200,8 +240,14 @@ impl Arm32NeonFloatOp {
 // Bitwise 3-reg-same operations (opc 0001, op 1). The boolean function is selected by (U, size).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32NeonBitwiseOp {
-    Vand, Vbic, Vorr, Vorn, // U 0, size 00/01/10/11
-    Veor, Vbsl, Vbit, Vbif, // U 1, size 00/01/10/11
+    Vand,
+    Vbic,
+    Vorr,
+    Vorn, // U 0, size 00/01/10/11
+    Veor,
+    Vbsl,
+    Vbit,
+    Vbif, // U 1, size 00/01/10/11
 }
 impl Arm32NeonBitwiseOp {
     // (U, size)
@@ -241,11 +287,27 @@ impl Arm32NeonBitwiseOp {
 // Same-width 2-reg-misc ops whose `size` field is the operand element size.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32NeonMisc2SizedOp {
-    Vrev64, Vrev32, Vrev16,                  // a=00
-    VpaddlS, VpaddlU, VclsS, VclzI,          // a=00
-    VpadalS, VpadalU, VqabsS, VqnegS,        // a=00
-    VcgtZeroS, VcgeZeroS, VceqZeroI, VcleZeroS, VcltZeroS, VabsS, VnegS, // a=01 (integer)
-    Vtrn, Vuzp, Vzip,                        // a=10
+    Vrev64,
+    Vrev32,
+    Vrev16, // a=00
+    VpaddlS,
+    VpaddlU,
+    VclsS,
+    VclzI, // a=00
+    VpadalS,
+    VpadalU,
+    VqabsS,
+    VqnegS, // a=00
+    VcgtZeroS,
+    VcgeZeroS,
+    VceqZeroI,
+    VcleZeroS,
+    VcltZeroS,
+    VabsS,
+    VnegS, // a=01 (integer)
+    Vtrn,
+    Vuzp,
+    Vzip, // a=10
 }
 impl Arm32NeonMisc2SizedOp {
     // (a, opc2)
@@ -307,12 +369,38 @@ impl Arm32NeonMisc2SizedOp {
 // estimates, and the vector float<->int / anchored conversions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32NeonMisc2FixedOp {
-    Vmvn, Vswp, Vcnt,                                            // a=00 / a=10 (size 00)
-    VcgtZeroF, VcgeZeroF, VceqZeroF, VcleZeroF, VcltZeroF, VabsF, VnegF, // a=01 (size 10)
-    VrintN, VrintX, VrintA, VrintZ, VrintM, VrintP,             // a=10 (size 10)
-    VrecpeU, VrsqrteU, VrecpeF, VrsqrteF,                       // a=11 (size 10)
-    VcvtF32FromS32, VcvtF32FromU32, VcvtS32FromF32, VcvtU32FromF32, // a=11 (size 10)
-    VcvtaS, VcvtaU, VcvtnS, VcvtnU, VcvtpS, VcvtpU, VcvtmS, VcvtmU,  // a=11 (size 10)
+    Vmvn,
+    Vswp,
+    Vcnt, // a=00 / a=10 (size 00)
+    VcgtZeroF,
+    VcgeZeroF,
+    VceqZeroF,
+    VcleZeroF,
+    VcltZeroF,
+    VabsF,
+    VnegF, // a=01 (size 10)
+    VrintN,
+    VrintX,
+    VrintA,
+    VrintZ,
+    VrintM,
+    VrintP, // a=10 (size 10)
+    VrecpeU,
+    VrsqrteU,
+    VrecpeF,
+    VrsqrteF, // a=11 (size 10)
+    VcvtF32FromS32,
+    VcvtF32FromU32,
+    VcvtS32FromF32,
+    VcvtU32FromF32, // a=11 (size 10)
+    VcvtaS,
+    VcvtaU,
+    VcvtnS,
+    VcvtnU,
+    VcvtpS,
+    VcvtpU,
+    VcvtmS,
+    VcvtmU, // a=11 (size 10)
 }
 impl Arm32NeonMisc2FixedOp {
     // (a, opc2, size)
@@ -355,10 +443,23 @@ impl Arm32NeonMisc2FixedOp {
     // the v8-only rounding/anchored-convert members (VRINT{N,X,A,Z,M,P}, VCVT{A,N,P,M}{S,U}) need ARMv8;
     // every other member is available from ARMv7 with the Advanced SIMD extension.
     pub fn is_armv8(self) -> bool {
-        matches!(self,
-            Self::VrintN | Self::VrintX | Self::VrintA | Self::VrintZ | Self::VrintM | Self::VrintP
-            | Self::VcvtaS | Self::VcvtaU | Self::VcvtnS | Self::VcvtnU
-            | Self::VcvtpS | Self::VcvtpU | Self::VcvtmS | Self::VcvtmU)
+        matches!(
+            self,
+            Self::VrintN
+                | Self::VrintX
+                | Self::VrintA
+                | Self::VrintZ
+                | Self::VrintM
+                | Self::VrintP
+                | Self::VcvtaS
+                | Self::VcvtaU
+                | Self::VcvtnS
+                | Self::VcvtnU
+                | Self::VcvtpS
+                | Self::VcvtpU
+                | Self::VcvtmS
+                | Self::VcvtmU
+        )
     }
     pub fn from_fields(a: u32, opc2: u32) -> Option<Self> {
         Some(match (a, opc2) {
@@ -403,7 +504,10 @@ impl Arm32NeonMisc2FixedOp {
 // SOURCE element size as 16/32/64 (field 00/01/10 = one less than the Arm32NeonSize bits).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32NeonNarrowOp {
-    Vmovn, Vqmovun, VqmovnS, VqmovnU,
+    Vmovn,
+    Vqmovun,
+    VqmovnS,
+    VqmovnU,
 }
 impl Arm32NeonNarrowOp {
     // (opc2, bit6)
@@ -434,9 +538,24 @@ impl Arm32NeonNarrowOp {
 // Long ops (Qd <- Dn, Dm). Signedness / polynomial is folded into the op (it sets U).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32NeonDiffLongOp {
-    VaddlS, VaddlU, VsublS, VsublU, VabalS, VabalU, VabdlS, VabdlU,
-    VmlalS, VmlalU, VmlslS, VmlslU, VmullS, VmullU, VmullP,
-    Vqdmlal, Vqdmlsl, Vqdmull,
+    VaddlS,
+    VaddlU,
+    VsublS,
+    VsublU,
+    VabalS,
+    VabalU,
+    VabdlS,
+    VabdlU,
+    VmlalS,
+    VmlalU,
+    VmlslS,
+    VmlslU,
+    VmullS,
+    VmullU,
+    VmullP,
+    Vqdmlal,
+    Vqdmlsl,
+    Vqdmull,
 }
 impl Arm32NeonDiffLongOp {
     // (U, opc)
@@ -490,7 +609,10 @@ impl Arm32NeonDiffLongOp {
 // Wide ops (Qd <- Qn, Dm).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32NeonDiffWideOp {
-    VaddwS, VaddwU, VsubwS, VsubwU,
+    VaddwS,
+    VaddwU,
+    VsubwS,
+    VsubwU,
 }
 impl Arm32NeonDiffWideOp {
     pub fn fields(self) -> (u32, u32) {
@@ -515,7 +637,10 @@ impl Arm32NeonDiffWideOp {
 // Narrowing high-half ops (Dd <- Qn, Qm). U=1 selects the rounding variant (VRADDHN / VRSUBHN).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32NeonDiffNarrowOp {
-    Vaddhn, Vraddhn, Vsubhn, Vrsubhn,
+    Vaddhn,
+    Vraddhn,
+    Vsubhn,
+    Vrsubhn,
 }
 impl Arm32NeonDiffNarrowOp {
     pub fn fields(self) -> (u32, u32) {
@@ -544,7 +669,14 @@ impl Arm32NeonDiffNarrowOp {
 // Same-length multiply-by-scalar ops. The float members fix the element size to f32 (size field = 10).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32NeonScalarOp {
-    Vmla, VmlaF, Vmls, VmlsF, Vmul, VmulF, Vqdmulh, Vqrdmulh,
+    Vmla,
+    VmlaF,
+    Vmls,
+    VmlsF,
+    Vmul,
+    VmulF,
+    Vqdmulh,
+    Vqrdmulh,
 }
 impl Arm32NeonScalarOp {
     pub fn opc(self) -> u32 {
@@ -579,7 +711,15 @@ impl Arm32NeonScalarOp {
 // Long multiply-by-scalar ops (Qd <- Dn, scalar). bit24 = U (signedness) where it applies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32NeonScalarLongOp {
-    VmlalS, VmlalU, VmlslS, VmlslU, VmullS, VmullU, Vqdmlal, Vqdmlsl, Vqdmull,
+    VmlalS,
+    VmlalU,
+    VmlslS,
+    VmlslU,
+    VmullS,
+    VmullU,
+    Vqdmlal,
+    Vqdmlsl,
+    Vqdmull,
 }
 impl Arm32NeonScalarLongOp {
     // (U, opc)
@@ -621,8 +761,20 @@ impl Arm32NeonScalarLongOp {
 // (right) encoding. Signedness (where it matters) is folded into the op (it sets U).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32NeonShiftOp {
-    VshrS, VshrU, VsraS, VsraU, VrshrS, VrshrU, VrsraS, VrsraU, Vsri, // right shifts
-    Vshl, Vsli, Vqshlu, VqshlS, VqshlU,                              // left shifts
+    VshrS,
+    VshrU,
+    VsraS,
+    VsraU,
+    VrshrS,
+    VrshrU,
+    VrsraS,
+    VrsraU,
+    Vsri, // right shifts
+    Vshl,
+    Vsli,
+    Vqshlu,
+    VqshlS,
+    VqshlU, // left shifts
 }
 impl Arm32NeonShiftOp {
     // (U, opc, is_left)
@@ -671,7 +823,14 @@ impl Arm32NeonShiftOp {
 // Narrowing shift-by-immediate ops (Dd <- Qm, always a right shift). (U, opc, R=rounding) select the op.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32NeonShiftNarrowOp {
-    Vshrn, Vrshrn, Vqshrun, Vqrshrun, VqshrnS, VqrshrnS, VqshrnU, VqrshrnU,
+    Vshrn,
+    Vrshrn,
+    Vqshrun,
+    Vqrshrun,
+    VqshrnS,
+    VqrshrnS,
+    VqshrnU,
+    VqrshrnU,
 }
 impl Arm32NeonShiftNarrowOp {
     // (U, opc, R)
@@ -707,7 +866,10 @@ impl Arm32NeonShiftNarrowOp {
 // AES single-round operations (2-reg, in the 2-reg-misc opcode space). bits[7:6] select the operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32NeonAesOp {
-    Aese, Aesd, Aesmc, Aesimc,
+    Aese,
+    Aesd,
+    Aesmc,
+    Aesimc,
 }
 impl Arm32NeonAesOp {
     pub fn op_bits(self) -> u32 {
@@ -731,7 +893,13 @@ impl Arm32NeonAesOp {
 // SHA1 / SHA256 three-register operations (in the 3-reg-same opcode space, opc=1100 op=0). (U, size) select.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32NeonSha3Op {
-    Sha1c, Sha1p, Sha1m, Sha1su0, Sha256h, Sha256h2, Sha256su1,
+    Sha1c,
+    Sha1p,
+    Sha1m,
+    Sha1su0,
+    Sha256h,
+    Sha256h2,
+    Sha256su1,
 }
 impl Arm32NeonSha3Op {
     // (U, size)
@@ -763,7 +931,9 @@ impl Arm32NeonSha3Op {
 // SHA1 / SHA256 two-register operations. Each is a single fixed encoding (base word, with Vd/Vm/D/M overlaid).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32NeonSha2Op {
-    Sha1h, Sha1su1, Sha256su0,
+    Sha1h,
+    Sha1su1,
+    Sha256su0,
 }
 impl Arm32NeonSha2Op {
     // the fixed base word (Vd=Vm=0, D=M=0)

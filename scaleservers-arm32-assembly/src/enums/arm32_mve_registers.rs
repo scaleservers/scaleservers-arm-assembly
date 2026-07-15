@@ -17,7 +17,11 @@
 pub struct Arm32MveVectorRegister(u8);
 impl Arm32MveVectorRegister {
     pub fn new(number: u8) -> Option<Self> {
-        if number <= 7 { Some(Self(number)) } else { None }
+        if number <= 7 {
+            Some(Self(number))
+        } else {
+            None
+        }
     }
     pub fn number(&self) -> u8 {
         self.0

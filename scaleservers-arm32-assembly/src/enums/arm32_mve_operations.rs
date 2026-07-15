@@ -88,39 +88,53 @@ impl Arm32MveFloatSize {
 // U bit, bit 28).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32MveIntArithOp {
-    Vadd, Vsub, Vmul,
-    VqaddS, VqaddU, VqsubS, VqsubU,
-    VhaddS, VhaddU, VhsubS, VhsubU,
-    VrhaddS, VrhaddU,
-    VabdS, VabdU,
-    VmaxS, VmaxU, VminS, VminU,
+    Vadd,
+    Vsub,
+    Vmul,
+    VqaddS,
+    VqaddU,
+    VqsubS,
+    VqsubU,
+    VhaddS,
+    VhaddU,
+    VhsubS,
+    VhsubU,
+    VrhaddS,
+    VrhaddU,
+    VabdS,
+    VabdU,
+    VmaxS,
+    VmaxU,
+    VminS,
+    VminU,
     // saturating (rounding) doubling multiply high -- signed-only; VQRDMULH is the [28]=1 rounding twin.
-    VqdmulhS, VqrdmulhS,
+    VqdmulhS,
+    VqrdmulhS,
 }
 impl Arm32MveIntArithOp {
     // base word with Qd / Qn / Qm and size[21:20] zeroed
     pub fn base_word(self) -> u32 {
         match self {
-            Self::Vadd    => 0xEF00_0840,
-            Self::Vsub    => 0xFF00_0840,
-            Self::Vmul    => 0xEF00_0950,
-            Self::VqaddS  => 0xEF00_0050,
-            Self::VqaddU  => 0xFF00_0050,
-            Self::VqsubS  => 0xEF00_0250,
-            Self::VqsubU  => 0xFF00_0250,
-            Self::VhaddS  => 0xEF00_0040,
-            Self::VhaddU  => 0xFF00_0040,
-            Self::VhsubS  => 0xEF00_0240,
-            Self::VhsubU  => 0xFF00_0240,
+            Self::Vadd => 0xEF00_0840,
+            Self::Vsub => 0xFF00_0840,
+            Self::Vmul => 0xEF00_0950,
+            Self::VqaddS => 0xEF00_0050,
+            Self::VqaddU => 0xFF00_0050,
+            Self::VqsubS => 0xEF00_0250,
+            Self::VqsubU => 0xFF00_0250,
+            Self::VhaddS => 0xEF00_0040,
+            Self::VhaddU => 0xFF00_0040,
+            Self::VhsubS => 0xEF00_0240,
+            Self::VhsubU => 0xFF00_0240,
             Self::VrhaddS => 0xEF00_0140,
             Self::VrhaddU => 0xFF00_0140,
-            Self::VabdS   => 0xEF00_0740,
-            Self::VabdU   => 0xFF00_0740,
-            Self::VmaxS   => 0xEF00_0640,
-            Self::VmaxU   => 0xFF00_0640,
-            Self::VminS   => 0xEF00_0650,
-            Self::VminU   => 0xFF00_0650,
-            Self::VqdmulhS  => 0xEF00_0B40,
+            Self::VabdS => 0xEF00_0740,
+            Self::VabdU => 0xFF00_0740,
+            Self::VmaxS => 0xEF00_0640,
+            Self::VmaxU => 0xFF00_0640,
+            Self::VminS => 0xEF00_0650,
+            Self::VminU => 0xFF00_0650,
+            Self::VqdmulhS => 0xEF00_0B40,
             Self::VqrdmulhS => 0xFF00_0B40,
         }
     }
@@ -145,24 +159,55 @@ impl Arm32MveIntArithOp {
     pub fn type_prefix(self) -> char {
         match self {
             Self::Vadd | Self::Vsub | Self::Vmul => 'i',
-            Self::VqaddS | Self::VqsubS | Self::VhaddS | Self::VhsubS | Self::VrhaddS
-            | Self::VabdS | Self::VmaxS | Self::VminS | Self::VqdmulhS | Self::VqrdmulhS => 's',
-            Self::VqaddU | Self::VqsubU | Self::VhaddU | Self::VhsubU | Self::VrhaddU
-            | Self::VabdU | Self::VmaxU | Self::VminU => 'u',
+            Self::VqaddS
+            | Self::VqsubS
+            | Self::VhaddS
+            | Self::VhsubS
+            | Self::VrhaddS
+            | Self::VabdS
+            | Self::VmaxS
+            | Self::VminS
+            | Self::VqdmulhS
+            | Self::VqrdmulhS => 's',
+            Self::VqaddU
+            | Self::VqsubU
+            | Self::VhaddU
+            | Self::VhsubU
+            | Self::VrhaddU
+            | Self::VabdU
+            | Self::VmaxU
+            | Self::VminU => 'u',
         }
     }
     pub const ALL: [Self; 21] = [
-        Self::Vadd, Self::Vsub, Self::Vmul,
-        Self::VqaddS, Self::VqaddU, Self::VqsubS, Self::VqsubU,
-        Self::VhaddS, Self::VhaddU, Self::VhsubS, Self::VhsubU,
-        Self::VrhaddS, Self::VrhaddU,
-        Self::VabdS, Self::VabdU,
-        Self::VmaxS, Self::VmaxU, Self::VminS, Self::VminU,
-        Self::VqdmulhS, Self::VqrdmulhS,
+        Self::Vadd,
+        Self::Vsub,
+        Self::Vmul,
+        Self::VqaddS,
+        Self::VqaddU,
+        Self::VqsubS,
+        Self::VqsubU,
+        Self::VhaddS,
+        Self::VhaddU,
+        Self::VhsubS,
+        Self::VhsubU,
+        Self::VrhaddS,
+        Self::VrhaddU,
+        Self::VabdS,
+        Self::VabdU,
+        Self::VmaxS,
+        Self::VmaxU,
+        Self::VminS,
+        Self::VminU,
+        Self::VqdmulhS,
+        Self::VqrdmulhS,
     ];
     // recover the op from a signature (`word & MVE_INT_SIGNATURE_MASK`)
     pub fn from_signature(signature: u32) -> Option<Self> {
-        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|op| op.base_word() == signature)
     }
 }
 
@@ -170,7 +215,11 @@ impl Arm32MveIntArithOp {
 // boolean function, so they are baked into each base word.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32MveBitwiseOp {
-    Vand, Vbic, Vorr, Vorn, Veor,
+    Vand,
+    Vbic,
+    Vorr,
+    Vorn,
+    Veor,
 }
 impl Arm32MveBitwiseOp {
     pub fn base_word(self) -> u32 {
@@ -193,27 +242,37 @@ impl Arm32MveBitwiseOp {
     }
     pub const ALL: [Self; 5] = [Self::Vand, Self::Vbic, Self::Vorr, Self::Vorn, Self::Veor];
     pub fn from_signature(signature: u32) -> Option<Self> {
-        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|op| op.base_word() == signature)
     }
 }
 
 // Floating-point 3-reg-same vector-vector operations. Element size is the single bit 20 (.f32 / .f16).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32MveFloatArithOp {
-    Vadd, Vsub, Vmul, Vabd, Vmaxnm, Vminnm, Vfma, Vfms,
+    Vadd,
+    Vsub,
+    Vmul,
+    Vabd,
+    Vmaxnm,
+    Vminnm,
+    Vfma,
+    Vfms,
 }
 impl Arm32MveFloatArithOp {
     // base word with Qd / Qn / Qm and the size bit (20) zeroed (i.e. the .f32 form)
     pub fn base_word(self) -> u32 {
         match self {
-            Self::Vadd   => 0xEF00_0D40,
-            Self::Vsub   => 0xEF20_0D40,
-            Self::Vmul   => 0xFF00_0D50,
-            Self::Vabd   => 0xFF20_0D40,
+            Self::Vadd => 0xEF00_0D40,
+            Self::Vsub => 0xEF20_0D40,
+            Self::Vmul => 0xFF00_0D50,
+            Self::Vabd => 0xFF20_0D40,
             Self::Vmaxnm => 0xFF00_0F50,
             Self::Vminnm => 0xFF20_0F50,
-            Self::Vfma   => 0xEF00_0C50,
-            Self::Vfms   => 0xEF20_0C50,
+            Self::Vfma => 0xEF00_0C50,
+            Self::Vfms => 0xEF20_0C50,
         }
     }
     pub fn mnemonic(self) -> &'static str {
@@ -229,11 +288,20 @@ impl Arm32MveFloatArithOp {
         }
     }
     pub const ALL: [Self; 8] = [
-        Self::Vadd, Self::Vsub, Self::Vmul, Self::Vabd,
-        Self::Vmaxnm, Self::Vminnm, Self::Vfma, Self::Vfms,
+        Self::Vadd,
+        Self::Vsub,
+        Self::Vmul,
+        Self::Vabd,
+        Self::Vmaxnm,
+        Self::Vminnm,
+        Self::Vfma,
+        Self::Vfms,
     ];
     pub fn from_signature(signature: u32) -> Option<Self> {
-        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|op| op.base_word() == signature)
     }
 }
 
@@ -251,34 +319,47 @@ pub const MVE_VBS_FLOAT_SIGNATURE_MASK: u32 = 0xEFF1_1FF0; // clears Qd/Qn, Rm, 
 // to (0) and give <dt> = I8/I16/I32 only (no S/U). GNU wrongly models a U bit here; see mve_tests.rs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32MveVecScalarIntOp {
-    Vadd, Vsub, Vmul,
-    VhaddS, VhaddU, VhsubS, VhsubU,
-    VqaddS, VqaddU, VqsubS, VqsubU,
-    VqdmulhS, VqrdmulhS,
+    Vadd,
+    Vsub,
+    Vmul,
+    VhaddS,
+    VhaddU,
+    VhsubS,
+    VhsubU,
+    VqaddS,
+    VqaddU,
+    VqsubS,
+    VqsubU,
+    VqdmulhS,
+    VqrdmulhS,
     // multiply-accumulate forms (the destination Qda is also an accumulator source); Vmla/Vmlas are I-typed
-    Vmla, Vmlas,
-    VqdmlahS, VqrdmlahS, VqdmlashS, VqrdmlashS,
+    Vmla,
+    Vmlas,
+    VqdmlahS,
+    VqrdmlahS,
+    VqdmlashS,
+    VqrdmlashS,
 }
 impl Arm32MveVecScalarIntOp {
     // base word with Qd / Qn / Rm and size[21:20] zeroed
     pub fn base_word(self) -> u32 {
         match self {
-            Self::Vadd      => 0xEE01_0F40,
-            Self::Vsub      => 0xEE01_1F40,
-            Self::Vmul      => 0xEE01_1E60,
-            Self::VhaddS    => 0xEE00_0F40,
-            Self::VhaddU    => 0xFE00_0F40,
-            Self::VhsubS    => 0xEE00_1F40,
-            Self::VhsubU    => 0xFE00_1F40,
-            Self::VqaddS    => 0xEE00_0F60,
-            Self::VqaddU    => 0xFE00_0F60,
-            Self::VqsubS    => 0xEE00_1F60,
-            Self::VqsubU    => 0xFE00_1F60,
-            Self::VqdmulhS  => 0xEE01_0E60,
+            Self::Vadd => 0xEE01_0F40,
+            Self::Vsub => 0xEE01_1F40,
+            Self::Vmul => 0xEE01_1E60,
+            Self::VhaddS => 0xEE00_0F40,
+            Self::VhaddU => 0xFE00_0F40,
+            Self::VhsubS => 0xEE00_1F40,
+            Self::VhsubU => 0xFE00_1F40,
+            Self::VqaddS => 0xEE00_0F60,
+            Self::VqaddU => 0xFE00_0F60,
+            Self::VqsubS => 0xEE00_1F60,
+            Self::VqsubU => 0xFE00_1F60,
+            Self::VqdmulhS => 0xEE01_0E60,
             Self::VqrdmulhS => 0xFE01_0E60,
-            Self::Vmla      => 0xEE01_0E40, // bit 28 = (0) fixed per DDI0553 C2.4.380 (NOT a U bit)
-            Self::Vmlas     => 0xEE01_1E40, //  "      "     "       "     C2.4.384
-            Self::VqdmlahS  => 0xEE00_0E60,
+            Self::Vmla => 0xEE01_0E40, // bit 28 = (0) fixed per DDI0553 C2.4.380 (NOT a U bit)
+            Self::Vmlas => 0xEE01_1E40, //  "      "     "       "     C2.4.384
+            Self::VqdmlahS => 0xEE00_0E60,
             Self::VqrdmlahS => 0xEE00_0E40,
             Self::VqdmlashS => 0xEE00_1E60,
             Self::VqrdmlashS => 0xEE00_1E40,
@@ -306,21 +387,45 @@ impl Arm32MveVecScalarIntOp {
     pub fn type_prefix(self) -> char {
         match self {
             Self::Vadd | Self::Vsub | Self::Vmul | Self::Vmla | Self::Vmlas => 'i',
-            Self::VhaddS | Self::VhsubS | Self::VqaddS | Self::VqsubS | Self::VqdmulhS | Self::VqrdmulhS
-            | Self::VqdmlahS | Self::VqrdmlahS | Self::VqdmlashS | Self::VqrdmlashS => 's',
+            Self::VhaddS
+            | Self::VhsubS
+            | Self::VqaddS
+            | Self::VqsubS
+            | Self::VqdmulhS
+            | Self::VqrdmulhS
+            | Self::VqdmlahS
+            | Self::VqrdmlahS
+            | Self::VqdmlashS
+            | Self::VqrdmlashS => 's',
             Self::VhaddU | Self::VhsubU | Self::VqaddU | Self::VqsubU => 'u',
         }
     }
     pub const ALL: [Self; 19] = [
-        Self::Vadd, Self::Vsub, Self::Vmul,
-        Self::VhaddS, Self::VhaddU, Self::VhsubS, Self::VhsubU,
-        Self::VqaddS, Self::VqaddU, Self::VqsubS, Self::VqsubU,
-        Self::VqdmulhS, Self::VqrdmulhS,
-        Self::Vmla, Self::Vmlas,
-        Self::VqdmlahS, Self::VqrdmlahS, Self::VqdmlashS, Self::VqrdmlashS,
+        Self::Vadd,
+        Self::Vsub,
+        Self::Vmul,
+        Self::VhaddS,
+        Self::VhaddU,
+        Self::VhsubS,
+        Self::VhsubU,
+        Self::VqaddS,
+        Self::VqaddU,
+        Self::VqsubS,
+        Self::VqsubU,
+        Self::VqdmulhS,
+        Self::VqrdmulhS,
+        Self::Vmla,
+        Self::Vmlas,
+        Self::VqdmlahS,
+        Self::VqrdmlahS,
+        Self::VqdmlashS,
+        Self::VqrdmlashS,
     ];
     pub fn from_signature(signature: u32) -> Option<Self> {
-        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|op| op.base_word() == signature)
     }
 }
 
@@ -328,7 +433,11 @@ impl Arm32MveVecScalarIntOp {
 // the integer forms), with the element size carried in the single bit 28 (.f32 = 0, .f16 = 1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32MveVecScalarFloatOp {
-    Vadd, Vsub, Vmul, Vfma, Vfmas,
+    Vadd,
+    Vsub,
+    Vmul,
+    Vfma,
+    Vfmas,
 }
 impl Arm32MveVecScalarFloatOp {
     // base word with Qd / Qn / Rm and the size bit (28) zeroed (i.e. the .f32 form)
@@ -352,7 +461,10 @@ impl Arm32MveVecScalarFloatOp {
     }
     pub const ALL: [Self; 5] = [Self::Vadd, Self::Vsub, Self::Vmul, Self::Vfma, Self::Vfmas];
     pub fn from_signature(signature: u32) -> Option<Self> {
-        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|op| op.base_word() == signature)
     }
 }
 
@@ -383,8 +495,12 @@ pub const MVE_VBRSR_MASK: u32 = 0xFFC1_1FF0;
 // esize and msize are each a 2-bit log: 00/01/10/11 = 8/16/32/64.
 pub const MVE_GATHER_SCATTER_BASE: u32 = 0xEC80_0E00;
 pub const MVE_GATHER_SCATTER_MASK: u32 = 0xEFE0_1E20;
-pub fn mve_mem_size_log(size_bits: u8) -> u32 { (size_bits as u32 / 8).trailing_zeros() }
-pub fn mve_mem_size_from_log(log: u32) -> u8 { (8u32 << (log & 0b11)) as u8 }
+pub fn mve_mem_size_log(size_bits: u8) -> u32 {
+    (size_bits as u32 / 8).trailing_zeros()
+}
+pub fn mve_mem_size_from_log(log: u32) -> u8 {
+    (8u32 << (log & 0b11)) as u8
+}
 
 // MVE gather/scatter, VECTOR base + immediate: VLDRW/VLDRD/VSTRW/VSTRD `Qd, [Qn{, #imm}]{!}` (word/dword only).
 // base 0xFD00_1E00, gate `word & 0xFF41_1E80 == 0xFD00_1E00` (top byte 0xFD; disjoint from Group 1 (0xEC/0xFC)
@@ -414,11 +530,23 @@ pub const MVE_LOB_DLS_BASE: u32 = 0xF000_E001;
 pub const MVE_LOB_DLS_MASK: u32 = 0xFF80_FFFF;
 /// The [22:20] loop size field: `None` (plain) = 0b100, else the tail-predicate element size.
 pub fn lob_size_field(tp_size: Option<u8>) -> u32 {
-    match tp_size { None => 0b100, Some(8) => 0b000, Some(16) => 0b001, Some(32) => 0b010, Some(64) => 0b011, _ => 0b100 }
+    match tp_size {
+        None => 0b100,
+        Some(8) => 0b000,
+        Some(16) => 0b001,
+        Some(32) => 0b010,
+        Some(64) => 0b011,
+        _ => 0b100,
+    }
 }
 pub fn lob_size_from_field(field: u32) -> Option<Option<u8>> {
     match field & 0b111 {
-        0b100 => Some(None), 0b000 => Some(Some(8)), 0b001 => Some(Some(16)), 0b010 => Some(Some(32)), 0b011 => Some(Some(64)), _ => None,
+        0b100 => Some(None),
+        0b000 => Some(Some(8)),
+        0b001 => Some(Some(16)),
+        0b010 => Some(Some(32)),
+        0b011 => Some(Some(64)),
+        _ => None,
     }
 }
 /// The branch half-word (hw1) for a low-overhead-loop branch: imm = |offset|/2, with imm[0] at bit11 and
@@ -464,28 +592,39 @@ pub const MVE_SHIFT_SIGNATURE_MASK: u32 = 0xFFC0_1FF1; // clears imm6[21:16], Qd
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32MveShiftImmOp {
-    VshrS, VshrU, VrshrS, VrshrU, Vsri, // right shifts
-    VshlI, Vsli, VqshlS, VqshlU, VqshluS, // left shifts
+    VshrS,
+    VshrU,
+    VrshrS,
+    VrshrU,
+    Vsri, // right shifts
+    VshlI,
+    Vsli,
+    VqshlS,
+    VqshlU,
+    VqshluS, // left shifts
 }
 impl Arm32MveShiftImmOp {
     // base word with imm6 / Qd / Qm zeroed
     pub fn base_word(self) -> u32 {
         match self {
-            Self::VshrS   => 0xEF80_0050,
-            Self::VshrU   => 0xFF80_0050,
-            Self::VrshrS  => 0xEF80_0250,
-            Self::VrshrU  => 0xFF80_0250,
-            Self::Vsri    => 0xFF80_0450,
-            Self::VshlI   => 0xEF80_0550,
-            Self::Vsli    => 0xFF80_0550,
-            Self::VqshlS  => 0xEF80_0750,
-            Self::VqshlU  => 0xFF80_0750,
+            Self::VshrS => 0xEF80_0050,
+            Self::VshrU => 0xFF80_0050,
+            Self::VrshrS => 0xEF80_0250,
+            Self::VrshrU => 0xFF80_0250,
+            Self::Vsri => 0xFF80_0450,
+            Self::VshlI => 0xEF80_0550,
+            Self::Vsli => 0xFF80_0550,
+            Self::VqshlS => 0xEF80_0750,
+            Self::VqshlU => 0xFF80_0750,
             Self::VqshluS => 0xFF80_0650,
         }
     }
     // true for the left shifts (imm6 = esize + amount); false for the right shifts (imm6 = 2*esize - amount)
     pub fn is_left_shift(self) -> bool {
-        matches!(self, Self::VshlI | Self::Vsli | Self::VqshlS | Self::VqshlU | Self::VqshluS)
+        matches!(
+            self,
+            Self::VshlI | Self::Vsli | Self::VqshlS | Self::VqshlU | Self::VqshluS
+        )
     }
     pub fn mnemonic(self) -> &'static str {
         match self {
@@ -508,11 +647,22 @@ impl Arm32MveShiftImmOp {
         }
     }
     pub const ALL: [Self; 10] = [
-        Self::VshrS, Self::VshrU, Self::VrshrS, Self::VrshrU, Self::Vsri,
-        Self::VshlI, Self::Vsli, Self::VqshlS, Self::VqshlU, Self::VqshluS,
+        Self::VshrS,
+        Self::VshrU,
+        Self::VrshrS,
+        Self::VrshrU,
+        Self::Vsri,
+        Self::VshlI,
+        Self::Vsli,
+        Self::VqshlS,
+        Self::VqshlU,
+        Self::VqshluS,
     ];
     pub fn from_signature(signature: u32) -> Option<Self> {
-        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|op| op.base_word() == signature)
     }
 }
 
@@ -526,10 +676,15 @@ pub fn mve_shift_esize(size: Arm32MveSize) -> u32 {
 }
 // recover the element size from a shift's imm6 (the highest set bit selects the width); None if imm6 < 8
 pub fn mve_shift_size_from_imm6(imm6: u32) -> Option<Arm32MveSize> {
-    if imm6 & 0b100000 != 0 { Some(Arm32MveSize::I32) }
-    else if imm6 & 0b010000 != 0 { Some(Arm32MveSize::I16) }
-    else if imm6 & 0b001000 != 0 { Some(Arm32MveSize::I8) }
-    else { None }
+    if imm6 & 0b100000 != 0 {
+        Some(Arm32MveSize::I32)
+    } else if imm6 & 0b010000 != 0 {
+        Some(Arm32MveSize::I16)
+    } else if imm6 & 0b001000 != 0 {
+        Some(Arm32MveSize::I8)
+    } else {
+        None
+    }
 }
 
 // ---- MVE two-register miscellaneous: `Qd, Qm` ----
@@ -557,7 +712,15 @@ pub fn mve_misc2_float_size_from_bits(bits: u32) -> Option<Arm32MveFloatSize> {
 // element width, e.g. `vrev64.8`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32MveMisc2Op {
-    Vrev64, Vrev32, Vrev16, Vcls, Vclz, Vabs, Vneg, Vqabs, Vqneg,
+    Vrev64,
+    Vrev32,
+    Vrev16,
+    Vcls,
+    Vclz,
+    Vabs,
+    Vneg,
+    Vqabs,
+    Vqneg,
 }
 impl Arm32MveMisc2Op {
     pub fn base_word(self) -> u32 {
@@ -565,12 +728,12 @@ impl Arm32MveMisc2Op {
             Self::Vrev64 => 0xFFB0_0040,
             Self::Vrev32 => 0xFFB0_00C0,
             Self::Vrev16 => 0xFFB0_0140,
-            Self::Vcls   => 0xFFB0_0440,
-            Self::Vclz   => 0xFFB0_04C0,
-            Self::Vabs   => 0xFFB1_0340,
-            Self::Vneg   => 0xFFB1_03C0,
-            Self::Vqabs  => 0xFFB0_0740,
-            Self::Vqneg  => 0xFFB0_07C0,
+            Self::Vcls => 0xFFB0_0440,
+            Self::Vclz => 0xFFB0_04C0,
+            Self::Vabs => 0xFFB1_0340,
+            Self::Vneg => 0xFFB1_03C0,
+            Self::Vqabs => 0xFFB0_0740,
+            Self::Vqneg => 0xFFB0_07C0,
         }
     }
     pub fn mnemonic(self) -> &'static str {
@@ -594,11 +757,21 @@ impl Arm32MveMisc2Op {
         }
     }
     pub const ALL: [Self; 9] = [
-        Self::Vrev64, Self::Vrev32, Self::Vrev16, Self::Vcls, Self::Vclz,
-        Self::Vabs, Self::Vneg, Self::Vqabs, Self::Vqneg,
+        Self::Vrev64,
+        Self::Vrev32,
+        Self::Vrev16,
+        Self::Vcls,
+        Self::Vclz,
+        Self::Vabs,
+        Self::Vneg,
+        Self::Vqabs,
+        Self::Vqneg,
     ];
     pub fn from_signature(signature: u32) -> Option<Self> {
-        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|op| op.base_word() == signature)
     }
 }
 
@@ -606,7 +779,8 @@ impl Arm32MveMisc2Op {
 // which keeps these disjoint from the saturating-integer VQABS/VQNEG that share the same hw1 signature.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32MveMisc2FloatOp {
-    Vabs, Vneg,
+    Vabs,
+    Vneg,
 }
 impl Arm32MveMisc2FloatOp {
     pub fn base_word(self) -> u32 {
@@ -623,7 +797,10 @@ impl Arm32MveMisc2FloatOp {
     }
     pub const ALL: [Self; 2] = [Self::Vabs, Self::Vneg];
     pub fn from_signature(signature: u32) -> Option<Self> {
-        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|op| op.base_word() == signature)
     }
 }
 
@@ -638,23 +815,30 @@ pub const MVE_REDUCE_SIGNATURE_MASK: u32 = 0xFFF3_0FF1; // clears size[19:18], R
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32MveReduceOp {
-    VaddvS, VaddvU, VaddvaS, VaddvaU,
-    VminvS, VminvU, VmaxvS, VmaxvU,
-    Vminav, Vmaxav, // absolute min/max are signed-only
+    VaddvS,
+    VaddvU,
+    VaddvaS,
+    VaddvaU,
+    VminvS,
+    VminvU,
+    VmaxvS,
+    VmaxvU,
+    Vminav,
+    Vmaxav, // absolute min/max are signed-only
 }
 impl Arm32MveReduceOp {
     pub fn base_word(self) -> u32 {
         match self {
-            Self::VaddvS  => 0xEEF1_0F00,
-            Self::VaddvU  => 0xFEF1_0F00,
+            Self::VaddvS => 0xEEF1_0F00,
+            Self::VaddvU => 0xFEF1_0F00,
             Self::VaddvaS => 0xEEF1_0F20,
             Self::VaddvaU => 0xFEF1_0F20,
-            Self::VminvS  => 0xEEE2_0F80,
-            Self::VminvU  => 0xFEE2_0F80,
-            Self::VmaxvS  => 0xEEE2_0F00,
-            Self::VmaxvU  => 0xFEE2_0F00,
-            Self::Vminav  => 0xEEE0_0F80,
-            Self::Vmaxav  => 0xEEE0_0F00,
+            Self::VminvS => 0xEEE2_0F80,
+            Self::VminvU => 0xFEE2_0F80,
+            Self::VmaxvS => 0xEEE2_0F00,
+            Self::VmaxvU => 0xFEE2_0F00,
+            Self::Vminav => 0xEEE0_0F80,
+            Self::Vmaxav => 0xEEE0_0F00,
         }
     }
     pub fn mnemonic(self) -> &'static str {
@@ -674,12 +858,22 @@ impl Arm32MveReduceOp {
         }
     }
     pub const ALL: [Self; 10] = [
-        Self::VaddvS, Self::VaddvU, Self::VaddvaS, Self::VaddvaU,
-        Self::VminvS, Self::VminvU, Self::VmaxvS, Self::VmaxvU,
-        Self::Vminav, Self::Vmaxav,
+        Self::VaddvS,
+        Self::VaddvU,
+        Self::VaddvaS,
+        Self::VaddvaU,
+        Self::VminvS,
+        Self::VminvU,
+        Self::VmaxvS,
+        Self::VmaxvU,
+        Self::Vminav,
+        Self::Vmaxav,
     ];
     pub fn from_signature(signature: u32) -> Option<Self> {
-        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|op| op.base_word() == signature)
     }
 }
 
@@ -690,13 +884,16 @@ pub const MVE_FLOAT_REDUCE_SIGNATURE_MASK: u32 = 0xEFFF_0FF1; // clears size(bit
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32MveFloatReduceOp {
-    Vmaxnmv, Vminnmv, Vmaxnmav, Vminnmav,
+    Vmaxnmv,
+    Vminnmv,
+    Vmaxnmav,
+    Vminnmav,
 }
 impl Arm32MveFloatReduceOp {
     pub fn base_word(self) -> u32 {
         match self {
-            Self::Vmaxnmv  => 0xEEEE_0F00,
-            Self::Vminnmv  => 0xEEEE_0F80,
+            Self::Vmaxnmv => 0xEEEE_0F00,
+            Self::Vminnmv => 0xEEEE_0F80,
             Self::Vmaxnmav => 0xEEEC_0F00,
             Self::Vminnmav => 0xEEEC_0F80,
         }
@@ -711,7 +908,10 @@ impl Arm32MveFloatReduceOp {
     }
     pub const ALL: [Self; 4] = [Self::Vmaxnmv, Self::Vminnmv, Self::Vmaxnmav, Self::Vminnmav];
     pub fn from_signature(signature: u32) -> Option<Self> {
-        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|op| op.base_word() == signature)
     }
 }
 
@@ -736,14 +936,14 @@ pub const MVE_DUALMAC_MASK: u32 = 0xEEF0_0ED0;
 pub fn mve_dualmac_size_bits(subtract: bool, unsigned: bool, size: Arm32MveSize) -> u32 {
     if subtract {
         match size {
-            Arm32MveSize::I8  => 1 << 28,
+            Arm32MveSize::I8 => 1 << 28,
             Arm32MveSize::I16 => 0,
             Arm32MveSize::I32 => 1 << 16,
         }
     } else {
         let u = (unsigned as u32) << 28;
         match size {
-            Arm32MveSize::I8  => u | (1 << 8),
+            Arm32MveSize::I8 => u | (1 << 8),
             Arm32MveSize::I16 => u,
             Arm32MveSize::I32 => u | (1 << 16),
         }
@@ -754,20 +954,22 @@ pub fn mve_dualmac_size_bits(subtract: bool, unsigned: bool, size: Arm32MveSize)
 pub fn mve_dualmac_decode_size(subtract: bool, word: u32) -> Option<(bool, Arm32MveSize)> {
     let bit28 = (word >> 28) & 1 == 1;
     let bit16 = (word >> 16) & 1 == 1;
-    let bit8  = (word >> 8) & 1 == 1;
+    let bit8 = (word >> 8) & 1 == 1;
     if subtract {
-        if bit8 { return None; } // the subtract form never sets bit8
+        if bit8 {
+            return None;
+        } // the subtract form never sets bit8
         match (bit28, bit16) {
-            (true,  false) => Some((false, Arm32MveSize::I8)),
+            (true, false) => Some((false, Arm32MveSize::I8)),
             (false, false) => Some((false, Arm32MveSize::I16)),
-            (false, true)  => Some((false, Arm32MveSize::I32)),
+            (false, true) => Some((false, Arm32MveSize::I32)),
             _ => None,
         }
     } else {
         match (bit16, bit8) {
-            (false, true)  => Some((bit28, Arm32MveSize::I8)),
+            (false, true) => Some((bit28, Arm32MveSize::I8)),
             (false, false) => Some((bit28, Arm32MveSize::I16)),
-            (true,  false) => Some((bit28, Arm32MveSize::I32)),
+            (true, false) => Some((bit28, Arm32MveSize::I32)),
             _ => None,
         }
     }
@@ -788,10 +990,19 @@ pub const MVE_LONG_DUALMAC_BASE: u32 = 0xEE80_0E00;
 pub const MVE_LONG_DUALMAC_MASK: u32 = 0xEF80_0ED0;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Arm32MveLongMacOp { Vmlaldav, Vmlsldav, Vrmlaldavh, Vrmlsldavh }
+pub enum Arm32MveLongMacOp {
+    Vmlaldav,
+    Vmlsldav,
+    Vrmlaldavh,
+    Vrmlsldavh,
+}
 impl Arm32MveLongMacOp {
-    pub fn subtract(self) -> bool { matches!(self, Self::Vmlsldav | Self::Vrmlsldavh) }
-    pub fn rounding_high(self) -> bool { matches!(self, Self::Vrmlaldavh | Self::Vrmlsldavh) }
+    pub fn subtract(self) -> bool {
+        matches!(self, Self::Vmlsldav | Self::Vrmlsldavh)
+    }
+    pub fn rounding_high(self) -> bool {
+        matches!(self, Self::Vrmlaldavh | Self::Vrmlsldavh)
+    }
     pub fn mnemonic(self) -> &'static str {
         match self {
             Self::Vmlaldav => "vmlaldav",
@@ -803,9 +1014,9 @@ impl Arm32MveLongMacOp {
     pub fn from_flags(subtract: bool, rounding_high: bool) -> Self {
         match (subtract, rounding_high) {
             (false, false) => Self::Vmlaldav,
-            (true,  false) => Self::Vmlsldav,
-            (false, true)  => Self::Vrmlaldavh,
-            (true,  true)  => Self::Vrmlsldavh,
+            (true, false) => Self::Vmlsldav,
+            (false, true) => Self::Vrmlaldavh,
+            (true, true) => Self::Vrmlsldavh,
         }
     }
 }
@@ -813,9 +1024,19 @@ impl Arm32MveLongMacOp {
 pub fn mve_long_dualmac_bits(op: Arm32MveLongMacOp, unsigned: bool, size: Arm32MveSize) -> u32 {
     let (subtract, rounding_high) = (op.subtract(), op.rounding_high());
     let mut bits = subtract as u32; // bit0
-    bits |= if subtract { (rounding_high as u32) << 28 } else { (unsigned as u32) << 28 };
-    bits |= if subtract { 0 } else { (rounding_high as u32) << 8 };
-    if !rounding_high && size == Arm32MveSize::I32 { bits |= 1 << 16; }
+    bits |= if subtract {
+        (rounding_high as u32) << 28
+    } else {
+        (unsigned as u32) << 28
+    };
+    bits |= if subtract {
+        0
+    } else {
+        (rounding_high as u32) << 8
+    };
+    if !rounding_high && size == Arm32MveSize::I32 {
+        bits |= 1 << 16;
+    }
     bits
 }
 /// Recovers `(op, unsigned, size)` from a long dual-MAC word. Returns `None` for reserved bit combinations.
@@ -823,22 +1044,30 @@ pub fn mve_long_dualmac_decode(word: u32) -> Option<(Arm32MveLongMacOp, bool, Ar
     let subtract = word & 1 == 1;
     let bit28 = (word >> 28) & 1 == 1;
     let bit16 = (word >> 16) & 1 == 1;
-    let bit8  = (word >> 8) & 1 == 1;
+    let bit8 = (word >> 8) & 1 == 1;
     let (rounding_high, unsigned) = if subtract {
-        if bit8 { return None; } // the subtract form never sets bit8
-        (bit28, false)           // subtract is signed-only; bit28 is the rounding-high marker
+        if bit8 {
+            return None;
+        } // the subtract form never sets bit8
+        (bit28, false) // subtract is signed-only; bit28 is the rounding-high marker
     } else {
-        (bit8, bit28)            // add form: bit8 = rounding-high marker, bit28 = U
+        (bit8, bit28) // add form: bit8 = rounding-high marker, bit28 = U
     };
     let size = if rounding_high {
-        if bit16 { return None; } // rounding-high is 32-bit only and never sets the .32 size bit
+        if bit16 {
+            return None;
+        } // rounding-high is 32-bit only and never sets the .32 size bit
         Arm32MveSize::I32
     } else if bit16 {
         Arm32MveSize::I32
     } else {
         Arm32MveSize::I16
     };
-    Some((Arm32MveLongMacOp::from_flags(subtract, rounding_high), unsigned, size))
+    Some((
+        Arm32MveLongMacOp::from_flags(subtract, rounding_high),
+        unsigned,
+        size,
+    ))
 }
 
 // ---- MVE VRINT and VCVT (float<->int), both in the 0xFFBx 2-reg-misc space (`Qd, Qm`) ----
@@ -848,7 +1077,12 @@ pub fn mve_long_dualmac_decode(word: u32) -> Option<(Arm32MveLongMacOp, bool, Ar
 // VRINT rounding mode lives in hw1 bits[9:7]; each mode is one base word (size + regs zeroed).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32MveVrintOp {
-    Vrintn, Vrinta, Vrintz, Vrintm, Vrintp, Vrintx,
+    Vrintn,
+    Vrinta,
+    Vrintz,
+    Vrintm,
+    Vrintp,
+    Vrintx,
 }
 impl Arm32MveVrintOp {
     pub fn base_word(self) -> u32 {
@@ -871,9 +1105,19 @@ impl Arm32MveVrintOp {
             Self::Vrintx => "vrintx",
         }
     }
-    pub const ALL: [Self; 6] = [Self::Vrintn, Self::Vrinta, Self::Vrintz, Self::Vrintm, Self::Vrintp, Self::Vrintx];
+    pub const ALL: [Self; 6] = [
+        Self::Vrintn,
+        Self::Vrinta,
+        Self::Vrintz,
+        Self::Vrintm,
+        Self::Vrintp,
+        Self::Vrintx,
+    ];
     pub fn from_signature(signature: u32) -> Option<Self> {
-        Self::ALL.iter().copied().find(|op| op.base_word() == signature)
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|op| op.base_word() == signature)
     }
 }
 
@@ -918,18 +1162,25 @@ pub const MVE_SHIFT_NARROW_BASE: u32 = 0xEE80_0F00;
 pub const MVE_SHIFT_NARROW_MASK: u32 = 0xEFE0_0F30; // fixes [23:21]=100, [11:8]=1111, [5:4]=00; clears bit28/imm5/Qd/T/[7:6]/Qm/bit0
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Arm32MveShiftNarrowOp { Vshrn, Vrshrn, Vqshrn, Vqrshrn, Vqshrun, Vqrshrun }
+pub enum Arm32MveShiftNarrowOp {
+    Vshrn,
+    Vrshrn,
+    Vqshrn,
+    Vqrshrn,
+    Vqshrun,
+    Vqrshrun,
+}
 impl Arm32MveShiftNarrowOp {
     /// The (bit28, `[7:6]`, bit0) opcode contribution. `unsigned` (bit28) is honoured only for VQSHRN/VQRSHRN;
     /// for the other forms bit28 is the rounding selector and is fixed by the op.
     pub fn opcode_bits(self, unsigned: bool) -> (u32, u32, u32) {
         match self {
-            Self::Vshrn    => (0, 0b11, 1),
-            Self::Vrshrn   => (1, 0b11, 1),
-            Self::Vqshrun  => (0, 0b11, 0),
+            Self::Vshrn => (0, 0b11, 1),
+            Self::Vrshrn => (1, 0b11, 1),
+            Self::Vqshrun => (0, 0b11, 0),
             Self::Vqrshrun => (1, 0b11, 0),
-            Self::Vqshrn   => (unsigned as u32, 0b01, 0),
-            Self::Vqrshrn  => (unsigned as u32, 0b01, 1),
+            Self::Vqshrn => (unsigned as u32, 0b01, 0),
+            Self::Vqrshrn => (unsigned as u32, 0b01, 1),
         }
     }
     /// Decode `(op, unsigned)` from a shift-narrow word's bit28, `[7:6]` and bit0. For the `[7:6]`=11 forms bit28 is
@@ -938,8 +1189,22 @@ impl Arm32MveShiftNarrowOp {
         // bit28/bit0 are 1-bit and bit76 is the 2-bit [7:6] field; mask so stray high bits are ignored.
         let bit28 = bit28 & 1;
         match (bit76 & 0b11, bit0 & 1) {
-            (0b11, 1) => Some((if bit28 == 1 { Self::Vrshrn } else { Self::Vshrn }, false)),
-            (0b11, 0) => Some((if bit28 == 1 { Self::Vqrshrun } else { Self::Vqshrun }, false)),
+            (0b11, 1) => Some((
+                if bit28 == 1 {
+                    Self::Vrshrn
+                } else {
+                    Self::Vshrn
+                },
+                false,
+            )),
+            (0b11, 0) => Some((
+                if bit28 == 1 {
+                    Self::Vqrshrun
+                } else {
+                    Self::Vqshrun
+                },
+                false,
+            )),
             (0b01, 0) => Some((Self::Vqshrn, bit28 == 1)),
             (0b01, 1) => Some((Self::Vqrshrn, bit28 == 1)),
             _ => None,
@@ -947,8 +1212,12 @@ impl Arm32MveShiftNarrowOp {
     }
     pub fn mnemonic(self) -> &'static str {
         match self {
-            Self::Vshrn => "vshrn", Self::Vrshrn => "vrshrn", Self::Vqshrn => "vqshrn",
-            Self::Vqrshrn => "vqrshrn", Self::Vqshrun => "vqshrun", Self::Vqrshrun => "vqrshrun",
+            Self::Vshrn => "vshrn",
+            Self::Vrshrn => "vrshrn",
+            Self::Vqshrn => "vqshrn",
+            Self::Vqrshrn => "vqrshrn",
+            Self::Vqshrun => "vqshrun",
+            Self::Vqrshrun => "vqrshrun",
         }
     }
 }
@@ -1076,19 +1345,41 @@ pub fn mve_predicate_mask_from_word(word: u32) -> u8 {
 // transcribed from `arm-none-eabi-as`). The block length is 4 - mask.trailing_zeros().
 pub fn mve_predicate_mask_suffix(mask: u8) -> &'static str {
     match mask {
-        0b1000 => "t",    0b0100 => "tt",   0b1100 => "te",
-        0b0010 => "ttt",  0b0110 => "tte",  0b1110 => "tet",  0b1010 => "tee",
-        0b0001 => "tttt", 0b0011 => "ttte", 0b0111 => "ttet", 0b0101 => "ttee",
-        0b1101 => "tett", 0b1111 => "tete", 0b1011 => "teet", 0b1001 => "teee",
+        0b1000 => "t",
+        0b0100 => "tt",
+        0b1100 => "te",
+        0b0010 => "ttt",
+        0b0110 => "tte",
+        0b1110 => "tet",
+        0b1010 => "tee",
+        0b0001 => "tttt",
+        0b0011 => "ttte",
+        0b0111 => "ttet",
+        0b0101 => "ttee",
+        0b1101 => "tett",
+        0b1111 => "tete",
+        0b1011 => "teet",
+        0b1001 => "teee",
         _ => "t",
     }
 }
 pub fn mve_predicate_mask_from_suffix(suffix: &str) -> Option<u8> {
     Some(match suffix {
-        "t" => 0b1000,    "tt" => 0b0100,   "te" => 0b1100,
-        "ttt" => 0b0010,  "tte" => 0b0110,  "tet" => 0b1110,  "tee" => 0b1010,
-        "tttt" => 0b0001, "ttte" => 0b0011, "ttet" => 0b0111, "ttee" => 0b0101,
-        "tett" => 0b1101, "tete" => 0b1111, "teet" => 0b1011, "teee" => 0b1001,
+        "t" => 0b1000,
+        "tt" => 0b0100,
+        "te" => 0b1100,
+        "ttt" => 0b0010,
+        "tte" => 0b0110,
+        "tet" => 0b1110,
+        "tee" => 0b1010,
+        "tttt" => 0b0001,
+        "ttte" => 0b0011,
+        "ttet" => 0b0111,
+        "ttee" => 0b0101,
+        "tett" => 0b1101,
+        "tete" => 0b1111,
+        "teet" => 0b1011,
+        "teee" => 0b1001,
         _ => return None,
     })
 }
@@ -1108,26 +1399,51 @@ pub const MVE_VCMP_FLOAT_MASK: u32 = 0xEFB1_0F10;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32MveVcmpCondition {
-    Eq, Ne, Cs, Hi, Ge, Lt, Gt, Le,
+    Eq,
+    Ne,
+    Cs,
+    Hi,
+    Ge,
+    Lt,
+    Gt,
+    Le,
 }
 impl Arm32MveVcmpCondition {
     // the 3-bit fc code (fc2 fc1 fc0)
     pub fn fc(self) -> u32 {
         match self {
-            Self::Eq => 0b000, Self::Ne => 0b010, Self::Cs => 0b001, Self::Hi => 0b011,
-            Self::Ge => 0b100, Self::Lt => 0b110, Self::Gt => 0b101, Self::Le => 0b111,
+            Self::Eq => 0b000,
+            Self::Ne => 0b010,
+            Self::Cs => 0b001,
+            Self::Hi => 0b011,
+            Self::Ge => 0b100,
+            Self::Lt => 0b110,
+            Self::Gt => 0b101,
+            Self::Le => 0b111,
         }
     }
     pub fn from_fc(fc: u32) -> Self {
         match fc & 0b111 {
-            0b000 => Self::Eq, 0b010 => Self::Ne, 0b001 => Self::Cs, 0b011 => Self::Hi,
-            0b100 => Self::Ge, 0b110 => Self::Lt, 0b101 => Self::Gt, _ => Self::Le,
+            0b000 => Self::Eq,
+            0b010 => Self::Ne,
+            0b001 => Self::Cs,
+            0b011 => Self::Hi,
+            0b100 => Self::Ge,
+            0b110 => Self::Lt,
+            0b101 => Self::Gt,
+            _ => Self::Le,
         }
     }
     pub fn mnemonic(self) -> &'static str {
         match self {
-            Self::Eq => "eq", Self::Ne => "ne", Self::Cs => "cs", Self::Hi => "hi",
-            Self::Ge => "ge", Self::Lt => "lt", Self::Gt => "gt", Self::Le => "le",
+            Self::Eq => "eq",
+            Self::Ne => "ne",
+            Self::Cs => "cs",
+            Self::Hi => "hi",
+            Self::Ge => "ge",
+            Self::Lt => "lt",
+            Self::Gt => "gt",
+            Self::Le => "le",
         }
     }
     // the integer UAL type letter implied by the condition: eq/ne -> 'i', ge/lt/gt/le -> 's', cs/hi -> 'u'
@@ -1140,13 +1456,26 @@ impl Arm32MveVcmpCondition {
     }
     pub fn from_mnemonic(text: &str) -> Option<Self> {
         Some(match text {
-            "eq" => Self::Eq, "ne" => Self::Ne, "cs" | "hs" => Self::Cs, "hi" => Self::Hi,
-            "ge" => Self::Ge, "lt" => Self::Lt, "gt" => Self::Gt, "le" => Self::Le,
+            "eq" => Self::Eq,
+            "ne" => Self::Ne,
+            "cs" | "hs" => Self::Cs,
+            "hi" => Self::Hi,
+            "ge" => Self::Ge,
+            "lt" => Self::Lt,
+            "gt" => Self::Gt,
+            "le" => Self::Le,
             _ => return None,
         })
     }
     pub const ALL: [Self; 8] = [
-        Self::Eq, Self::Ne, Self::Cs, Self::Hi, Self::Ge, Self::Lt, Self::Gt, Self::Le,
+        Self::Eq,
+        Self::Ne,
+        Self::Cs,
+        Self::Hi,
+        Self::Ge,
+        Self::Lt,
+        Self::Gt,
+        Self::Le,
     ];
 }
 
@@ -1157,5 +1486,7 @@ pub fn mve_vcmp_fc_bits(condition: Arm32MveVcmpCondition, scalar: bool) -> u32 {
 }
 // recover the fc code from a decoded VCMP word
 pub fn mve_vcmp_fc_from_word(word: u32, scalar: bool) -> u32 {
-    (((word >> 12) & 1) << 2) | (((word >> 7) & 1) << 1) | ((word >> (if scalar { 5 } else { 0 })) & 1)
+    (((word >> 12) & 1) << 2)
+        | (((word >> 7) & 1) << 1)
+        | ((word >> (if scalar { 5 } else { 0 })) & 1)
 }

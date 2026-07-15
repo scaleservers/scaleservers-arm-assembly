@@ -15,6 +15,6 @@ pub enum ArmCpuFeature {
     AdvancedSimd,  // NEON Advanced SIMD (the A-profile vector unit, D0-31 / Q0-15)
     Crypto,        // ARMv8 cryptography extension (AES / SHA1 / SHA256 / polynomial VMULL.p64)
     Security,      // ARMv8-M Security Extension / TrustZone-M (SG, BXNS, BLXNS, TT/TTT/TTA/TTAT)
-    Mve,           // ARMv8.1-M MVE "Helium" integer vector extension (Cortex-M55/M85) -- the Q0..Q7 vector ISA
-    MveFloat,      // the MVE floating-point option (.f16/.f32 vector ops); implies Mve + FloatingPoint
+    Mve, // ARMv8.1-M MVE "Helium" integer vector extension (Cortex-M55/M85) -- the Q0..Q7 vector ISA
+    MveFloat, // the MVE floating-point option (.f16/.f32 vector ops); implies Mve + FloatingPoint
 }

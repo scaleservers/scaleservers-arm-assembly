@@ -10,7 +10,8 @@ pub fn vfp_expand_imm8_to_f32(imm8: u8) -> f32 {
     let b = (imm8 >> 6) & 1;
     let cdefgh = (imm8 & 0x3F) as u32;
     let exponent_fill = if b == 1 { 0b11111u32 } else { 0 };
-    let pattern = ((a as u32) << 31) | (((b ^ 1) as u32) << 30) | (exponent_fill << 25) | (cdefgh << 19);
+    let pattern =
+        ((a as u32) << 31) | (((b ^ 1) as u32) << 30) | (exponent_fill << 25) | (cdefgh << 19);
     f32::from_bits(pattern)
 }
 
@@ -19,7 +20,8 @@ pub fn vfp_expand_imm8_to_f64(imm8: u8) -> f64 {
     let b = (imm8 >> 6) & 1;
     let cdefgh = (imm8 & 0x3F) as u64;
     let exponent_fill = if b == 1 { 0xFFu64 } else { 0 };
-    let pattern = ((a as u64) << 63) | (((b ^ 1) as u64) << 62) | (exponent_fill << 54) | (cdefgh << 48);
+    let pattern =
+        ((a as u64) << 63) | (((b ^ 1) as u64) << 62) | (exponent_fill << 54) | (cdefgh << 48);
     f64::from_bits(pattern)
 }
 

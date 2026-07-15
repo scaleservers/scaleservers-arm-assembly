@@ -1,9 +1,6 @@
 // Copyright (c) Scaleservers LLC
 
-use crate::enums::{
-    Arm32GeneralPurposeRegister,
-    Arm32RegisterShift,
-};
+use crate::enums::{Arm32GeneralPurposeRegister, Arm32RegisterShift};
 
 // The offset operand of an A32 single load/store (LDR/STR/LDRB/STRB and the unprivileged LDRT/... forms):
 // either a 12-bit immediate or a barrel-shifted register, each carrying its own add/subtract sign (the U
@@ -12,8 +9,15 @@ use crate::enums::{
 // post-index is W=0, and (P=0, W=1) is the unprivileged "T" form (a distinct mnemonic), not post-index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32MemoryOffset {
-    Immediate { add: bool, imm12: u16 },
-    Register { add: bool, rm: Arm32GeneralPurposeRegister, shift: Arm32RegisterShift },
+    Immediate {
+        add: bool,
+        imm12: u16,
+    },
+    Register {
+        add: bool,
+        rm: Arm32GeneralPurposeRegister,
+        shift: Arm32RegisterShift,
+    },
 }
 
 // The offset operand of an A32 "extra" load/store (LDRH/STRH/LDRSB/LDRSH/LDRD/STRD and their unprivileged
@@ -22,6 +26,12 @@ pub enum Arm32MemoryOffset {
 // separate type from `Arm32MemoryOffset`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Arm32MemoryOffset8 {
-    Immediate { add: bool, imm8: u8 },
-    Register { add: bool, rm: Arm32GeneralPurposeRegister },
+    Immediate {
+        add: bool,
+        imm8: u8,
+    },
+    Register {
+        add: bool,
+        rm: Arm32GeneralPurposeRegister,
+    },
 }

@@ -3,14 +3,17 @@
 #[derive(Debug, PartialEq)]
 pub enum ArmT32MemoryBarrierOption {
     System, // SY
-    Undefined(/*u4*/u8)
+    Undefined(/*u4*/ u8),
 }
 impl ArmT32MemoryBarrierOption {
     pub fn as_operand_bits(&self) -> u8 {
         match self {
             Self::System => 0b1111,
             Self::Undefined(bits) => {
-                assert!(*bits <= 0b1111, "Member Undefined's field 'value' is out of the valid range (0b0000..=0b1111)");
+                assert!(
+                    *bits <= 0b1111,
+                    "Member Undefined's field 'value' is out of the valid range (0b0000..=0b1111)"
+                );
 
                 *bits
             }

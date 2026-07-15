@@ -16,7 +16,11 @@
 pub struct Arm32SinglePrecisionRegister(u8);
 impl Arm32SinglePrecisionRegister {
     pub fn new(number: u8) -> Option<Self> {
-        if number <= 31 { Some(Self(number)) } else { None }
+        if number <= 31 {
+            Some(Self(number))
+        } else {
+            None
+        }
     }
     pub fn number(&self) -> u8 {
         self.0
@@ -41,7 +45,11 @@ impl Arm32DoublePrecisionRegister {
     // D0..D31 (VFPv3-D32 / NEON). A VFPv2 / VFPv3-D16 target only has D0..D15; that restriction is enforced
     // at the emit gate (via the instruction's feature requirement), not here.
     pub fn new(number: u8) -> Option<Self> {
-        if number <= 31 { Some(Self(number)) } else { None }
+        if number <= 31 {
+            Some(Self(number))
+        } else {
+            None
+        }
     }
     pub fn number(&self) -> u8 {
         self.0
@@ -63,7 +71,11 @@ impl Arm32DoublePrecisionRegister {
 pub struct Arm32QuadwordRegister(u8);
 impl Arm32QuadwordRegister {
     pub fn new(number: u8) -> Option<Self> {
-        if number <= 15 { Some(Self(number)) } else { None }
+        if number <= 15 {
+            Some(Self(number))
+        } else {
+            None
+        }
     }
     pub fn number(&self) -> u8 {
         self.0
