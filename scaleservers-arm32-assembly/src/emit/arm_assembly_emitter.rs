@@ -45,7 +45,7 @@ use alloc::vec::Vec;
 //      encodings do NOT set the flags inside an IT block (`setflags = !InITBlock()`): "movs r2, #0" + LE
 //      -> "movle r2, #0", not "movsle". A 32-bit `...s.w` form has an explicit S bit and keeps its `s`.
 //
-// Both the disassembler (arm32dasm) and the differential oracle render IT members through this function,
+// Both the disassembler (armdasm) and the differential oracle render IT members through this function,
 // so the in-IT spelling has a single source of truth.
 pub fn apply_it_block_condition(rendered: &str, condition: ArmT32InstructionCondition) -> String {
     let (mnemonic, rest) = match rendered.find(char::is_whitespace) {
@@ -250,7 +250,7 @@ impl ArmT32Instruction {
                 render_compare_branch("cbnz", low(rn), instruction_address, *offset as i64, syntax)
             }
             // M7n IT -- `it{t/e}{t/e}{t/e} <firstcond>`; the suffix letters describe slots 2..N (the
-            // disassembler applies the per-slot conditions to the following instructions, see arm32dasm).
+            // disassembler applies the per-slot conditions to the following instructions, see armdasm).
             Self::It_T1(firstcond, mask) => render_it(firstcond, *mask),
 
             // ---- ARMv7E-M DSP M8a: saturating arithmetic ----

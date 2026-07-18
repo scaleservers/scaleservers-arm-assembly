@@ -12,7 +12,7 @@ use crate::emit::ArmAssemblySyntax;
 use crate::{ArmA32Instruction, ArmT32Instruction};
 
 // Miri runs the SAME never-panic / round-trip code paths these sweeps exercise, but it is 100-1000x slower
-// and UB depends on the path, not the seed count (miri-convention.md). So under `cfg(miri)` we shrink the
+// and UB depends on the path, not the seed count. So under `cfg(miri)` we shrink the
 // random-byte / mutation / corpus budgets to a few short cases -- the decode -> emit -> re-encode paths still get
 // UB-checked, the suite just finishes in reasonable time. Stable `cargo test` keeps the full budgets.
 #[cfg(miri)]

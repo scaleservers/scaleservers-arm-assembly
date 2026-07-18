@@ -12,7 +12,8 @@
 // Encode helpers take one argument per instruction field; >7 args is natural for an ISA codec, not a smell.
 #![allow(clippy::too_many_arguments)]
 
-//! ARM 32-bit assembly encode/decode library.
+//! ARM 32-bit assembly encode/decode library -- the ARM32 member of the scaleservers assembler family
+//! (the 32-bit sibling of `scaleservers-arm64-assembly`).
 //!
 //! There are two central models, kept as **separate types** so a compiler backend cannot mix the two
 //! instruction sets within one code stream: [`ArmT32Instruction`] (Thumb / T32 -- the full M-profile set:
@@ -21,8 +22,8 @@
 //! including NEON + VFP). [`Arm32Instruction`] is the interworking union of both. Every instruction offers the
 //! family signatures: `encode` (model -> machine bytes), `decode` (bytes -> model, the exact inverse of
 //! `encode`), `encode_for_target(&ArmTargetProfile)` (target/ISA gating -- refuses forms the chosen CPU cannot
-//! run), and `to_assembly_string(syntax)` (model -> UAL text, in LLVM or GNU flavor). The console `arm32asm`
-//! (assembler) and `arm32dasm` (disassembler) are thin tools over this library.
+//! run), and `to_assembly_string(syntax)` (model -> UAL text, in LLVM or GNU flavor). The console `armasm`
+//! (assembler) and `armdasm` (disassembler) are thin tools over this library.
 //!
 //! Decoding never panics on arbitrary input -- malformed bytes yield a [`DecodeError`], never a crash (a
 //! disassembler consumes untrusted binaries); this is enforced by deterministic robustness sweeps and a
@@ -159,16 +160,17 @@ pub use emit::ArmAssemblySyntax;
 pub use emit::apply_it_block_condition;
 pub use emit::apply_vpt_block_suffix;
 
-// Target-architecture gating: restrict the emittable set to a
-// processor profile. The implemented set spans the full M-profile -- ARMv6-M, ARMv7-M, and ARMv7E-M
-// (DSP + floating-point) -- and the gate refuses any form the chosen profile can't run.
+// Target-architecture gating: restrict the emittable set to a processor profile. The implemented set spans
+// the full M-profile -- ARMv6-M, ARMv7-M, and ARMv7E-M (DSP + floating-point) -- and the gate refuses any
+// form the chosen profile can't run.
 pub mod targets;
 pub use targets::{ArmCpuFeature, ArmInstructionRequirement, ArmIsaVersion, ArmTargetProfile};
 
-// NOTE: the programmatic label/relocation backend + the ELF object writer live in the SEPARATE crate
-// `scaleservers-arm32-codegen`. Kept out of here so this crate stays a standalone, zero-dependency golden
-// sample (cargo requires optional path-deps to exist even for a no-feature build, so a `codegen` feature
-// here would couple every build to external crates).
+// NOTE: the programmatic label/relocation backend (`ArmThumbCodeBuffer impl AsmBackend`) + the ELF object
+// writer live in the SEPARATE crate `scaleservers-arm32-codegen`, which depends on this instruction model
+// plus the shared scaleservers compiler crates. Kept out of here so this crate stays a standalone,
+// zero-dependency library (cargo requires optional path-deps to exist even for a no-feature build, so a
+// `codegen` feature here would couple every build to those crates).
 
 mod tests;
 

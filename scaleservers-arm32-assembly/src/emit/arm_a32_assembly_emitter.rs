@@ -3,7 +3,7 @@
 #![allow(non_snake_case)]
 
 // UAL (Unified Assembly Language) emitter for ArmA32Instruction -- the A32 ("ARM" state) analogue of the T32
-// emitter. The disassembler (arm32dasm) renders each decoded A32 instruction through this layer, and the
+// emitter. The disassembler (armdasm) renders each decoded A32 instruction through this layer, and the
 // differential oracle re-assembles the output to confirm it round-trips byte-for-byte against GNU `as`.
 //
 // A32 rendering conventions (chosen to match GNU objdump / the assembler so output re-assembles):

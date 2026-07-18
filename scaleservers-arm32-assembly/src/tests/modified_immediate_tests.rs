@@ -13,7 +13,7 @@ use crate::arma32_instruction::{decode_a32_modified_immediate, encode_a32_modifi
 use crate::armt32_instruction::{decode_thumb_expand_imm, encode_thumb_expand_imm};
 
 // Under Miri (100-1000x slower; UB depends on the code PATH, not the iteration count) we walk the field
-// space with a stride instead of every value, per miri-convention.md -- the encode/decode paths still run.
+// space with a stride instead of every value -- the encode/decode paths still run.
 #[cfg(miri)]
 const MODIMM_FIELD_STRIDE: u16 = 97; // coprime-ish with 4096 so the sample spreads across all field shapes
 #[cfg(not(miri))]

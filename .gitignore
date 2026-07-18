@@ -2,5 +2,14 @@
 target/
 **/target/
 
+# Fuzzing
+**/fuzz/target/
+**/fuzz/corpus/
+**/fuzz/artifacts/
+**/fuzz/coverage/
+
 # Editor / OS
+*.swp
+*~
+.DS_Store
 Thumbs.db
