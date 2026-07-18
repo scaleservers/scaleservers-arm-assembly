@@ -16,3 +16,9 @@
 // inner attributes.)
 #[macro_use]
 extern crate alloc;
+
+mod enums;
+// Re-export the whole enums surface. Public `Arm64Instruction` variants carry these operand enums (op
+// selectors, arrangements, sizes, ...) as fields, so a consumer must be able to name every one of them to
+// construct or pattern-match those variants.
+pub use enums::*;
