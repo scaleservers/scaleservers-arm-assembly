@@ -5,7 +5,7 @@ This crate is licensed under MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APAC
 
 Attribution / references
 ------------------------
-The ARM instruction encodings implemented here (both the Thumb/T32 and ARM/A32
+The ARM instruction ENCODINGS implemented here (both the Thumb/T32 and ARM/A32
 states, plus the VFP, Advanced SIMD (NEON) and M-profile Vector Extension (MVE /
 "Helium") surfaces) were learned from, and are credited to, the official Arm
 Architecture Reference Manuals:
@@ -19,7 +19,7 @@ Architecture Reference Manuals:
 
 The implementation is validated by differential testing against the GNU
 (arm-none-eabi-as / arm-none-eabi-objdump, GPL) and LLVM (llvm-mc, Apache-2.0 WITH
-LLVM-exception) assemblers, used strictly as external test ORACLES; please note that
-their binaries are neither bundled nor redistributed with this crate.
+LLVM-exception) assemblers, used strictly as external test ORACLES -- their binaries
+are neither bundled nor redistributed with this crate.
 
 This crate has zero runtime dependencies and copies no third-party source.

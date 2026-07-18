@@ -1,0 +1,26 @@
+# Copyright (c) Scaleservers LLC
+# Licensed under MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APACHE).
+
+[package]
+name = "scaleservers-arm64-assembly"
+version = "1.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+description = "AArch64 (ARM 64-bit / A64) assembly encode/decode library: A64 is a single fixed-width 32-bit instruction set (no Thumb/ARM split), so ONE instruction model always encodes to exactly four little-endian bytes. Covers near-complete A64 from ARMv8.0 through ARMv9.6 (~76 CPU-feature flags): the full scalar integer + FP + system surface, the WHOLE Advanced SIMD (NEON) surface, crypto, and the SVE/SVE2/SME/SME2, FP8, matrix-multiply and v9.x extension families (known gaps: TME, RNG, the named MSR/MRS sysreg dictionary). Encode and decode are exact inverses; adds UAL text emission (GNU or LLVM flavor) and target-profile gating that restricts the emittable set to a chosen processor. Zero runtime dependencies, no_std-capable; base + FP + NEON dual-oracle (GNU + LLVM) validated, the full surface byte-locked by exhaustive unit tests."
+repository = "https://github.com/scaleservers/scaleservers-arm-assembly"
+documentation = "https://docs.rs/scaleservers-arm64-assembly"
+readme = "README.md"
+keywords = ["aarch64", "arm64", "assembler", "disassembler", "neon"]
+categories = ["encoding", "no-std", "embedded", "hardware-support"]
+
+[features]
+# Default build is `std`; `--no-default-features` builds against `core` + `alloc` only. Tests run under `std`.
+default = ["std"]
+std = []
+# `experimental` (OFF by default) adds a few instructions only one freely-available assembler emits, so they
+# cannot be dual-oracle verified (encodings are LLVM-confirmed + spec-derived): FEAT_PCDPHINT (`STSHH`) and the
+# FEAT_PAuth_LR label forms. The dual-oracle base ISA is unaffected.
+experimental = []
+
+[dependencies]
+# Intentionally dependency-free.

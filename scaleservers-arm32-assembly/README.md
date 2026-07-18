@@ -28,7 +28,7 @@ structured and is a deliberate choice, not a missing layer.
 
 The **ARM 32-bit instruction surface** -- the complete T32 and A32 instruction set across the profiles below,
 validated byte-for-byte against `arm-none-eabi-as` and cross-checked against the official Arm ARMs (DDI0553 /
-DDI0487).
+DDI0487):
 
 - **T32 (Thumb)** -- the full M-profile set: ARMv6-M, ARMv7-M, ARMv7E-M (DSP + hardware FP), the ARMv8-M Security
   Extension, the complete **ARMv8.1-M MVE / "Helium"** vector extension, the v8.1-M scalar additions (CSEL,
