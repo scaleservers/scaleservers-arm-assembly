@@ -22,3 +22,24 @@ mod enums;
 // selectors, arrangements, sizes, ...) as fields, so a consumer must be able to name every one of them to
 // construct or pattern-match those variants.
 pub use enums::*;
+
+mod errors;
+pub use errors::{DecodeError, EncodeError};
+
+// The 8-bit FP immediate codec used by `FMOV (immediate)` -- convert a native float <-> the encoded `imm8`.
+mod float_immediate;
+pub use float_immediate::{
+    fp8_decode_double, fp8_decode_single, fp8_encode_double, fp8_encode_single,
+};
+
+// The logical (bitmask) immediate codec used by `AND`/`ORR`/`EOR`/`ANDS` (immediate) -- convert a mask value <->
+// the encoded `(N, immr, imms)` fields.
+mod bitmask_immediate;
+pub use bitmask_immediate::{decode_bitmask, encode_bitmask};
+
+// Target-architecture gating: restrict the emittable set to a processor profile. AArch64 is a single linear
+// lineage, so the gate is a rank compare on the ISA version plus a feature-set check.
+pub mod targets;
+pub use targets::{
+    Arm64CpuFeature, Arm64InstructionRequirement, Arm64IsaVersion, Arm64TargetProfile,
+};

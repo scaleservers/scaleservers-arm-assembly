@@ -12,8 +12,8 @@
 /// takes `W` operands names `Arm64GeneralPurposeRegister32`, a variant that takes `X` operands names
 /// `Arm64GeneralPurposeRegister`, and a 32-bit register can never be passed where a 64-bit one is required.
 /// The `sf` bit in the machine encoding is derived from *which* operand type the variant holds, not stored
-/// separately. (The scaffold's representative instructions are the 64-bit forms; this type is provided so
-/// the W-form variants the owner adds during expansion have a register type ready to use.)
+/// separately. (This type carries the 32-bit register
+/// operands that the W-form instruction variants hold.)
 ///
 /// The `31` duality mirrors the X view: [`Self::Wzr`] is the zero register, [`Self::Wsp`] the 32-bit stack
 /// pointer; both encode to `0b11111`.
