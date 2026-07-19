@@ -26379,6 +26379,730 @@ impl Arm64Instruction {
 
         Err(DecodeError::InvalidOpcode)
     }
+
+    /// The minimum target this instruction needs to be emittable. A baseline integer/branch/load-store form reports
+    /// [`Arm64InstructionRequirement::baseline`] (ARMv8.0-A); an extension form (FP/SIMD/SVE/SME/atomic/PAC/...)
+    /// reports its raised requirement here, which the gate in [`Self::encode_for_target`] enforces.
+    pub fn requirement(&self) -> Arm64InstructionRequirement {
+        match self {
+            Self::Nop
+            | Self::Ret(_)
+            | Self::Br(_)
+            | Self::Blr(_)
+            | Self::AddImmediate(..)
+            | Self::SubImmediate(..)
+            | Self::Movz(..)
+            | Self::Movk(..)
+            | Self::Movn(..)
+            | Self::Adr(..)
+            | Self::Adrp(..)
+            | Self::AddRegister(..)
+            | Self::SubRegister(..)
+            | Self::OrrRegister(..)
+            | Self::AndRegister(..)
+            | Self::BicRegister(..)
+            | Self::OrnRegister(..)
+            | Self::EorRegister(..)
+            | Self::EonRegister(..)
+            | Self::AndsRegister(..)
+            | Self::BicsRegister(..)
+            | Self::UdivRegister(..)
+            | Self::SdivRegister(..)
+            | Self::LslvRegister(..)
+            | Self::LsrvRegister(..)
+            | Self::AsrvRegister(..)
+            | Self::RorvRegister(..)
+            | Self::MaddRegister(..)
+            | Self::MsubRegister(..)
+            | Self::SmulhRegister(..)
+            | Self::UmulhRegister(..)
+            | Self::SmaddlRegister(..)
+            | Self::UmaddlRegister(..)
+            | Self::SmsublRegister(..)
+            | Self::UmsublRegister(..)
+            | Self::CselRegister(..)
+            | Self::CsincRegister(..)
+            | Self::CsinvRegister(..)
+            | Self::CsnegRegister(..)
+            | Self::CcmpRegister(..)
+            | Self::CcmnRegister(..)
+            | Self::CcmpImmediate(..)
+            | Self::CcmnImmediate(..)
+            | Self::SbfmRegister(..)
+            | Self::BfmRegister(..)
+            | Self::UbfmRegister(..)
+            | Self::B(_)
+            | Self::Bl(_)
+            | Self::BCond(..)
+            | Self::AddsImmediate(..)
+            | Self::SubsImmediate(..)
+            | Self::AddsRegister(..)
+            | Self::SubsRegister(..)
+            | Self::Cbz(..)
+            | Self::Cbnz(..)
+            | Self::TestBitZero(..)
+            | Self::TestBitNonzero(..)
+            | Self::LoadRegister(..)
+            | Self::StoreRegister(..)
+            | Self::LoadSignedByte(..)
+            | Self::LoadSignedHalf(..)
+            | Self::LoadSignedWord(..)
+            | Self::LoadPair(..)
+            | Self::StorePair(..)
+            | Self::LoadStorePairNonTemporal { .. }
+            | Self::LoadPairSignedWord(..)
+            | Self::LoadExclusivePair { .. }
+            | Self::StoreExclusivePair { .. }
+            | Self::LoadRegisterOffset(..)
+            | Self::StoreRegisterOffset(..)
+            | Self::LoadSignedByteOffset(..)
+            | Self::LoadSignedHalfOffset(..)
+            | Self::LoadSignedWordOffset(..)
+            | Self::LoadRegisterImm9(..)
+            | Self::StoreRegisterImm9(..)
+            | Self::LoadSignedByteImm9(..)
+            | Self::LoadSignedHalfImm9(..)
+            | Self::LoadSignedWordImm9(..)
+            | Self::LoadLiteral(..)
+            | Self::LoadSignedWordLiteral(..)
+            | Self::PrefetchImmediate { .. }
+            | Self::PrefetchUnscaled { .. }
+            | Self::PrefetchRegister { .. }
+            | Self::PrefetchLiteral { .. }
+            | Self::LoadExclusive(..)
+            | Self::StoreExclusive(..)
+            | Self::LoadAcquire(..)
+            | Self::StoreRelease(..)
+            | Self::LoadLOAcquire(..)
+            | Self::StoreLORelease(..)
+            | Self::DataMemoryBarrier(..)
+            | Self::DataSyncBarrier(..)
+            | Self::InstructionSyncBarrier
+            | Self::SpeculativeStoreBypassBarrier { .. }
+            | Self::SystemHint(..) // hints execute as NOP where their feature (RAS/SPE/TRF) is absent
+            | Self::WaitForEventTimeout(..)
+            | Self::WaitForInterruptTimeout(..)
+            | Self::ClearExclusive(..)
+            | Self::MsrImmediate(..)
+            | Self::Brk(..)
+            | Self::Udf(..)
+            | Self::Svc(..)
+            | Self::Hvc(..)
+            | Self::Smc(..)
+            | Self::Hlt(..)
+            | Self::Dcps { .. }
+            | Self::Eret
+            | Self::Drps
+            | Self::Sys { .. }
+            | Self::Sysl { .. }
+            | Self::Mrs(..)
+            | Self::Msr(..)
+            | Self::Rbit(..)
+            | Self::Rev16(..)
+            | Self::Rev(..)
+            | Self::Rev32(..)
+            | Self::Clz(..)
+            | Self::Cls(..)
+            | Self::Adc(..)
+            | Self::Sbc(..)
+            | Self::Adcs(..)
+            | Self::Sbcs(..)
+            | Self::Extr(..)
+            | Self::AddExtended(..)
+            | Self::SubExtended(..)
+            | Self::AddsExtended(..)
+            | Self::SubsExtended(..)
+            | Self::AndImmediate(..)
+            | Self::OrrImmediate(..)
+            | Self::EorImmediate(..)
+            | Self::AndsImmediate(..) => Arm64InstructionRequirement::baseline(),
+
+            // ARMv8.1 LSE single-instruction atomics gate on the Large System Extensions.
+            Self::CompareAndSwap(..) | Self::CompareAndSwapPair { .. } | Self::AtomicRmw(..) | Self::Swap(..) => Arm64InstructionRequirement::lse(),
+            Self::Lse128Atomic { .. } => Arm64InstructionRequirement::lse128(),
+            Self::Rcpc3OrderedPair { .. } | Self::Rcpc3SimdLoadStore { .. } | Self::Rcpc3VectorElement { .. } => Arm64InstructionRequirement::rcpc3(),
+            Self::GcsStore { .. } | Self::GcsRegister { .. } | Self::GcsException(..) => Arm64InstructionRequirement::gcs(),
+            Self::Ls64 { .. } | Self::Ls64StoreStatus { .. } => Arm64InstructionRequirement::ls64(),
+            Self::MteBlockTag { .. } => Arm64InstructionRequirement::mte(),
+            Self::RcwCompareAndSwap { .. } | Self::RcwAtomic { .. } => Arm64InstructionRequirement::the(),
+            Self::RcwCompareAndSwapPair { .. } | Self::RcwAtomicPair { .. } => Arm64InstructionRequirement::the_d128(),
+            Self::AddSubCheckedPointer { .. } | Self::MaddSubCheckedPointer { .. } => Arm64InstructionRequirement::cpa(),
+            Self::SveCheckedPointerAddSubPred { .. } | Self::SveCheckedPointerAddSub { .. } | Self::SveCheckedPointerMulAdd { .. } => Arm64InstructionRequirement::sve_cpa(),
+            Self::SpeculationBarrier => Arm64InstructionRequirement::sb(),
+            Self::BranchRecordBuffer(..) => Arm64InstructionRequirement::brbe(),
+            Self::TraceInstrumentation(..) => Arm64InstructionRequirement::ite(),
+            Self::RangePrefetch { .. } => Arm64InstructionRequirement::rprfm(),
+            Self::SystemRegisterPair { .. } => Arm64InstructionRequirement::sysreg128(),
+            Self::Rmif { .. } | Self::Setf8(..) | Self::Setf16(..) | Self::Cfinv => Arm64InstructionRequirement::flagm(),
+            Self::Xaflag | Self::Axflag => Arm64InstructionRequirement::flagm2(),
+            Self::LoadAcquireRcpc(..) => Arm64InstructionRequirement::rcpc(),
+            Self::RcpcUnscaled { .. } => Arm64InstructionRequirement::rcpc2(),
+            Self::SvePtrue { .. }
+            | Self::SveIntBinaryUnpredicated { .. }
+            | Self::SveWhile { .. }
+            | Self::SveIntBinaryPredicated { .. }
+            | Self::SveContiguousLoad { .. }
+            | Self::SveContiguousStore { .. }
+            | Self::SveContiguousLoadScalar { .. }
+            | Self::SveContiguousStoreScalar { .. }
+            | Self::SveLoadReplicate { .. }
+            | Self::SveLoadReplicateQuadScalar { .. }
+            | Self::SveLoadReplicateQuadImm { .. }
+            | Self::SveNonTemporalScalar { .. }
+            | Self::SveStructuredLoadStoreImm { .. }
+            | Self::SveStructuredLoadStoreScalar { .. }
+            | Self::SveNonTemporalImm { .. }
+            | Self::SveLoadFirstFault { .. }
+            | Self::SveLoadNonFault { .. }
+            | Self::SvePrefetchImm { .. }
+            | Self::SvePrefetchScalar { .. }
+            | Self::SveGatherPrefetchVectorImm { .. }
+            | Self::SveGatherPrefetchScalarVector { .. }
+            | Self::SveGatherLoadVectorImm { .. }
+            | Self::SveGatherLoadScalarVector { .. }
+            | Self::SveScatterStoreVectorImm { .. }
+            | Self::SveScatterStoreScalarVector { .. }
+            | Self::SveIntCompareVectors { .. }
+            | Self::SveFpCompareVectors { .. }
+            | Self::SveFpAddStrictReduction { .. }
+            | Self::SveFpTrigMulAdd { .. }
+            | Self::SvePredicateUnpack { .. }
+            | Self::SveRdffrSetFlags { .. }
+            | Self::SveIndex { .. }
+            | Self::SveElementCount { .. }
+            | Self::SveIncDecScalar { .. }
+            | Self::SveSaturatingIncDecScalar { .. }
+            | Self::SveSaturatingIncDecVector { .. }
+            | Self::SveDupScalar { .. }
+            | Self::SveDupImmediate { .. }
+            | Self::SveDupIndexed { .. }
+            | Self::SvePredicateLogical { .. }
+            | Self::SveIntUnaryPredicated { .. }
+            | Self::SveIntReduction { .. }
+            | Self::SveFpReduction { .. }
+            | Self::SveShiftImmediatePredicated { .. }
+            | Self::SveShiftVectorPredicated { .. }
+            | Self::SvePredicateCountScalar { .. }
+            | Self::SvePredicateCountVector { .. }
+            | Self::SveFillSpillVector { .. }
+            | Self::SveFillSpillPredicate { .. }
+            | Self::SveFpFma { .. }
+            | Self::SveBitwiseLogicalUnpredicated { .. }
+            | Self::SveIntMac { .. }
+            | Self::SveIntCompareImmSigned { .. }
+            | Self::SveIntCompareImmUnsigned { .. }
+            | Self::SveMovprfxUnpredicated { .. }
+            | Self::SveMovprfxPredicated { .. }
+            | Self::SvePermute { .. }
+            | Self::SveFpBinaryUnpredicated { .. }
+            | Self::SveCopyImmediate { .. }
+            | Self::SveCopyScalar { .. }
+            | Self::SveFdup { .. }
+            | Self::SveFcpy { .. }
+            | Self::SveReverseElements { .. }
+            | Self::SveReverseBytes { .. }
+            | Self::SveTableLookup { .. }
+            | Self::SveFpUnaryPredicated { .. }
+            | Self::SvePfalse(..)
+            | Self::SvePtest { .. }
+            | Self::SveRdffr(..)
+            | Self::SveRdffrPredicated { .. }
+            | Self::SveWrffr(..)
+            | Self::SveSetffr
+            | Self::SvePfirst { .. }
+            | Self::SvePnext { .. }
+            | Self::SveInsr { .. }
+            | Self::SveExtractLast { .. }
+            | Self::SveExtractLastSimd { .. }
+            | Self::SveConditionalExtractVector { .. }
+            | Self::SveConditionalExtractGpr { .. }
+            | Self::SveConditionalExtractSimd { .. }
+            | Self::SveAddressGeneration { .. }
+            | Self::SveFpReciprocalEstimate { .. }
+            | Self::SveFexpa { .. }
+            | Self::SveFtssel { .. }
+            | Self::SveReadVectorLength { .. }
+            | Self::SveAddVectorLength { .. }
+            | Self::SveAddPredicateLength { .. }
+            | Self::SveBreak { .. }
+            | Self::SveBreakPropagate { .. }
+            | Self::SveBreakPair { .. }
+            | Self::SveCompareTerminate { .. }
+            | Self::SveDotProduct { .. }
+            | Self::SveDotProductIndexed { .. }
+            | Self::SveFpMulAddIndexed { .. }
+            | Self::SveFpComplexAdd { .. }
+            | Self::SveFpComplexMulAdd { .. }
+            | Self::SveExt { .. }
+            | Self::SveSplice { .. }
+            | Self::SveRbit { .. }
+            | Self::SveSelect { .. }
+            | Self::SveUnpack { .. }
+            | Self::SveBitwiseImmediate { .. }
+            | Self::SveFpConvert { .. } => Arm64InstructionRequirement::sve(),
+
+            Self::SveFp8Dot { .. } | Self::SveFp8DotByElement { .. } => Arm64InstructionRequirement::ssve_fp8dot(),
+            Self::SveFp8MlalLong { .. } | Self::SveFp8MlalLongLong { .. }
+            | Self::SveFp8MlalLongByElement { .. } | Self::SveFp8MlalLongLongByElement { .. } => Arm64InstructionRequirement::ssve_fp8fma(),
+            Self::SveFp8Convert { .. } | Self::SveFp8Narrow { .. } => Arm64InstructionRequirement::sve_fp8(),
+
+            Self::Sve2BitwisePermute { .. } => Arm64InstructionRequirement::sve_bitperm(),
+
+            Self::Sve2UnsignedSignedDot { .. } => Arm64InstructionRequirement::sve_i8mm(),
+
+            Self::Sve2FpConvertUpdown { op, .. } => {
+                if op.requires_bf16() {
+                    Arm64InstructionRequirement::sve_bf16()
+                } else {
+                    Arm64InstructionRequirement::sve2()
+                }
+            },
+
+            // bf16 + subtract = BFMLSLB/T (FEAT_SVE2p1); bf16 without subtract = BFMLALB/T (FEAT_BF16).
+            Self::Sve2FpWidenMulAddLong { bf16: true, subtract: true, .. } => Arm64InstructionRequirement::sve2p1(),
+            Self::Sve2FpWidenMulAddLongIndexed { bf16: true, subtract: true, .. } => Arm64InstructionRequirement::sve2p1(),
+            Self::Sve2FpWidenMulAddLong { bf16: true, .. } => Arm64InstructionRequirement::sve_bf16(),
+            Self::Sve2FpWidenMulAddLongIndexed { bf16: true, .. } => Arm64InstructionRequirement::sve_bf16(),
+
+            Self::SveDotIndexedMixed { op, .. } => match op {
+                Arm64SveDotIndexedOp::Bfdot => Arm64InstructionRequirement::sve_bf16(),
+                Arm64SveDotIndexedOp::Usdot | Arm64SveDotIndexedOp::Sudot => Arm64InstructionRequirement::sve_i8mm(),
+            },
+
+            Self::Sve2GatherNonTemporalLoad { .. } | Self::Sve2ScatterNonTemporalStore { .. } => Arm64InstructionRequirement::sve2(),
+
+            Self::SmeStartStop { .. }
+            | Self::SmeReadStreamingVectorLength { .. }
+            | Self::SmeAddStreamingVectorLength { .. }
+            | Self::SmeAddStreamingPredicateLength { .. } => Arm64InstructionRequirement::sme(),
+
+            Self::SmeFpOuterProduct { precision, .. } => match precision {
+                Arm64SmeFpPrecision::F64 => Arm64InstructionRequirement::sme_f64f64(),
+                _ => Arm64InstructionRequirement::sme(),
+            },
+            Self::Sme16BitOuterProductH { bf16: true, .. } => Arm64InstructionRequirement::sme_b16b16(),
+            Self::Sme16BitOuterProductH { bf16: false, .. } => Arm64InstructionRequirement::sme_f16f16(),
+            Self::SmeBitwiseOuterProduct { .. } => Arm64InstructionRequirement::sme2(),
+            Self::CsscUnary { .. } | Self::CsscMinMaxReg { .. } | Self::CsscMinMaxImm { .. } => Arm64InstructionRequirement::cssc(),
+            Self::BcCond(..) => Arm64InstructionRequirement::hbc(),
+            Self::SmeIntOuterProduct { size, .. } => match size {
+                Arm64VectorElement::D => Arm64InstructionRequirement::sme_i16i64(),
+                _ => Arm64InstructionRequirement::sme(),
+            },
+            Self::SmeFp8OuterProduct { single: true, .. } => Arm64InstructionRequirement::sme_f8f32(),
+            Self::SmeFp8OuterProduct { single: false, .. } => Arm64InstructionRequirement::sme_f8f16(),
+            Self::SmeTmop { op, .. } => match op {
+                Arm64SmeTmopOp::FtmopaHh => Arm64InstructionRequirement::sme_tmop_f16f16(),
+                Arm64SmeTmopOp::FtmopaSb => Arm64InstructionRequirement::sme_tmop_f8f32(),
+                Arm64SmeTmopOp::FtmopaHb => Arm64InstructionRequirement::sme_tmop_f8f16(),
+                _ => Arm64InstructionRequirement::sme_tmop(),
+            },
+            Self::SmeMop4 { .. } => Arm64InstructionRequirement::sme_mop4(),
+            Self::SmeMop4Double { kind, .. } => {
+                if kind.is_integer() {
+                    Arm64InstructionRequirement::sme_mop4_i16i64()
+                } else {
+                    Arm64InstructionRequirement::sme_mop4_f64f64()
+                }
+            },
+            Self::SmeMop4Half { bf16: true, .. } => Arm64InstructionRequirement::sme_mop4_b16b16(),
+            Self::SmeMop4Half { bf16: false, .. } => Arm64InstructionRequirement::sme_mop4_f16f16(),
+            Self::CompareBranchRegister { .. } | Self::CompareBranchImmediate { .. } => Arm64InstructionRequirement::cmpbr(),
+            Self::Sme2ZaAddSub { size, .. } => match size {
+                Arm64VectorElement::D => Arm64InstructionRequirement::sme2_i16i64(),
+                _ => Arm64InstructionRequirement::sme2(),
+            },
+            Self::Sme2ZaFmlaSingle { size, .. } | Self::Sme2ZaFmlaMulti { size, .. } | Self::Sme2ZaFmlaIndexed { size, .. } | Self::Sme2ZaFpAddSub { size, .. } => match size {
+                Arm64VectorElement::D => Arm64InstructionRequirement::sme2_f64f64(),
+                Arm64VectorElement::H => Arm64InstructionRequirement::sme_f16f16(),
+                _ => Arm64InstructionRequirement::sme2(),
+            },
+            Self::Sme2ZaDotSingle { op, .. } | Self::Sme2ZaDotMulti { op, .. } | Self::Sme2ZaDotIndexed { op, .. } => {
+                if op.needs_i16i64() { Arm64InstructionRequirement::sme2_i16i64() } else { Arm64InstructionRequirement::sme2() }
+            },
+            Self::Sme2ZaVdot { op, .. } => {
+                if op.needs_i16i64() { Arm64InstructionRequirement::sme2_i16i64() } else { Arm64InstructionRequirement::sme2() }
+            },
+            Self::Sme2ZaMlalSingle { widen, .. } | Self::Sme2ZaMlalMulti { widen, .. } | Self::Sme2ZaMlalMultiZm { widen, .. } | Self::Sme2ZaMlalIndexed { widen, .. } => {
+                if widen.needs_i16i64() { Arm64InstructionRequirement::sme2_i16i64() } else { Arm64InstructionRequirement::sme2() }
+            },
+            // FMLAL/FMLSL into ZA is the FP16->FP32 widening MAC, part of base FEAT_SME2 (FP16->FP16 is what needs SME_F16F16).
+            Self::Sme2ZaFmlalSingle { .. } | Self::Sme2ZaFmlalMulti { .. } | Self::Sme2ZaFmlalIndexed { .. } | Self::Sme2ZaFmlalMultiZm { .. }
+            | Self::Sme2ZaFdotSingle { .. } | Self::Sme2ZaFdotMulti { .. } | Self::Sme2ZaFdotIndexed { .. } => Arm64InstructionRequirement::sme2(),
+            Self::Sme2ZaFp8DotSingle { size, .. } | Self::Sme2ZaFp8DotMulti { size, .. } | Self::Sme2ZaFp8DotIndexed { size, .. } => match size {
+                Arm64VectorElement::S => Arm64InstructionRequirement::sme_f8f32(),
+                _ => Arm64InstructionRequirement::sme_f8f16(),
+            },
+            Self::Sme2ZaFp8VerticalDot { .. } => Arm64InstructionRequirement::sme_f8f16(),
+            Self::Sme2ZaFp8VerticalDotBottomTop { .. } => Arm64InstructionRequirement::sme_f8f32(),
+            Self::Sme2ZaFp8MlalSingle { size, .. } | Self::Sme2ZaFp8MlalMulti { size, .. } | Self::Sme2ZaFp8MlalIndexed { size, .. } | Self::Sme2ZaFp8MlalMultiZm { size, .. } => match size {
+                Arm64VectorElement::S => Arm64InstructionRequirement::sme_f8f32(),
+                _ => Arm64InstructionRequirement::sme_f8f16(),
+            },
+            Self::Sme2ZaBfmlalSingle { .. } | Self::Sme2ZaBfmlalMulti { .. } | Self::Sme2ZaBfmlalIndexed { .. } | Self::Sme2ZaBfmlalMultiZm { .. } => Arm64InstructionRequirement::sme2(),
+            // BF16 non-widening accumulate/MAC into a .h ZA group needs FEAT_SME_B16B16 (unlike the widening BFMLAL/BFDOT).
+            Self::Sme2ZaBfAddSub { .. } | Self::Sme2ZaBfmlaSingle { .. } | Self::Sme2ZaBfmlaMulti { .. } | Self::Sme2ZaBfmlaIndexed { .. } => Arm64InstructionRequirement::sme_b16b16(),
+            Self::Sme2NarrowConvert { .. } | Self::Sme2NarrowConvertNoN { .. } | Self::Sme2FpCvtNarrow { .. } | Self::Sme2QuadShiftNarrow { .. } | Self::Sme2ShiftNarrowNoN { .. } | Self::Sme2UnpackWiden { .. } | Self::Sme2VectorSelect { .. } => Arm64InstructionRequirement::sme2(),
+            Self::Sme2MovaArrayToVec { .. } | Self::Sme2MovaVecToArray { .. } => Arm64InstructionRequirement::sme2(),
+            Self::Sme2MovaTileSlice { .. } => Arm64InstructionRequirement::sme2(),
+            Self::Sme2MovazArray { .. } | Self::Sme2MovazTileSingle { .. } | Self::Sme2MovazTileMulti { .. } => Arm64InstructionRequirement::sme2p1(),
+            Self::Sme2MovtTable { .. } => Arm64InstructionRequirement::sme_lutv2(),
+            Self::PointerAuthLr(..) => Arm64InstructionRequirement::pauth_lr(),
+            #[cfg(feature = "experimental")]
+            Self::PointerAuthLrLabel { .. } => Arm64InstructionRequirement::pauth_lr(),
+            #[cfg(feature = "experimental")]
+            Self::Stshh { .. } => Arm64InstructionRequirement::pcdphint(),
+            #[cfg(feature = "experimental")]
+            Self::LsfeAtomicFloat { .. } => Arm64InstructionRequirement::lsfe(),
+            #[cfg(feature = "experimental")]
+            Self::SveFp16Matmul { .. } => Arm64InstructionRequirement::f16mm(),
+            Self::LoadExclusiveUnpriv(..) | Self::StoreExclusiveUnpriv(..) | Self::LsuiAtomic { .. } | Self::CompareAndSwapUnpriv { .. } | Self::CompareAndSwapPairUnpriv { .. } | Self::LsuiPair { .. } | Self::LsuiPairNonTemporal { .. } | Self::LsuiVecPair { .. } => Arm64InstructionRequirement::lsui(),
+            Self::Sme2MultiVecContiguousImm { .. } | Self::Sme2MultiVecContiguousScalar { .. } => Arm64InstructionRequirement::sme2(),
+            Self::Sme2MultiVecStridedImm { .. } | Self::Sme2MultiVecStridedScalar { .. } => Arm64InstructionRequirement::sme2(),
+            Self::Sme2Luti { .. } => Arm64InstructionRequirement::sme2(),
+            Self::WhileToPredicateCounter { .. } | Self::WhileToPredicatePair { .. } => Arm64InstructionRequirement::sve2p1(),
+            Self::SveQuadPermute { .. } | Self::SveQuadTableLookup { .. } | Self::SveQuadTableExtend { .. } => Arm64InstructionRequirement::sve2p1(),
+            Self::SveQuadDupIndexed { .. } | Self::SveQuadExtract { .. } | Self::SveQuadReduceInt { .. } | Self::SveQuadReduceFp { .. } | Self::SveNarrowConvert { .. } | Self::SveShiftNarrow { .. } | Self::SveReverseDoublewords { .. } => Arm64InstructionRequirement::sve2p1(),
+            Self::SveBf16PredicatedBinary { .. }
+            | Self::SveBf16UnpredicatedBinary { .. }
+            | Self::SveBf16Clamp { .. }
+            | Self::SveBf16MulAdd { .. }
+            | Self::SveBf16MulIndexed { .. }
+            | Self::SveBf16MulAddIndexed { .. } => Arm64InstructionRequirement::sve_b16b16(),
+            Self::PTruePredicateCounter { .. } | Self::CountPredicateCounter { .. } => Arm64InstructionRequirement::sve2p1(),
+            Self::PredicateExtractSingle { .. } | Self::PredicateExtractPair { .. } => Arm64InstructionRequirement::sve2p1(),
+            Self::SmeMova { .. } => Arm64InstructionRequirement::sme(),
+            Self::SmeTileLoadStore { .. } => Arm64InstructionRequirement::sme(),
+            Self::SmeZero { .. } => Arm64InstructionRequirement::sme(),
+            Self::SmeZeroZt0 => Arm64InstructionRequirement::sme2(),
+            Self::SmeAddHorizVert { size, .. } => match size {
+                Arm64VectorElement::D => Arm64InstructionRequirement::sme_i16i64(),
+                _ => Arm64InstructionRequirement::sme(),
+            },
+            Self::SmeArrayLoadStore { .. } => Arm64InstructionRequirement::sme(),
+            Self::Sme2MultiVecClamp { kind, .. } | Self::Sme2Vgx4Clamp { kind, .. } if kind.is_bf16() => Arm64InstructionRequirement::sme_b16b16(),
+            Self::Sme2MultiVecMinMax { op, .. } | Self::Sme2MultiVecMinMaxMulti { op, .. }
+            | Self::Sme2Vgx4MinMax { op, .. } | Self::Sme2Vgx4MinMaxMulti { op, .. } if op.is_bf16() => Arm64InstructionRequirement::sme_b16b16(),
+            Self::Sme2MultiVecZipUzp { .. } | Self::Sme2MultiVecClamp { .. } | Self::Sme2MultiVecMinMax { .. } | Self::Sme2MultiVecMinMaxMulti { .. }
+            | Self::Sme2MultiVecShiftMul { .. } | Self::Sme2MultiVecShiftMulMulti { .. } | Self::Sme2MultiVecUnary { .. }
+            | Self::Sme2Vgx4Clamp { .. } | Self::Sme2Vgx4MinMax { .. } | Self::Sme2Vgx4MinMaxMulti { .. } | Self::Sme2Vgx4ShiftMul { .. } | Self::Sme2Vgx4ShiftMulMulti { .. }
+            | Self::Sme2Vgx4Unary { .. } | Self::SmePredicateSelect { .. } => Arm64InstructionRequirement::sme2(),
+            Self::Sme2MultiVecFmul { .. } => Arm64InstructionRequirement::sme2p2(),
+            Self::MopsCopy { .. } => Arm64InstructionRequirement::mops(),
+            Self::MopsSet { tagged: true, .. } => Arm64InstructionRequirement::mops_mte(),
+            Self::MopsSet { tagged: false, .. } => Arm64InstructionRequirement::mops(),
+
+            // FCCMP/FCCMPE: scalar FP needs the FP unit; the half-precision form needs FEAT_FP16.
+            Self::FccmpScalar { precision, .. } => if precision.is_half() {
+                Arm64InstructionRequirement::fp16()
+            } else {
+                Arm64InstructionRequirement::floating_point()
+            },
+
+            Self::Sve2CryptoDestructive { op, .. } => match op {
+                Arm64SveCryptoDestructiveOp::Aese | Arm64SveCryptoDestructiveOp::Aesd => Arm64InstructionRequirement::sve_aes(),
+                Arm64SveCryptoDestructiveOp::Sm4e => Arm64InstructionRequirement::sve_sm4(),
+            },
+            Self::Sve2AesMixColumns { .. } => Arm64InstructionRequirement::sve_aes(),
+            Self::SveAes2MultiVec { .. } => Arm64InstructionRequirement::sve_aes2(),
+            Self::SvePredVectorMove { .. } | Self::SveQuadwordGatherScatter { .. }
+            | Self::SveStructuredQuadwordImm { .. } | Self::SveStructuredQuadwordScalar { .. } => Arm64InstructionRequirement::sve2p1(),
+            Self::SveFp8Matmul { half: true, .. } => Arm64InstructionRequirement::f8f16mm(),
+            Self::SveFp8Matmul { half: false, .. } => Arm64InstructionRequirement::f8f32mm(),
+            Self::Sve2PolyMultiply128 { .. } => Arm64InstructionRequirement::sve_aes(),
+            Self::SveClamp { .. } => Arm64InstructionRequirement::sve2p1(),
+            Self::SveLoadReplicateOctScalar { .. } | Self::SveLoadReplicateOctImm { .. } => Arm64InstructionRequirement::sve_f64mm(),
+            Self::Sve2CryptoBinary { op, .. } => match op {
+                Arm64SveCryptoBinaryOp::Sm4ekey => Arm64InstructionRequirement::sve_sm4(),
+                Arm64SveCryptoBinaryOp::Rax1 => Arm64InstructionRequirement::sve_sha3(),
+            },
+
+            // FCMLA (indexed) is base SVE; CMLA (indexed) is SVE2.
+            Self::SveComplexMulAddIndexed { fp: true, .. } => Arm64InstructionRequirement::sve(),
+            Self::SveComplexMulAddIndexed { fp: false, .. } => Arm64InstructionRequirement::sve2(),
+
+            Self::SveMatrixMul { op, .. } => match op {
+                Arm64SveMatmulOp::Smmla | Arm64SveMatmulOp::Usmmla | Arm64SveMatmulOp::Ummla => Arm64InstructionRequirement::sve_i8mm(),
+                Arm64SveMatmulOp::FmmlaS => Arm64InstructionRequirement::sve_f32mm(),
+                Arm64SveMatmulOp::FmmlaD => Arm64InstructionRequirement::sve_f64mm(),
+                Arm64SveMatmulOp::Bfmmla | Arm64SveMatmulOp::Bfdot => Arm64InstructionRequirement::sve_bf16(),
+            },
+
+            Self::SveIntMulAddIndexed { .. }
+            | Self::Sve2WideningIndexed { .. }
+            | Self::Sve2ComplexDot { .. }
+            | Self::Sve2FpLogb { .. }
+            | Self::Sve2FpWidenMulAddLong { .. }
+            | Self::Sve2FpWidenMulAddLongIndexed { .. }
+            | Self::Sve2HistCnt { .. }
+            | Self::Sve2HistSeg { .. }
+            | Self::Sve2FpPairwise { .. }
+            | Self::Sve2SaturatingDoublingMulHigh { .. }
+            | Self::Sve2SaturatingDoublingMulAddHigh { .. }
+            | Self::Sve2TableLookup { .. }
+            | Self::Sve2Match { .. }
+            | Self::Sve2Widening { .. }
+            | Self::Sve2TernaryLogical { .. }
+            | Self::Sve2MultiplyUnpredicated { .. }
+            | Self::Sve2Xar { .. }
+            | Self::Sve2InterleavingEor { .. }
+            | Self::Sve2ComplexAdd { .. }
+            | Self::Sve2ComplexMulAdd { .. }
+            | Self::Sve2NarrowHigh { .. }
+            | Self::Sve2SaturatingExtractNarrow { .. }
+            | Self::Sve2AbsDiffAccumulate { .. }
+            | Self::Sve2WideningShiftLeft { .. }
+            | Self::Sve2NarrowingShiftRight { .. }
+            | Self::Sve2UnaryPredicated { .. }
+            | Self::Sve2ShiftLeftPredicated { .. }
+            | Self::Sve2SaturatingAddSub { .. }
+            | Self::Sve2AbsDiffAccLong { .. }
+            | Self::Sve2AddSubLongCarry { .. }
+            | Self::Sve2ShiftRightAccumulate { .. }
+            | Self::Sve2ShiftInsert { .. }
+            | Self::Sve2PairwiseAddAccLong { .. }
+            | Self::Sve2HalvingAddSub { .. }
+            | Self::Sve2PairwiseArith { .. }
+            | Self::Sve2WhileGreater { .. }
+            | Self::Sve2WhilePointerHazard { .. } => Arm64InstructionRequirement::sve2(),
+
+            // Scalar FP data-processing / compare / select / FMOV-immediate: half-precision (the `p == Half` forms)
+            // needs FEAT_FP16; single/double are baseline FP. Each variant carries its precision as the first field.
+            Self::FAdd(p, ..)
+            | Self::FSub(p, ..)
+            | Self::FMul(p, ..)
+            | Self::FDiv(p, ..)
+            | Self::FNeg(p, ..)
+            | Self::FAbs(p, ..)
+            | Self::FSqrt(p, ..)
+            | Self::FMov(p, ..)
+            | Self::FCmp(p, ..)
+            | Self::FCmpZero(p, ..)
+            | Self::FCmpE(p, ..)
+            | Self::FCmpEZero(p, ..)
+            | Self::FRintX(p, ..)
+            | Self::FRintI(p, ..)
+            | Self::FMovImmediate(p, ..)
+            | Self::FMax(p, ..)
+            | Self::FMin(p, ..)
+            | Self::FMaxnm(p, ..)
+            | Self::FMinnm(p, ..)
+            | Self::FNmul(p, ..)
+            | Self::FRintN(p, ..)
+            | Self::FRintP(p, ..)
+            | Self::FRintM(p, ..)
+            | Self::FRintZ(p, ..)
+            | Self::FRintA(p, ..)
+            | Self::FMadd(p, ..)
+            | Self::FMsub(p, ..)
+            | Self::FNmadd(p, ..)
+            | Self::FNmsub(p, ..)
+            | Self::FCsel(p, ..) => {
+                if p.is_half() { Arm64InstructionRequirement::fp16() } else { Arm64InstructionRequirement::floating_point() }
+            },
+            Self::FmovGeneralToFp(..)
+            | Self::FmovFpToGeneral(..) => Arm64InstructionRequirement::floating_point(),
+            // FMOV half (W/X <-> Hn) needs FEAT_FP16; FMOV top-half (Xd <-> Vn.D[1]) is base FEAT_FP.
+            Self::FmovHalfToGeneral(..) | Self::FmovGeneralToHalf(..) => Arm64InstructionRequirement::fp16(),
+            Self::FmovTopHalfToGeneral(..) | Self::FmovGeneralToTopHalf(..) => Arm64InstructionRequirement::floating_point(),
+            // FP<->int converts: half precision needs FEAT_FP16. SCVTF/UCVTF carry it as field 0; FCVTZS/FCVTZU as
+            // field 1; the rounding-mode FCVT{N,A,P,M}{S,U} as the named `fp_precision`.
+            Self::Scvtf(p, ..) | Self::Ucvtf(p, ..) | Self::Fcvtzs(_, p, ..) | Self::Fcvtzu(_, p, ..)
+            | Self::FcvtFpToIntRound { fp_precision: p, .. } => {
+                if p.is_half() { Arm64InstructionRequirement::fp16() } else { Arm64InstructionRequirement::floating_point() }
+            },
+
+            // FCVT / fixed-point converts gate on FEAT_FP16 only when half-precision is involved; otherwise
+            // baseline FP. FJCVTZS gates on FEAT_JSCVT.
+            Self::FcvtFloat(dest, src, ..) => {
+                if dest.is_half() || src.is_half() { Arm64InstructionRequirement::fp16() } else { Arm64InstructionRequirement::floating_point() }
+            },
+            Self::ScvtfFixed(precision, ..) | Self::UcvtfFixed(precision, ..) => {
+                if precision.is_half() { Arm64InstructionRequirement::fp16() } else { Arm64InstructionRequirement::floating_point() }
+            },
+            Self::FcvtzsFixed(_, precision, ..) | Self::FcvtzuFixed(_, precision, ..) => {
+                if precision.is_half() { Arm64InstructionRequirement::fp16() } else { Arm64InstructionRequirement::floating_point() }
+            },
+            Self::Fjcvtzs(..) => Arm64InstructionRequirement::jscvt(),
+
+            // SIMD&FP single-register load/store require FEAT_FP (all sizes, including the 128-bit Qt form --
+            // the v register file is enabled by FP; AdvSIMD gates the SIMD data-processing ops, not these).
+            Self::VecLoadRegister(..) | Self::VecStoreRegister(..) => Arm64InstructionRequirement::floating_point(),
+            // SIMD&FP scalar load/store addressing modes (pair, literal, register-offset, 9-bit unscaled) also
+            // require only FEAT_FP -- they move the v register file, they do not do SIMD data-processing.
+            Self::VecLoadStorePair { .. }
+            | Self::VecLoadLiteral(..)
+            | Self::VecLoadRegisterOffset(..)
+            | Self::VecStoreRegisterOffset(..)
+            | Self::VecLoadRegisterImm9(..)
+            | Self::VecStoreRegisterImm9(..) => Arm64InstructionRequirement::floating_point(),
+
+            // SDOT/UDOT need the dot-product extension (FEAT_DotProd, ARMv8.2).
+            Self::VecDotProduct { .. } | Self::VecDotProductByElement { .. } => Arm64InstructionRequirement::dot_product(),
+            Self::VecMatrixMultiply { .. } | Self::VecUsdot { .. } | Self::VecMixedDotByElement { .. } => Arm64InstructionRequirement::i8mm(),
+            Self::VecPmull { poly64: true, .. } => Arm64InstructionRequirement::crypto(),
+            Self::VecPmull { poly64: false, .. } => Arm64InstructionRequirement::advanced_simd(),
+            Self::VecBfdot { .. }
+            | Self::VecBfdotByElement { .. }
+            | Self::VecBfmmla { .. }
+            | Self::VecBfmlal { .. }
+            | Self::VecBfmlalByElement { .. }
+            | Self::VecBfcvtn { .. }
+            | Self::BfConvertScalar { .. } => Arm64InstructionRequirement::bf16(),
+
+            // AES / SHA1 / SHA256 need the cryptography extension.
+            Self::Crc32 { .. } => Arm64InstructionRequirement::crc(),
+            Self::MteAddSubImmTag { .. }
+            | Self::MteDataProc { .. }
+            | Self::StoreTag { .. }
+            | Self::LoadTag { .. }
+            | Self::StoreTagPair { .. } => Arm64InstructionRequirement::mte(),
+            Self::PointerAuth { .. }
+            | Self::PointerAuthHint(..)
+            | Self::Pacga { .. }
+            | Self::PacBranch { .. }
+            | Self::PacReturn(..)
+            | Self::LoadPac { .. } => Arm64InstructionRequirement::pauth(),
+            Self::Bti(..) => Arm64InstructionRequirement::baseline(), // a hint -- harmless (NOP) where FEAT_BTI is absent
+            Self::VecLoadStorePairNonTemporal { .. } => Arm64InstructionRequirement::floating_point(),
+            Self::VecAes { .. } | Self::VecSha3 { .. } | Self::VecSha2 { .. } => Arm64InstructionRequirement::crypto(),
+            Self::ScalarThreeSame { .. }
+            | Self::ScalarFpThreeSame { .. }
+            | Self::ScalarTwoMisc { .. }
+            | Self::ScalarFpTwoMisc { .. }
+            | Self::ScalarNarrow { .. }
+            | Self::ScalarFcvtxn { .. }
+            | Self::ScalarShiftImm { .. }
+            | Self::ScalarShiftNarrow { .. }
+            | Self::ScalarFixedConvert { .. }
+            | Self::ScalarByElementLong { .. }
+            | Self::ScalarAddp { .. }
+            | Self::ScalarFpPairwise { .. }
+            | Self::ScalarDup { .. } => Arm64InstructionRequirement::advanced_simd(),
+            // FP16 three-same: the FAMAX/FAMIN ops gate on FEAT_FAMINMAX; the rest on FEAT_FP16.
+            Self::Fp8ConvertLong { .. } | Self::VecFp8Narrow { .. } => Arm64InstructionRequirement::fp8(),
+            Self::VecLuti { .. } => Arm64InstructionRequirement::lut(),
+            Self::VecFp8Matmul { half: true, .. } => Arm64InstructionRequirement::f8f16mm(),
+            Self::VecFp8Matmul { half: false, .. } => Arm64InstructionRequirement::f8f32mm(),
+            Self::Fprcvt { .. } => Arm64InstructionRequirement::fprcvt(),
+            // COMPACT is FEAT_SVE for .s/.d; FEAT_SVE2p2 extended it to .b/.h.
+            Self::SveCompact { size, .. } => match size {
+                Arm64VectorElement::B | Arm64VectorElement::H => Arm64InstructionRequirement::sve2p2(),
+                _ => Arm64InstructionRequirement::sve(),
+            },
+            Self::Fp8Dot { .. } | Self::Fp8DotByElement { .. } => Arm64InstructionRequirement::fp8dot(),
+            Self::Fp8MlalLong { .. } | Self::Fp8MlalLongLong { .. }
+            | Self::Fp8MlalLongByElement { .. } | Self::Fp8MlalLongLongByElement { .. } => Arm64InstructionRequirement::fp8fma(),
+            Self::VecFp16ThreeSame { op, .. } => if op.is_faminmax() {
+                Arm64InstructionRequirement::faminmax()
+            } else {
+                Arm64InstructionRequirement::fp16()
+            },
+            Self::VecFp16TwoMisc { .. }
+            | Self::VecFp16ByElement { .. }
+            | Self::VecFp16Across { .. }
+            | Self::ScalarFp16ThreeSame { .. }
+            | Self::ScalarFp16TwoMisc { .. }
+            | Self::ScalarFp16ByElement { .. } => Arm64InstructionRequirement::fp16(),
+            Self::VecFmovImmediate { arrangement, .. } => {
+                if matches!(arrangement, Arm64VectorArrangement::H4 | Arm64VectorArrangement::H8) {
+                    Arm64InstructionRequirement::fp16()
+                } else {
+                    Arm64InstructionRequirement::advanced_simd()
+                }
+            },
+            Self::ScalarByElement { op: Arm64ScalarByElementOp::Sqrdmlah | Arm64ScalarByElementOp::Sqrdmlsh, .. } => Arm64InstructionRequirement::rdm(),
+            Self::ScalarByElement { .. } => Arm64InstructionRequirement::advanced_simd(),
+            Self::VecCrypto3 { op, .. } => crypto_family_requirement(op.family()),
+            Self::VecCrypto2 { op, .. } => crypto_family_requirement(op.family()),
+            Self::VecCrypto4 { op, .. } => crypto_family_requirement(op.family()),
+            Self::VecXar { .. } => Arm64InstructionRequirement::sha3(),
+            Self::VecSm3Tt { .. } => Arm64InstructionRequirement::sm3(),
+
+            // SQRDMLAH/SQRDMLSH need the rounding-double-multiply extension (FEAT_RDM, ARMv8.1).
+            Self::VecFcmla { arrangement, .. } | Self::VecFcadd { arrangement, .. } | Self::VecFcmlaByElement { arrangement, .. } => {
+                // the .4h/.8h complex forms additionally need FEAT_FP16; the .2s/.4s/.2d forms need FEAT_FCMA.
+                if matches!(arrangement, Arm64VectorArrangement::H4 | Arm64VectorArrangement::H8) {
+                    Arm64InstructionRequirement::fp16()
+                } else {
+                    Arm64InstructionRequirement::fcma()
+                }
+            },
+            Self::VecRdm { .. } | Self::VecRdmByElement { .. } => Arm64InstructionRequirement::rdm(),
+
+            Self::VecInt3Same { .. }
+            | Self::VecBitwise { .. }
+            | Self::VecIntUnary { .. }
+            | Self::VecNarrow { .. }
+            | Self::VecNot { .. }
+            | Self::VecShiftImm { .. }
+            | Self::VecPermute { .. }
+            | Self::VecThreeDifferent { .. }
+            | Self::VecShiftLongNarrow { .. }
+            | Self::VecShll { .. }
+            | Self::VecAcrossLanes { .. }
+            | Self::VecCompareZero { .. }
+            | Self::VecExt { .. }
+            | Self::VecModifiedImmediate { .. }
+            | Self::VecByElement { .. }
+            | Self::VecByElementLong { .. }
+            | Self::VecDupElement { .. }
+            | Self::VecInsElement { .. }
+            | Self::VecTableLookup { .. }
+            | Self::VecLoadStoreMultiple { .. }
+            | Self::VecLoadStoreSingleLane { .. }
+            | Self::VecLoadStoreReplicate { .. }
+            | Self::VecLoadStoreMultiplePostIndex { .. }
+            | Self::VecLoadStoreSingleLanePostIndex { .. }
+            | Self::VecLoadStoreReplicatePostIndex { .. }
+            | Self::VecAddPairwiseLong { .. }
+            | Self::VecFpConvertLength { .. }
+            | Self::VecDupGeneral { .. }
+            | Self::VecUmov { .. }
+            | Self::VecSmov { .. }
+            | Self::VecInsGeneral { .. } => Arm64InstructionRequirement::advanced_simd(),
+
+            // NEON FP two-reg-misc: the FRINT32X/Z/64X/Z forms gate on FEAT_FRINTTS, the rest on Advanced SIMD.
+            Self::VecFpUnary { op, .. } => if op.is_frintts() {
+                Arm64InstructionRequirement::frintts()
+            } else {
+                Arm64InstructionRequirement::advanced_simd()
+            },
+            Self::FRoundIntScalar { .. } => Arm64InstructionRequirement::frintts(),
+            Self::VecFpMulAddLong { .. } | Self::VecFpMulAddLongByElement { .. } => Arm64InstructionRequirement::fhm(),
+            Self::VecFp3Same { op, .. } => if op.is_faminmax() {
+                Arm64InstructionRequirement::faminmax()
+            } else {
+                Arm64InstructionRequirement::advanced_simd()
+            },
+            Self::SveFpBinaryPredicated { op, .. } => if op.is_faminmax() {
+                Arm64InstructionRequirement::faminmax()
+            } else {
+                Arm64InstructionRequirement::sve()
+            },
+            Self::SveBfscale { .. } => Arm64InstructionRequirement::sve_bfscale(),
+            Self::SvePredExtractIndex { .. } | Self::SveExpand { .. } | Self::SveIntUnaryZeroing { .. } | Self::SveReverseBytesZeroing { .. } | Self::SveRbitZeroing { .. } | Self::Sve2UnaryZeroing { .. } | Self::SveFpUnaryZeroing { .. } | Self::SveFpConvertZeroing { .. } | Self::Sve2FpConvertUpdownZeroing { .. } | Self::Sve2FpLogbZeroing { .. } | Self::SveFrintTs { .. } => Arm64InstructionRequirement::sve2p2(),
+        }
+    }
+
+    /// Encode for a specific target profile: like [`Self::encode`], but first checks that
+    /// `target_profile` supports this instruction's [`Self::requirement`]. Returns
+    /// [`EncodeError::UnsupportedInstructionForTarget`] if not. (A baseline integer form is accepted by any
+    /// profile at ARMv8.0-A or newer; an extension-gated form is refused on a profile that lacks the required
+    /// feature.)
+    pub fn encode_for_target(
+        &self,
+        target_profile: &Arm64TargetProfile,
+    ) -> Result<Vec<u8>, EncodeError> {
+        let requirement = self.requirement();
+        if !target_profile.supports(&requirement) {
+            return Err(EncodeError::UnsupportedInstructionForTarget {
+                required: requirement,
+                target_isa_version: target_profile.isa_version(),
+            });
+        }
+        self.encode()
+    }
 }
 
 /* ---- field helpers shared by encode + decode ---- */
