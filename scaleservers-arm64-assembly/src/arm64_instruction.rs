@@ -8597,3 +8597,11336 @@ fn check_hw_for_width(width: Arm64RegisterWidth, hw: u8) -> Result<(), EncodeErr
     check_unsigned_maximum("hw", hw as u32, maximum)
 }
 
+impl Arm64Instruction {
+    /// Encode this instruction to its machine bytes -- ALWAYS exactly four, little-endian (A64 is a
+    /// fixed-width 32-bit ISA). Operand fields whose width/range/alignment is constrained are validated and
+    /// surfaced as an [`EncodeError`] rather than silently truncated; a constructible instruction never
+    /// panics here. This is target-independent (see [`Self::encode_for_target`] for ISA gating).
+    pub fn encode(&self) -> Result<Vec<u8>, EncodeError> {
+        let word: u32 = match self {
+            Self::Nop => NOP_WORD,
+
+            Self::Ret(xn) => RET_BASE | ((xn.as_operand_bits() as u32) << 5),
+            Self::Br(xn) => BR_BASE | ((xn.as_operand_bits() as u32) << 5),
+            Self::Blr(xn) => BLR_BASE | ((xn.as_operand_bits() as u32) << 5),
+
+            Self::AddImmediate(width, xd, xn, imm12, shift12) => {
+                check_unsigned_maximum("imm12", *imm12 as u32, 0xFFF)?;
+                let sh = if *shift12 { 1u32 } else { 0u32 };
+                ADD_IMM_BASE
+                    | (width.sf() << 31)
+                    | (sh << 22)
+                    | ((*imm12 as u32) << 10)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (xd.as_operand_bits() as u32)
+            }
+            Self::SubImmediate(width, xd, xn, imm12, shift12) => {
+                check_unsigned_maximum("imm12", *imm12 as u32, 0xFFF)?;
+                let sh = if *shift12 { 1u32 } else { 0u32 };
+                SUB_IMM_BASE
+                    | (width.sf() << 31)
+                    | (sh << 22)
+                    | ((*imm12 as u32) << 10)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (xd.as_operand_bits() as u32)
+            }
+            Self::AddsImmediate(width, xd, xn, imm12, shift12) => {
+                check_unsigned_maximum("imm12", *imm12 as u32, 0xFFF)?;
+                let sh = if *shift12 { 1u32 } else { 0u32 };
+                ADDS_IMM_BASE
+                    | (width.sf() << 31)
+                    | (sh << 22)
+                    | ((*imm12 as u32) << 10)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (xd.as_operand_bits() as u32)
+            }
+            Self::SubsImmediate(width, xd, xn, imm12, shift12) => {
+                check_unsigned_maximum("imm12", *imm12 as u32, 0xFFF)?;
+                let sh = if *shift12 { 1u32 } else { 0u32 };
+                SUBS_IMM_BASE
+                    | (width.sf() << 31)
+                    | (sh << 22)
+                    | ((*imm12 as u32) << 10)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (xd.as_operand_bits() as u32)
+            }
+
+            Self::Movz(width, xd, imm16, hw) => {
+                check_hw_for_width(*width, *hw)?;
+                MOVZ_BASE
+                    | (width.sf() << 31)
+                    | ((*hw as u32) << 21)
+                    | ((*imm16 as u32) << 5)
+                    | (xd.as_operand_bits() as u32)
+            }
+            Self::Movk(width, xd, imm16, hw) => {
+                check_hw_for_width(*width, *hw)?;
+                MOVK_BASE
+                    | (width.sf() << 31)
+                    | ((*hw as u32) << 21)
+                    | ((*imm16 as u32) << 5)
+                    | (xd.as_operand_bits() as u32)
+            }
+            Self::Movn(width, xd, imm16, hw) => {
+                check_hw_for_width(*width, *hw)?;
+                MOVN_BASE
+                    | (width.sf() << 31)
+                    | ((*hw as u32) << 21)
+                    | ((*imm16 as u32) << 5)
+                    | (xd.as_operand_bits() as u32)
+            }
+
+            Self::Adr(xd, offset_bytes) => {
+                ADR_BASE
+                    | encode_pcrel_imm21("offset_bytes", *offset_bytes as i64)?
+                    | (xd.as_operand_bits() as u32)
+            }
+            Self::Adrp(xd, page_offset_bytes) => {
+                check_multiple_of("page_offset_bytes", *page_offset_bytes, 4096)?;
+                ADRP_BASE
+                    | encode_pcrel_imm21("page_offset_bytes", *page_offset_bytes / 4096)?
+                    | (xd.as_operand_bits() as u32)
+            }
+
+            Self::AddRegister(width, xd, xn, xm, amount) => {
+                shifted_register_word(ADD_REG_BASE, *width, xd, xn, xm, *amount)?
+            }
+            Self::SubRegister(width, xd, xn, xm, amount) => {
+                shifted_register_word(SUB_REG_BASE, *width, xd, xn, xm, *amount)?
+            }
+            Self::AddsRegister(width, xd, xn, xm, amount) => {
+                shifted_register_word(ADDS_REG_BASE, *width, xd, xn, xm, *amount)?
+            }
+            Self::SubsRegister(width, xd, xn, xm, amount) => {
+                shifted_register_word(SUBS_REG_BASE, *width, xd, xn, xm, *amount)?
+            }
+
+            Self::AddExtended(width, rd, rn, rm, option, amount) => {
+                extended_register_word(ADD_EXT_BASE, *width, rd, rn, rm, *option, *amount)?
+            }
+            Self::SubExtended(width, rd, rn, rm, option, amount) => {
+                extended_register_word(SUB_EXT_BASE, *width, rd, rn, rm, *option, *amount)?
+            }
+            Self::AddsExtended(width, rd, rn, rm, option, amount) => {
+                extended_register_word(ADDS_EXT_BASE, *width, rd, rn, rm, *option, *amount)?
+            }
+            Self::SubsExtended(width, rd, rn, rm, option, amount) => {
+                extended_register_word(SUBS_EXT_BASE, *width, rd, rn, rm, *option, *amount)?
+            }
+
+            Self::AndImmediate(width, rd, rn, imm) => {
+                logical_immediate_word(AND_IMM_BASE, "imm", *width, rd, rn, *imm)?
+            }
+            Self::OrrImmediate(width, rd, rn, imm) => {
+                logical_immediate_word(ORR_IMM_BASE, "imm", *width, rd, rn, *imm)?
+            }
+            Self::EorImmediate(width, rd, rn, imm) => {
+                logical_immediate_word(EOR_IMM_BASE, "imm", *width, rd, rn, *imm)?
+            }
+            Self::AndsImmediate(width, rd, rn, imm) => {
+                logical_immediate_word(ANDS_IMM_BASE, "imm", *width, rd, rn, *imm)?
+            }
+            Self::OrrRegister(width, xd, xn, xm, amount) => {
+                shifted_register_word(ORR_REG_BASE, *width, xd, xn, xm, *amount)?
+            }
+            Self::AndRegister(width, xd, xn, xm, amount) => {
+                shifted_register_word(AND_REG_BASE, *width, xd, xn, xm, *amount)?
+            }
+            Self::BicRegister(width, xd, xn, xm, amount) => {
+                shifted_register_word(BIC_REG_BASE, *width, xd, xn, xm, *amount)?
+            }
+            Self::OrnRegister(width, xd, xn, xm, amount) => {
+                shifted_register_word(ORN_REG_BASE, *width, xd, xn, xm, *amount)?
+            }
+            Self::EorRegister(width, xd, xn, xm, amount) => {
+                shifted_register_word(EOR_REG_BASE, *width, xd, xn, xm, *amount)?
+            }
+            Self::EonRegister(width, xd, xn, xm, amount) => {
+                shifted_register_word(EON_REG_BASE, *width, xd, xn, xm, *amount)?
+            }
+            Self::AndsRegister(width, xd, xn, xm, amount) => {
+                shifted_register_word(ANDS_REG_BASE, *width, xd, xn, xm, *amount)?
+            }
+            Self::BicsRegister(width, xd, xn, xm, amount) => {
+                shifted_register_word(BICS_REG_BASE, *width, xd, xn, xm, *amount)?
+            }
+
+            Self::UdivRegister(width, xd, xn, xm) => {
+                two_source_word(UDIV_REG_BASE, *width, xd, xn, xm)
+            }
+            Self::SdivRegister(width, xd, xn, xm) => {
+                two_source_word(SDIV_REG_BASE, *width, xd, xn, xm)
+            }
+            Self::LslvRegister(width, xd, xn, xm) => {
+                two_source_word(LSLV_REG_BASE, *width, xd, xn, xm)
+            }
+            Self::LsrvRegister(width, xd, xn, xm) => {
+                two_source_word(LSRV_REG_BASE, *width, xd, xn, xm)
+            }
+            Self::AsrvRegister(width, xd, xn, xm) => {
+                two_source_word(ASRV_REG_BASE, *width, xd, xn, xm)
+            }
+            Self::RorvRegister(width, xd, xn, xm) => {
+                two_source_word(RORV_REG_BASE, *width, xd, xn, xm)
+            }
+
+            // data-processing (3 source). MADD/MSUB take Ra as the addend operand + a width (sf); SMULH/UMULH
+            // have no addend (their base already pins Ra=11111) and are 64-bit only. All fields are 5-bit
+            // registers, so encode is infallible.
+            Self::MaddRegister(width, xd, xn, xm, xa) => {
+                three_source_word(MADD_REG_BASE, *width, xd, xn, xm, xa)
+            }
+            Self::MsubRegister(width, xd, xn, xm, xa) => {
+                three_source_word(MSUB_REG_BASE, *width, xd, xn, xm, xa)
+            }
+            Self::SmulhRegister(xd, xn, xm) => {
+                three_source_word_no_addend(SMULH_REG_BASE, xd, xn, xm)
+            }
+            Self::UmulhRegister(xd, xn, xm) => {
+                three_source_word_no_addend(UMULH_REG_BASE, xd, xn, xm)
+            }
+
+            Self::SmaddlRegister(xd, xn, xm, xa) => {
+                long_multiply_word(SMADDL_REG_BASE, xd, xn, xm, xa)
+            }
+            Self::UmaddlRegister(xd, xn, xm, xa) => {
+                long_multiply_word(UMADDL_REG_BASE, xd, xn, xm, xa)
+            }
+            Self::SmsublRegister(xd, xn, xm, xa) => {
+                long_multiply_word(SMSUBL_REG_BASE, xd, xn, xm, xa)
+            }
+            Self::UmsublRegister(xd, xn, xm, xa) => {
+                long_multiply_word(UMSUBL_REG_BASE, xd, xn, xm, xa)
+            }
+            Self::AddSubCheckedPointer { sub, rd, rn, rm } => {
+                ADDPT_BASE
+                    | ((*sub as u32) << 30)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::MaddSubCheckedPointer {
+                sub,
+                rd,
+                rn,
+                rm,
+                ra,
+            } => {
+                MADDPT_BASE
+                    | ((*sub as u32) << 15)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((ra.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::SveCheckedPointerAddSubPred { sub, pg, zdn, zm } => {
+                check_governing_predicate(*pg)?;
+                0x04C4_0000
+                    | ((*sub as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::SveCheckedPointerAddSub { sub, zd, zn, zm } => {
+                0x04E0_0800
+                    | ((*sub as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveCheckedPointerMulAdd {
+                mlapt,
+                zda,
+                op_a,
+                op_b,
+            } => {
+                // madpt: op_a[20:16], op_b[9:5]; mlapt: swapped. bit[11]=madpt.
+                let (hi, lo) = if *mlapt { (op_b, op_a) } else { (op_a, op_b) };
+                SVE_MADPT_BASE
+                    | ((!*mlapt as u32) << 11)
+                    | ((hi.as_operand_bits() as u32) << 16)
+                    | ((lo.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+
+            Self::CselRegister(width, xd, xn, xm, cond) => {
+                conditional_select_word(CSEL_BASE, *width, xd, xn, xm, cond)
+            }
+            Self::CsincRegister(width, xd, xn, xm, cond) => {
+                conditional_select_word(CSINC_BASE, *width, xd, xn, xm, cond)
+            }
+            Self::CsinvRegister(width, xd, xn, xm, cond) => {
+                conditional_select_word(CSINV_BASE, *width, xd, xn, xm, cond)
+            }
+            Self::CsnegRegister(width, xd, xn, xm, cond) => {
+                conditional_select_word(CSNEG_BASE, *width, xd, xn, xm, cond)
+            }
+
+            Self::CcmpRegister(width, xn, xm, nzcv, cond) => cond_compare_word(
+                CCMP_REG_BASE,
+                *width,
+                xn,
+                xm.as_operand_bits() as u32,
+                *nzcv,
+                cond,
+            )?,
+            Self::CcmnRegister(width, xn, xm, nzcv, cond) => cond_compare_word(
+                CCMN_REG_BASE,
+                *width,
+                xn,
+                xm.as_operand_bits() as u32,
+                *nzcv,
+                cond,
+            )?,
+            Self::CcmpImmediate(width, xn, imm5, nzcv, cond) => {
+                check_unsigned_maximum("imm5", *imm5 as u32, 31)?;
+                cond_compare_word(CCMP_IMM_BASE, *width, xn, *imm5 as u32, *nzcv, cond)?
+            }
+            Self::CcmnImmediate(width, xn, imm5, nzcv, cond) => {
+                check_unsigned_maximum("imm5", *imm5 as u32, 31)?;
+                cond_compare_word(CCMN_IMM_BASE, *width, xn, *imm5 as u32, *nzcv, cond)?
+            }
+
+            Self::SbfmRegister(width, xd, xn, immr, imms) => {
+                bitfield_word(SBFM_BASE, *width, xd, xn, *immr, *imms)?
+            }
+            Self::BfmRegister(width, xd, xn, immr, imms) => {
+                bitfield_word(BFM_BASE, *width, xd, xn, *immr, *imms)?
+            }
+            Self::UbfmRegister(width, xd, xn, immr, imms) => {
+                bitfield_word(UBFM_BASE, *width, xd, xn, *immr, *imms)?
+            }
+
+            Self::B(offset_bytes) => {
+                let imm26 = encode_branch_offset("offset_bytes", *offset_bytes, 26)?;
+                B_BASE | imm26
+            }
+            Self::Bl(offset_bytes) => {
+                let imm26 = encode_branch_offset("offset_bytes", *offset_bytes, 26)?;
+                BL_BASE | imm26
+            }
+            Self::BCond(cond, offset_bytes) => {
+                let imm19 = encode_branch_offset("offset_bytes", *offset_bytes, 19)?;
+                BCOND_BASE | (imm19 << 5) | (cond.as_operand_bits() as u32)
+            }
+            Self::BcCond(cond, offset_bytes) => {
+                let imm19 = encode_branch_offset("offset_bytes", *offset_bytes, 19)?;
+                BCCOND_BASE | (imm19 << 5) | (cond.as_operand_bits() as u32)
+            }
+            Self::Cbz(width, xt, offset_bytes) => {
+                let imm19 = encode_branch_offset("offset_bytes", *offset_bytes, 19)?;
+                CBZ_BASE | (width.sf() << 31) | (imm19 << 5) | (xt.as_operand_bits() as u32)
+            }
+            Self::Cbnz(width, xt, offset_bytes) => {
+                let imm19 = encode_branch_offset("offset_bytes", *offset_bytes, 19)?;
+                CBNZ_BASE | (width.sf() << 31) | (imm19 << 5) | (xt.as_operand_bits() as u32)
+            }
+            Self::CompareBranchRegister {
+                cond,
+                size,
+                rn,
+                rm,
+                offset_bytes,
+            } => {
+                let imm9 = encode_branch_offset("offset_bytes", *offset_bytes, 9)?;
+                let (form, sf) = match size {
+                    Arm64LoadStoreSize::Byte => (0b10u32, 0u32),
+                    Arm64LoadStoreSize::Half => (0b11, 0),
+                    Arm64LoadStoreSize::Word => (0b00, 0),
+                    Arm64LoadStoreSize::Double => (0b00, 1),
+                };
+                CMPBR_REG_BASE
+                    | (sf << 31)
+                    | (cond.bits() << 21)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | (form << 14)
+                    | (imm9 << 5)
+                    | (rn.as_operand_bits() as u32)
+            }
+            Self::CompareBranchImmediate {
+                cond,
+                width,
+                rn,
+                imm6,
+                offset_bytes,
+            } => {
+                if *imm6 > 63 {
+                    return Err(EncodeError::ImmediateOutOfRange {
+                        field: "imm6",
+                        value: *imm6 as i64,
+                        minimum: 0,
+                        maximum: 63,
+                    });
+                }
+                let imm9 = encode_branch_offset("offset_bytes", *offset_bytes, 9)?;
+                CMPBR_IMM_BASE
+                    | (width.sf() << 31)
+                    | (cond.bits() << 21)
+                    | (((*imm6 >> 1) as u32) << 16)
+                    | (((*imm6 & 1) as u32) << 15)
+                    | (imm9 << 5)
+                    | (rn.as_operand_bits() as u32)
+            }
+            Self::TestBitZero(xt, bit, offset_bytes) => {
+                test_branch_word(TBZ_BASE, xt, *bit, *offset_bytes)?
+            }
+            Self::TestBitNonzero(xt, bit, offset_bytes) => {
+                test_branch_word(TBNZ_BASE, xt, *bit, *offset_bytes)?
+            }
+
+            Self::LoadRegister(size, xt, xn, offset_bytes) => {
+                ldst_register_word(LDR_UIMM_BASE, *size, xt, xn, *offset_bytes)?
+            }
+            Self::StoreRegister(size, xt, xn, offset_bytes) => {
+                ldst_register_word(STR_UIMM_BASE, *size, xt, xn, *offset_bytes)?
+            }
+            Self::LoadSignedByte(dest_width, xt, xn, offset_bytes) => {
+                let base = if matches!(dest_width, Arm64RegisterWidth::X) {
+                    LDRS_X_BASE
+                } else {
+                    LDRS_W_BASE
+                };
+                ldst_register_word(base, Arm64LoadStoreSize::Byte, xt, xn, *offset_bytes)?
+            }
+            Self::LoadSignedHalf(dest_width, xt, xn, offset_bytes) => {
+                let base = if matches!(dest_width, Arm64RegisterWidth::X) {
+                    LDRS_X_BASE
+                } else {
+                    LDRS_W_BASE
+                };
+                ldst_register_word(base, Arm64LoadStoreSize::Half, xt, xn, *offset_bytes)?
+            }
+            Self::LoadSignedWord(xt, xn, offset_bytes) => {
+                ldst_register_word(LDRS_X_BASE, Arm64LoadStoreSize::Word, xt, xn, *offset_bytes)?
+            }
+
+            Self::PrefetchImmediate {
+                prfop,
+                rn,
+                offset_bytes,
+            } => {
+                check_signed_range("prfop", *prfop as i64, 0, 31)?;
+                check_multiple_of("offset_bytes", *offset_bytes as i64, 8)?;
+                let imm12 = offset_bytes / 8;
+                check_signed_range("offset_bytes", imm12 as i64, 0, 4095)?;
+                PRFM_UIMM_BASE
+                    | (imm12 << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (*prfop as u32)
+            }
+            Self::PrefetchUnscaled {
+                prfop,
+                rn,
+                offset_bytes,
+            } => {
+                check_signed_range("prfop", *prfop as i64, 0, 31)?;
+                check_signed_range("offset_bytes", *offset_bytes as i64, -256, 255)?;
+                PRFUM_BASE
+                    | (((*offset_bytes as u32) & 0x1FF) << 12)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (*prfop as u32)
+            }
+            Self::PrefetchRegister {
+                prfop,
+                rn,
+                rm,
+                extend,
+                scaled,
+            } => {
+                // the register-offset PRFM rejects prfop type 11 (prfop 24..=31); that slot is FEAT_RPRFM `RangePrefetch`.
+                if *prfop >> 3 == 0b11 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the register-offset PRFM does not accept prfop 24..=31 (that slot is RPRFM)",
+                    });
+                }
+                check_signed_range("prfop", *prfop as i64, 0, 31)?;
+                PRFM_REG_BASE
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | (extend.as_bits() << 13)
+                    | ((*scaled as u32) << 12)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (*prfop as u32)
+            }
+            Self::PrefetchLiteral {
+                prfop,
+                offset_bytes,
+            } => {
+                check_signed_range("prfop", *prfop as i64, 0, 31)?;
+                check_multiple_of("offset_bytes", *offset_bytes as i64, 4)?;
+                let imm19 = offset_bytes / 4;
+                check_signed_range("offset_bytes", imm19 as i64, -(1 << 18), (1 << 18) - 1)?;
+                PRFM_LIT_BASE | (((imm19 as u32) & 0x7FFFF) << 5) | (*prfop as u32)
+            }
+
+            Self::LoadRegisterOffset(size, xt, xn, xm, ext, scaled) => {
+                ldst_register_offset_word(LDR_REG_OFF_BASE, *size, xt, xn, xm, *ext, *scaled)
+            }
+            Self::StoreRegisterOffset(size, xt, xn, xm, ext, scaled) => {
+                ldst_register_offset_word(STR_REG_OFF_BASE, *size, xt, xn, xm, *ext, *scaled)
+            }
+            Self::LoadSignedByteOffset(dest_width, xt, xn, xm, ext, scaled) => {
+                let base = if matches!(dest_width, Arm64RegisterWidth::X) {
+                    LDRS_X_REG_OFF_BASE
+                } else {
+                    LDRS_W_REG_OFF_BASE
+                };
+                ldst_register_offset_word(base, Arm64LoadStoreSize::Byte, xt, xn, xm, *ext, *scaled)
+            }
+            Self::LoadSignedHalfOffset(dest_width, xt, xn, xm, ext, scaled) => {
+                let base = if matches!(dest_width, Arm64RegisterWidth::X) {
+                    LDRS_X_REG_OFF_BASE
+                } else {
+                    LDRS_W_REG_OFF_BASE
+                };
+                ldst_register_offset_word(base, Arm64LoadStoreSize::Half, xt, xn, xm, *ext, *scaled)
+            }
+            Self::LoadSignedWordOffset(xt, xn, xm, ext, scaled) => ldst_register_offset_word(
+                LDRS_X_REG_OFF_BASE,
+                Arm64LoadStoreSize::Word,
+                xt,
+                xn,
+                xm,
+                *ext,
+                *scaled,
+            ),
+
+            Self::LoadRegisterImm9(size, mode, xt, xn, offset) => {
+                ldst_imm9_word(LDUR_BASE, *size, *mode, xt, xn, *offset)?
+            }
+            Self::StoreRegisterImm9(size, mode, xt, xn, offset) => {
+                ldst_imm9_word(STUR_BASE, *size, *mode, xt, xn, *offset)?
+            }
+            Self::LoadSignedByteImm9(dest_width, mode, xt, xn, offset) => {
+                let base = if matches!(dest_width, Arm64RegisterWidth::X) {
+                    LDURS_X_BASE
+                } else {
+                    LDURS_W_BASE
+                };
+                ldst_imm9_word(base, Arm64LoadStoreSize::Byte, *mode, xt, xn, *offset)?
+            }
+            Self::LoadSignedHalfImm9(dest_width, mode, xt, xn, offset) => {
+                let base = if matches!(dest_width, Arm64RegisterWidth::X) {
+                    LDURS_X_BASE
+                } else {
+                    LDURS_W_BASE
+                };
+                ldst_imm9_word(base, Arm64LoadStoreSize::Half, *mode, xt, xn, *offset)?
+            }
+            Self::LoadSignedWordImm9(mode, xt, xn, offset) => ldst_imm9_word(
+                LDURS_X_BASE,
+                Arm64LoadStoreSize::Word,
+                *mode,
+                xt,
+                xn,
+                *offset,
+            )?,
+            Self::LoadLiteral(width, xt, offset) => {
+                let base = if matches!(width, Arm64RegisterWidth::X) {
+                    LDR_LIT_X_BASE
+                } else {
+                    LDR_LIT_W_BASE
+                };
+                ldst_literal_word(base, xt, *offset)?
+            }
+            Self::LoadSignedWordLiteral(xt, offset) => {
+                ldst_literal_word(LDRSW_LIT_BASE, xt, *offset)?
+            }
+
+            Self::LoadExclusive(size, acquire, xt, xn) => {
+                LDXR_BASE
+                    | (size.size_bits() << 30)
+                    | ((*acquire as u32) << 15)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (xt.as_operand_bits() as u32)
+            }
+            Self::LoadPairSignedWord(index, xt, xt2, xn, offset_bytes) => {
+                let base = match index {
+                    Arm64LoadStoreIndex::Offset => 0x6940_0000,
+                    Arm64LoadStoreIndex::PreIndex => 0x69C0_0000,
+                    Arm64LoadStoreIndex::PostIndex => 0x68C0_0000,
+                };
+                // LDPSW is X-only with a word (scale-4) access -- pass W so `ldst_pair_word` uses the 4-byte scale.
+                ldst_pair_word(base, Arm64RegisterWidth::W, xt, xt2, xn, *offset_bytes)?
+            }
+            Self::LoadStorePairNonTemporal {
+                load,
+                width,
+                rt,
+                rt2,
+                xn,
+                offset_bytes,
+            } => ldst_pair_word(
+                0x2800_0000 | (u32::from(*load) << 22),
+                *width,
+                rt,
+                rt2,
+                xn,
+                *offset_bytes,
+            )?,
+            Self::VecLoadStorePairNonTemporal {
+                load,
+                size,
+                vt,
+                vt2,
+                xn,
+                offset_bytes,
+            } => vec_ldst_pair_nt_word(*load, *size, vt, vt2, xn, *offset_bytes)?,
+            Self::LoadPac {
+                key_b,
+                pre_index,
+                rt,
+                rn,
+                offset_bytes,
+            } => {
+                check_multiple_of("offset_bytes", *offset_bytes as i64, 8)?;
+                let simm10 = offset_bytes / 8;
+                check_signed_range("offset_bytes", simm10 as i64, -512, 511)?;
+                let bits10 = (simm10 as u32) & 0x3FF;
+                let s = (bits10 >> 9) & 1;
+                let imm9 = bits10 & 0x1FF;
+                0xF820_0400
+                    | (u32::from(*key_b) << 23)
+                    | (s << 22)
+                    | (imm9 << 12)
+                    | (u32::from(*pre_index) << 11)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::Pacga { rd, rn, rm } => {
+                0x9AC0_3000
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::PacBranch { op, rn, modifier } => {
+                let base = match modifier {
+                    Some(_) => op.base(),
+                    None => op.base() & !0x0100_0000,
+                };
+                let rm = modifier.map_or(0b11111, |r| r.as_operand_bits() as u32);
+                base | ((rn.as_operand_bits() as u32) << 5) | rm
+            }
+            Self::PacReturn(op) => op.word(),
+            Self::PointerAuthHint(op) => op.word(),
+            Self::Bti(target) => target.word(),
+            Self::PointerAuth { op, rd, rn } => {
+                let rn_bits = if op.uses_modifier() {
+                    rn.as_operand_bits() as u32
+                } else {
+                    if rn.as_operand_bits() != 0b11111 {
+                        return Err(EncodeError::InvalidOperandCombination {
+                            detail: "the zero-modifier PAC/XPAC ops take only Xd (Xn must be XZR)",
+                        });
+                    }
+                    0b11111
+                };
+                op.base() | (rn_bits << 5) | (rd.as_operand_bits() as u32)
+            }
+            Self::MteAddSubImmTag {
+                sub,
+                rd,
+                rn,
+                offset,
+                tag,
+            } => {
+                if *offset > 1008 || offset % 16 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "ADDG/SUBG offset must be a multiple of 16 in 0..=1008",
+                    });
+                }
+                if *tag > 15 {
+                    return Err(EncodeError::ImmediateOutOfRange {
+                        field: "tag",
+                        value: *tag as i64,
+                        minimum: 0,
+                        maximum: 15,
+                    });
+                }
+                let base = if *sub { 0xD180_0000 } else { 0x9180_0000 };
+                base | ((offset / 16) << 16)
+                    | ((*tag as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::MteDataProc { op, rd, rn, rm } => {
+                op.base()
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::StoreTag {
+                op,
+                index,
+                rt,
+                rn,
+                offset_bytes,
+            } => {
+                let op2 = match index {
+                    Arm64LoadStoreIndex::Offset => 0b10,
+                    Arm64LoadStoreIndex::PreIndex => 0b11,
+                    Arm64LoadStoreIndex::PostIndex => 0b01,
+                };
+                check_multiple_of("offset_bytes", *offset_bytes as i64, 16)?;
+                let simm9 = offset_bytes / 16;
+                check_signed_range("offset_bytes", simm9 as i64, -256, 255)?;
+                0xD920_0000
+                    | (op.opc() << 22)
+                    | (((simm9 as u32) & 0x1FF) << 12)
+                    | (op2 << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::LoadTag {
+                rt,
+                rn,
+                offset_bytes,
+            } => {
+                check_multiple_of("offset_bytes", *offset_bytes as i64, 16)?;
+                let simm9 = offset_bytes / 16;
+                check_signed_range("offset_bytes", simm9 as i64, -256, 255)?;
+                0xD960_0000
+                    | (((simm9 as u32) & 0x1FF) << 12)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::StoreTagPair {
+                index,
+                rt,
+                rt2,
+                rn,
+                offset_bytes,
+            } => {
+                let base = match index {
+                    Arm64LoadStoreIndex::Offset => 0x6900_0000,
+                    Arm64LoadStoreIndex::PreIndex => 0x6980_0000,
+                    Arm64LoadStoreIndex::PostIndex => 0x6880_0000,
+                };
+                check_multiple_of("offset_bytes", *offset_bytes as i64, 16)?;
+                let imm7 = offset_bytes / 16;
+                check_signed_range("offset_bytes", imm7 as i64, -64, 63)?;
+                base | (((imm7 as u32) & 0x7F) << 15)
+                    | ((rt2.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::Crc32 { op, rd, rn, rm } => {
+                op.base()
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::LoadExclusivePair {
+                width,
+                acquire,
+                rt,
+                rt2,
+                xn,
+            } => {
+                let base = if *acquire { 0x887F_8000 } else { 0x887F_0000 };
+                base | (width.sf() << 30)
+                    | ((rt2.as_operand_bits() as u32) << 10)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::StoreExclusivePair {
+                width,
+                release,
+                rs,
+                rt,
+                rt2,
+                xn,
+            } => {
+                let base = if *release { 0x8820_8000 } else { 0x8820_0000 };
+                base | (width.sf() << 30)
+                    | ((rs.as_operand_bits() as u32) << 16)
+                    | ((rt2.as_operand_bits() as u32) << 10)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::StoreExclusive(size, release, ws, xt, xn) => {
+                STXR_BASE
+                    | (size.size_bits() << 30)
+                    | ((*release as u32) << 15)
+                    | ((ws.as_operand_bits() as u32) << 16)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (xt.as_operand_bits() as u32)
+            }
+            Self::LoadExclusiveUnpriv(size, acquire, xt, xn) => {
+                if !matches!(size, Arm64LoadStoreSize::Word | Arm64LoadStoreSize::Double) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the LSUI LDTXR/LDATXR is .s (W) or .d (X) only",
+                    });
+                }
+                (LDXR_BASE | (1 << 24))
+                    | (size.size_bits() << 30)
+                    | ((*acquire as u32) << 15)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (xt.as_operand_bits() as u32)
+            }
+            Self::StoreExclusiveUnpriv(size, release, ws, xt, xn) => {
+                if !matches!(size, Arm64LoadStoreSize::Word | Arm64LoadStoreSize::Double) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the LSUI STTXR/STLTXR is .s (W) or .d (X) only",
+                    });
+                }
+                (STXR_BASE | (1 << 24))
+                    | (size.size_bits() << 30)
+                    | ((*release as u32) << 15)
+                    | ((ws.as_operand_bits() as u32) << 16)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (xt.as_operand_bits() as u32)
+            }
+            Self::CompareAndSwapUnpriv {
+                ordering,
+                rs,
+                rt,
+                rn,
+            } => {
+                CAST_BASE
+                    | ((ordering.acquire() as u32) << 22)
+                    | ((ordering.release() as u32) << 15)
+                    | ((rs.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::CompareAndSwapPairUnpriv {
+                ordering,
+                rs,
+                rt,
+                rn,
+            } => {
+                if rs.as_operand_bits() % 2 != 0 || rt.as_operand_bits() % 2 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "CASPT requires even Rs and Rt (the low register of each pair)",
+                    });
+                }
+                CASPT_BASE
+                    | ((ordering.acquire() as u32) << 22)
+                    | ((ordering.release() as u32) << 15)
+                    | ((rs.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::LoadAcquire(size, xt, xn) => {
+                LDAR_BASE
+                    | (size.size_bits() << 30)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (xt.as_operand_bits() as u32)
+            }
+            Self::StoreRelease(size, xt, xn) => {
+                STLR_BASE
+                    | (size.size_bits() << 30)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (xt.as_operand_bits() as u32)
+            }
+            Self::LoadLOAcquire(size, xt, xn) => {
+                0x08DF_7C00
+                    | (size.size_bits() << 30)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (xt.as_operand_bits() as u32)
+            }
+            Self::StoreLORelease(size, xt, xn) => {
+                0x089F_7C00
+                    | (size.size_bits() << 30)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (xt.as_operand_bits() as u32)
+            }
+            Self::CompareAndSwap(size, ordering, rs, rt, xn) => {
+                // CAS: acquire = L[22], release = o0[15] (verified vs GNU: `casa` sets bit22, `casl` sets bit15).
+                CAS_BASE
+                    | (size.size_bits() << 30)
+                    | ((ordering.acquire() as u32) << 22)
+                    | ((ordering.release() as u32) << 15)
+                    | ((rs.as_operand_bits() as u32) << 16)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::LoadAcquireRcpc(size, rt, xn) => {
+                LDAPR_BASE
+                    | (size.size_bits() << 30)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::RcpcUnscaled { op, rt, rn, offset } => {
+                check_signed_range("offset", *offset as i64, -256, 255)?;
+                let (size, opc) = op.size_opc();
+                RCPC_UNSCALED_BASE
+                    | (size << 30)
+                    | (opc << 22)
+                    | (((*offset as u32) & 0x1FF) << 12)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::CompareAndSwapPair {
+                width,
+                ordering,
+                rs,
+                rt,
+                xn,
+            } => {
+                // CASP operates on register pairs, so Rs and Rt must be even (Rs<0>/Rt<0> are fixed 0).
+                if rs.as_operand_bits() % 2 != 0 || rt.as_operand_bits() % 2 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "CASP requires even Rs and Rt (the low register of each pair)",
+                    });
+                }
+                CASP_BASE
+                    | (width.sf() << 30)
+                    | ((ordering.acquire() as u32) << 22)
+                    | ((ordering.release() as u32) << 15)
+                    | ((rs.as_operand_bits() as u32) << 16)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::AtomicRmw(op, size, ordering, rs, rt, xn) => {
+                LSE_RMW_BASE
+                    | (size.size_bits() << 30)
+                    | ((ordering.acquire() as u32) << 23)
+                    | ((ordering.release() as u32) << 22)
+                    | ((rs.as_operand_bits() as u32) << 16)
+                    | (op.opc_bits() << 12)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::Swap(size, ordering, rs, rt, xn) => {
+                SWP_BASE
+                    | (size.size_bits() << 30)
+                    | ((ordering.acquire() as u32) << 23)
+                    | ((ordering.release() as u32) << 22)
+                    | ((rs.as_operand_bits() as u32) << 16)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::LsuiAtomic {
+                op,
+                width,
+                ordering,
+                rs,
+                rt,
+                rn,
+            } => {
+                LSUI_ATOMIC_BASE
+                    | (width.sf() << 30)
+                    | ((ordering.acquire() as u32) << 23)
+                    | ((ordering.release() as u32) << 22)
+                    | ((rs.as_operand_bits() as u32) << 16)
+                    | (op.op_bits() << 12)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::Lse128Atomic {
+                op,
+                acquire,
+                release,
+                rt,
+                rt2,
+                rn,
+            } => {
+                LSE128_BASE
+                    | ((*acquire as u32) << 23)
+                    | ((*release as u32) << 22)
+                    | ((rt2.as_operand_bits() as u32) << 16)
+                    | (op.opcode() << 12)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::Rcpc3OrderedPair {
+                load,
+                width,
+                writeback,
+                rt,
+                rt2,
+                rn,
+            } => {
+                RCPC3_PAIR_BASE
+                    | (width.sf() << 30)
+                    | ((*load as u32) << 22)
+                    | ((!*writeback as u32) << 12)
+                    | ((rt2.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::Rcpc3SimdLoadStore {
+                load,
+                size,
+                ft,
+                rn,
+                imm9,
+            } => {
+                check_signed_range("imm9", *imm9 as i64, -256, 255)?;
+                RCPC3_SIMD_BASE
+                    | (size.size_field() << 30)
+                    | (size.opc_high() << 23)
+                    | ((*load as u32) << 22)
+                    | (((*imm9 as u32) & 0x1FF) << 12)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (ft.as_operand_bits() as u32)
+            }
+            Self::GcsStore {
+                unprivileged,
+                rt,
+                rn,
+            } => {
+                GCS_STORE_BASE
+                    | ((*unprivileged as u32) << 12)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::GcsRegister { op, rt } => op.base() | (rt.as_operand_bits() as u32),
+            Self::GcsException(op) => op.word(),
+            Self::Ls64 { store, rt, rn } => {
+                (if *store { LS64_ST_BASE } else { LS64_LD_BASE })
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::Ls64StoreStatus {
+                zero_data,
+                rs,
+                rt,
+                rn,
+            } => {
+                (if *zero_data {
+                    LS64_STV0_BASE
+                } else {
+                    LS64_STV_BASE
+                }) | ((rs.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::MteBlockTag { op, rt, rn } => {
+                op.base() | ((rn.as_operand_bits() as u32) << 5) | (rt.as_operand_bits() as u32)
+            }
+            Self::RcwCompareAndSwap {
+                secure,
+                ordering,
+                rs,
+                rt,
+                rn,
+            } => {
+                RCW_CAS_BASE
+                    | ((*secure as u32) << 30)
+                    | ((ordering.acquire() as u32) << 23)
+                    | ((ordering.release() as u32) << 22)
+                    | ((rs.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::RcwCompareAndSwapPair {
+                secure,
+                ordering,
+                rs,
+                rt,
+                rn,
+            } => {
+                RCW_CASP_BASE
+                    | ((*secure as u32) << 30)
+                    | ((ordering.acquire() as u32) << 23)
+                    | ((ordering.release() as u32) << 22)
+                    | ((rs.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::RcwAtomic {
+                op,
+                secure,
+                ordering,
+                rs,
+                rt,
+                rn,
+            } => {
+                op.single_base()
+                    | ((*secure as u32) << 30)
+                    | ((ordering.acquire() as u32) << 23)
+                    | ((ordering.release() as u32) << 22)
+                    | ((rs.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::RcwAtomicPair {
+                op,
+                secure,
+                ordering,
+                rt1,
+                rt2,
+                rn,
+            } => {
+                op.pair_base()
+                    | ((*secure as u32) << 30)
+                    | ((ordering.acquire() as u32) << 23)
+                    | ((ordering.release() as u32) << 22)
+                    | ((rt2.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt1.as_operand_bits() as u32)
+            }
+            Self::BranchRecordBuffer(op) => op.word(),
+            Self::TraceInstrumentation(rt) => TRCIT_BASE | (rt.as_operand_bits() as u32),
+            Self::Rcpc3VectorElement {
+                load,
+                index,
+                vt,
+                rn,
+            } => {
+                if *index > 1 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "LDAP1/STL1 index a .d element (0 or 1)",
+                    });
+                }
+                RCPC3_VEC_ELEM_BASE
+                    | ((*index as u32) << 30)
+                    | ((*load as u32) << 22)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (vt.as_operand_bits() as u32)
+            }
+            Self::RangePrefetch { prfop, rm, rn } => {
+                if *prfop > 63 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the RPRFM prefetch operation is a 6-bit value (0..=63)",
+                    });
+                }
+                let p = *prfop as u32;
+                let prfop_bits = ((p >> 5) << 15) | (((p >> 3) & 0b11) << 12) | (p & 0b111);
+                RPRFM_BASE
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | prfop_bits
+            }
+
+            Self::DataMemoryBarrier(option) => DMB_BASE | (option.crm_bits() << 8),
+            Self::DataSyncBarrier(option) => DSB_BASE | (option.crm_bits() << 8),
+            Self::InstructionSyncBarrier => ISB_WORD,
+            Self::SpeculationBarrier => SB_WORD,
+            Self::SpeculativeStoreBypassBarrier { physical } => {
+                if *physical {
+                    PSSBB_WORD
+                } else {
+                    SSBB_WORD
+                }
+            }
+            Self::Brk(imm16) => BRK_BASE | ((*imm16 as u32) << 5),
+            Self::Udf(imm16) => *imm16 as u32,
+            Self::Svc(imm16) => SVC_BASE | ((*imm16 as u32) << 5),
+            Self::Hvc(imm16) => HVC_BASE | ((*imm16 as u32) << 5),
+            Self::Smc(imm16) => SMC_BASE | ((*imm16 as u32) << 5),
+            Self::Hlt(imm16) => HLT_BASE | ((*imm16 as u32) << 5),
+            Self::Dcps { level, imm16 } => {
+                if !(1..=3).contains(level) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "DCPS level must be 1, 2, or 3",
+                    });
+                }
+                // DCPS1/2/3 differ only in the LL[1:0] field (= level): base | level | imm16<<5.
+                (DCPS1_BASE & !0b11) | (*level as u32) | ((*imm16 as u32) << 5)
+            }
+            Self::Eret => ERET_WORD,
+            Self::Drps => DRPS_WORD,
+            Self::Rmif { xn, shift, mask } => {
+                check_signed_range("shift", *shift as i64, 0, 63)?;
+                check_signed_range("mask", *mask as i64, 0, 15)?;
+                RMIF_BASE
+                    | ((*shift as u32) << 15)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (*mask as u32)
+            }
+            Self::Setf8(wn) => SETF_BASE | ((wn.as_operand_bits() as u32) << 5),
+            Self::Setf16(wn) => SETF_BASE | (1 << 14) | ((wn.as_operand_bits() as u32) << 5),
+            Self::Cfinv => CFINV_WORD,
+            Self::Xaflag => XAFLAG_WORD,
+            Self::Axflag => AXFLAG_WORD,
+            Self::Sys {
+                op1,
+                crn,
+                crm,
+                op2,
+                rt,
+            } => {
+                check_signed_range("op1", *op1 as i64, 0, 7)?;
+                check_signed_range("crn", *crn as i64, 0, 15)?;
+                check_signed_range("crm", *crm as i64, 0, 15)?;
+                check_signed_range("op2", *op2 as i64, 0, 7)?;
+                SYS_BASE
+                    | ((*op1 as u32) << 16)
+                    | ((*crn as u32) << 12)
+                    | ((*crm as u32) << 8)
+                    | ((*op2 as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::Sysl {
+                rt,
+                op1,
+                crn,
+                crm,
+                op2,
+            } => {
+                check_signed_range("op1", *op1 as i64, 0, 7)?;
+                check_signed_range("crn", *crn as i64, 0, 15)?;
+                check_signed_range("crm", *crm as i64, 0, 15)?;
+                check_signed_range("op2", *op2 as i64, 0, 7)?;
+                SYSL_BASE
+                    | ((*op1 as u32) << 16)
+                    | ((*crn as u32) << 12)
+                    | ((*crm as u32) << 8)
+                    | ((*op2 as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::Mrs(sysreg, xt) => {
+                MRS_BASE | (sysreg.field_bits() << 5) | (xt.as_operand_bits() as u32)
+            }
+            Self::Msr(sysreg, xt) => {
+                MSR_BASE | (sysreg.field_bits() << 5) | (xt.as_operand_bits() as u32)
+            }
+            Self::SystemRegisterPair { read, sysreg, rt } => {
+                if rt.as_operand_bits() & 1 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "MRRS/MSRR use a 64-bit register pair starting at an even Xt",
+                    });
+                }
+                if *sysreg > 0x7FFF {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the MRRS/MSRR system-register specifier is a 15-bit field",
+                    });
+                }
+                (if *read { MRRS_BASE } else { MSRR_BASE })
+                    | ((*sysreg as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::SystemHint(op) => op.word(),
+            Self::PointerAuthLr(op) => op.word(),
+            #[cfg(feature = "experimental")]
+            Self::PointerAuthLrLabel { op, offset_bytes } => {
+                // The label is the (earlier) signing point: target = PC - imm16*4, so `offset_bytes` is <= 0 and the
+                // encoded imm16 is the unsigned backward distance `-offset_bytes / 4` (0..=65535).
+                check_multiple_of("offset_bytes", *offset_bytes as i64, 4)?;
+                if *offset_bytes > 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the PAuth_LR label is a backward reference -- offset_bytes must be <= 0",
+                    });
+                }
+                let imm16 = (-(*offset_bytes as i64)) / 4;
+                check_signed_range("offset_bytes", imm16, 0, 0xFFFF)?;
+                op.base() | ((imm16 as u32) << 5)
+            }
+            #[cfg(feature = "experimental")]
+            Self::Stshh { strm } => {
+                if *strm {
+                    STSHH_STRM_WORD
+                } else {
+                    STSHH_KEEP_WORD
+                }
+            }
+            #[cfg(feature = "experimental")]
+            Self::LsfeAtomicFloat {
+                op,
+                precision,
+                acquire,
+                release,
+                rs,
+                rt,
+                rn,
+            } => {
+                let size_code = match precision {
+                    Arm64FloatPrecision::Half => 1,
+                    Arm64FloatPrecision::Single => 2,
+                    Arm64FloatPrecision::Double => 3,
+                };
+                let store = rt.is_none();
+                if store && *acquire {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an LSFE store (STF*) has no acquire ordering form",
+                    });
+                }
+                let rt_bits = match rt {
+                    Some(v) => v.as_operand_bits() as u32,
+                    None => 31,
+                };
+                LSFE_ATOMIC_BASE
+                    | (size_code << 30)
+                    | ((*acquire as u32) << 23)
+                    | ((*release as u32) << 22)
+                    | ((store as u32) << 15)
+                    | (op.code() << 12)
+                    | ((rs.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | rt_bits
+            }
+            Self::WaitForEventTimeout(xt) => WFXT_BASE | (xt.as_operand_bits() as u32),
+            Self::WaitForInterruptTimeout(xt) => {
+                WFXT_BASE | (1 << 5) | (xt.as_operand_bits() as u32)
+            }
+            Self::ClearExclusive(imm4) => {
+                check_signed_range("imm4", *imm4 as i64, 0, 15)?;
+                CLREX_BASE | ((*imm4 as u32) << 8)
+            }
+            Self::MsrImmediate(field, imm) => {
+                check_signed_range("imm", *imm as i64, 0, 15)?;
+                let (op1, op2) = field.op1_op2();
+                MSR_IMM_BASE | (op1 << 16) | ((*imm as u32) << 8) | (op2 << 5)
+            }
+
+            Self::LoadPair(width, index, xt, xt2, xn, offset_bytes) => {
+                ldst_pair_word(pair_base(true, *index), *width, xt, xt2, xn, *offset_bytes)?
+            }
+            Self::StorePair(width, index, xt, xt2, xn, offset_bytes) => {
+                ldst_pair_word(pair_base(false, *index), *width, xt, xt2, xn, *offset_bytes)?
+            }
+            Self::LsuiPair {
+                load,
+                index,
+                rt,
+                rt2,
+                rn,
+                offset_bytes,
+            } => {
+                // The opc=11 (`T`) view of STP/LDP: base per index, L[22] = load. X-only (scale 8).
+                let idx_base = match index {
+                    Arm64LoadStoreIndex::PostIndex => 0xE880_0000,
+                    Arm64LoadStoreIndex::Offset => 0xE900_0000,
+                    Arm64LoadStoreIndex::PreIndex => 0xE980_0000,
+                };
+                let base = idx_base | (u32::from(*load) << 22);
+                check_multiple_of("offset_bytes", *offset_bytes as i64, 8)?;
+                let imm7 = offset_bytes / 8;
+                check_signed_range("offset_bytes", imm7 as i64, -64, 63)?;
+                base | (((imm7 as u32) & 0x7F) << 15)
+                    | ((rt2.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::LsuiPairNonTemporal {
+                load,
+                rt,
+                rt2,
+                rn,
+                offset_bytes,
+            } => {
+                // The opc=11, idx=00 (`T` non-temporal) view of LDNP/STNP. X-only (scale 8), no writeback.
+                let base: u32 = if *load { 0xE840_0000 } else { 0xE800_0000 };
+                check_multiple_of("offset_bytes", *offset_bytes as i64, 8)?;
+                let imm7 = offset_bytes / 8;
+                check_signed_range("offset_bytes", imm7 as i64, -64, 63)?;
+                base | (((imm7 as u32) & 0x7F) << 15)
+                    | ((rt2.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rt.as_operand_bits() as u32)
+            }
+            Self::LsuiVecPair {
+                load,
+                index,
+                vt,
+                vt2,
+                rn,
+                offset_bytes,
+            } => {
+                // The opc=11, V=1 (`T` SIMD) view of LDTP/STTP/LDTNP/STTNP. Q-only (scale 16).
+                let idx_base: u32 = match index {
+                    Arm64LsuiPairIndex::NonTemporal => 0xEC00_0000,
+                    Arm64LsuiPairIndex::PostIndex => 0xEC80_0000,
+                    Arm64LsuiPairIndex::Offset => 0xED00_0000,
+                    Arm64LsuiPairIndex::PreIndex => 0xED80_0000,
+                };
+                let base = idx_base | (u32::from(*load) << 22);
+                check_multiple_of("offset_bytes", *offset_bytes as i64, 16)?;
+                let imm7 = offset_bytes / 16;
+                check_signed_range("offset_bytes", imm7 as i64, -64, 63)?;
+                base | (((imm7 as u32) & 0x7F) << 15)
+                    | ((vt2.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (vt.as_operand_bits() as u32)
+            }
+
+            Self::FAdd(precision, fd, fn_, fm) => {
+                float_data2_word(FADD_FP_BASE, *precision, fd, fn_, fm)
+            }
+            Self::FSub(precision, fd, fn_, fm) => {
+                float_data2_word(FSUB_FP_BASE, *precision, fd, fn_, fm)
+            }
+            Self::FMul(precision, fd, fn_, fm) => {
+                float_data2_word(FMUL_FP_BASE, *precision, fd, fn_, fm)
+            }
+            Self::FDiv(precision, fd, fn_, fm) => {
+                float_data2_word(FDIV_FP_BASE, *precision, fd, fn_, fm)
+            }
+
+            Self::FNeg(precision, fd, fn_) => float_data1_word(FNEG_FP_BASE, *precision, fd, fn_),
+            Self::FAbs(precision, fd, fn_) => float_data1_word(FABS_FP_BASE, *precision, fd, fn_),
+            Self::FSqrt(precision, fd, fn_) => float_data1_word(FSQRT_FP_BASE, *precision, fd, fn_),
+            Self::FMov(precision, fd, fn_) => float_data1_word(FMOV_FP_BASE, *precision, fd, fn_),
+
+            Self::FcvtFloat(dest, src, fd, fn_) => {
+                if dest == src {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "FCVT source and destination precision must differ",
+                    });
+                }
+                FCVT_BASE
+                    | (src.ftype() << 22)
+                    | (dest.ftype() << 15)
+                    | ((fn_.as_operand_bits() as u32) << 5)
+                    | (fd.as_operand_bits() as u32)
+            }
+            Self::ScvtfFixed(precision, gp_width, fd, rn, fbits) => fp_fixed_word(
+                SCVTF_FIXED_BASE,
+                *precision,
+                *gp_width,
+                fd.as_operand_bits() as u32,
+                rn.as_operand_bits() as u32,
+                *fbits,
+            )?,
+            Self::UcvtfFixed(precision, gp_width, fd, rn, fbits) => fp_fixed_word(
+                UCVTF_FIXED_BASE,
+                *precision,
+                *gp_width,
+                fd.as_operand_bits() as u32,
+                rn.as_operand_bits() as u32,
+                *fbits,
+            )?,
+            Self::FcvtzsFixed(gp_width, precision, rd, fn_, fbits) => fp_fixed_word(
+                FCVTZS_FIXED_BASE,
+                *precision,
+                *gp_width,
+                rd.as_operand_bits() as u32,
+                fn_.as_operand_bits() as u32,
+                *fbits,
+            )?,
+            Self::FcvtzuFixed(gp_width, precision, rd, fn_, fbits) => fp_fixed_word(
+                FCVTZU_FIXED_BASE,
+                *precision,
+                *gp_width,
+                rd.as_operand_bits() as u32,
+                fn_.as_operand_bits() as u32,
+                *fbits,
+            )?,
+            Self::Fjcvtzs(rd, fn_) => {
+                FJCVTZS_BASE | ((fn_.as_operand_bits() as u32) << 5) | (rd.as_operand_bits() as u32)
+            }
+
+            Self::VecInt3Same {
+                op,
+                arrangement,
+                rd,
+                rn,
+                rm,
+            } => vec_int_three_same_word(*op, *arrangement, rd, rn, rm)?,
+            Self::VecFp3Same {
+                op,
+                arrangement,
+                rd,
+                rn,
+                rm,
+            } => vec_fp_three_same_word(*op, *arrangement, rd, rn, rm)?,
+            Self::VecBitwise {
+                op,
+                arrangement,
+                rd,
+                rn,
+                rm,
+            } => vec_bitwise_word(*op, *arrangement, rd, rn, rm)?,
+            Self::VecIntUnary {
+                op,
+                arrangement,
+                rd,
+                rn,
+            } => vec_int_unary_word(*op, *arrangement, rd, rn)?,
+            Self::VecNarrow { op, dst, rd, rn } => vec_narrow_word(*op, *dst, rd, rn)?,
+            Self::VecFpMulAddLong { op, q, rd, rn, rm } => {
+                op.base()
+                    | ((*q as u32) << 30)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::VecFpMulAddLongByElement {
+                op,
+                q,
+                rd,
+                rn,
+                vm,
+                index,
+            } => {
+                let (rm, m, l, h) = byelem_fields(0b01, vm.as_operand_bits(), *index).ok_or(
+                    EncodeError::InvalidOperandCombination {
+                        detail: "FHM FMLAL/FMLSL-by-element needs Vm v0-v15 and index 0..=7",
+                    },
+                )?;
+                op.by_element_base()
+                    | (u32::from(*q) << 30)
+                    | (l << 21)
+                    | (m << 20)
+                    | (rm << 16)
+                    | (h << 11)
+                    | vec_two_regs(rd, rn)
+            }
+            Self::VecFpUnary {
+                op,
+                arrangement,
+                rd,
+                rn,
+            } => vec_fp_unary_word(*op, *arrangement, rd, rn)?,
+            Self::VecNot {
+                arrangement,
+                rd,
+                rn,
+            } => vec_not_word(*arrangement, rd, rn)?,
+            Self::VecShiftImm {
+                op,
+                arrangement,
+                rd,
+                rn,
+                shift,
+            } => vec_shift_imm_word(*op, *arrangement, rd, rn, *shift)?,
+            Self::VecLoadRegister(size, vt, xn, offset_bytes) => {
+                vec_ldst_register_word(true, *size, vt, xn, *offset_bytes)?
+            }
+            Self::VecStoreRegister(size, vt, xn, offset_bytes) => {
+                vec_ldst_register_word(false, *size, vt, xn, *offset_bytes)?
+            }
+            Self::VecLoadStorePair {
+                load,
+                index,
+                size,
+                vt,
+                vt2,
+                xn,
+                offset_bytes,
+            } => vec_ldst_pair_word(*load, *index, *size, vt, vt2, xn, *offset_bytes)?,
+            Self::VecLoadLiteral(size, vt, offset) => vec_ldst_literal_word(*size, vt, *offset)?,
+            Self::VecLoadRegisterOffset(size, vt, xn, xm, ext, scaled) => {
+                vec_ldst_register_offset_word(true, *size, vt, xn, xm, *ext, *scaled)
+            }
+            Self::VecStoreRegisterOffset(size, vt, xn, xm, ext, scaled) => {
+                vec_ldst_register_offset_word(false, *size, vt, xn, xm, *ext, *scaled)
+            }
+            Self::VecLoadRegisterImm9(size, mode, vt, xn, offset) => {
+                vec_ldst_imm9_word(true, *size, *mode, vt, xn, *offset)?
+            }
+            Self::VecStoreRegisterImm9(size, mode, vt, xn, offset) => {
+                vec_ldst_imm9_word(false, *size, *mode, vt, xn, *offset)?
+            }
+            Self::VecPermute {
+                op,
+                arrangement,
+                rd,
+                rn,
+                rm,
+            } => vec_permute_word(*op, *arrangement, rd, rn, rm)?,
+            Self::VecThreeDifferent {
+                op,
+                wide,
+                high,
+                rd,
+                rn,
+                rm,
+            } => vec_three_different_word(*op, *wide, *high, rd, rn, rm)?,
+            Self::VecShiftLongNarrow {
+                op,
+                narrow,
+                rd,
+                rn,
+                shift,
+            } => vec_shift_long_narrow_word(*op, *narrow, rd, rn, *shift)?,
+            Self::VecAcrossLanes {
+                op,
+                arrangement,
+                rd,
+                rn,
+            } => vec_across_lanes_word(*op, *arrangement, rd, rn)?,
+            Self::VecCompareZero {
+                op,
+                arrangement,
+                rd,
+                rn,
+            } => vec_compare_zero_word(*op, *arrangement, rd, rn)?,
+            Self::VecExt {
+                arrangement,
+                rd,
+                rn,
+                rm,
+                index,
+            } => vec_ext_word(*arrangement, rd, rn, rm, *index)?,
+            Self::VecModifiedImmediate {
+                op,
+                arrangement,
+                imm8,
+                shift,
+                rd,
+            } => vec_modified_immediate_word(*op, *arrangement, *imm8, *shift, rd)?,
+            Self::VecByElement {
+                op,
+                arrangement,
+                rd,
+                rn,
+                vm,
+                index,
+            } => vec_by_element_word(*op, *arrangement, rd, rn, vm, *index)?,
+            Self::VecByElementLong {
+                op,
+                wide,
+                high,
+                rd,
+                rn,
+                vm,
+                index,
+            } => vec_by_element_long_word(*op, *wide, *high, rd, rn, vm, *index)?,
+            Self::VecDupElement {
+                arrangement,
+                rd,
+                rn,
+                index,
+            } => vec_dup_element_word(*arrangement, rd, rn, *index)?,
+            Self::VecInsElement {
+                element,
+                rd,
+                dst_index,
+                rn,
+                src_index,
+            } => vec_ins_element_word(*element, rd, *dst_index, rn, *src_index)?,
+            Self::VecTableLookup {
+                tbx,
+                arrangement,
+                rd,
+                rn_first,
+                num_tables,
+                rm,
+            } => vec_table_lookup_word(*tbx, *arrangement, rd, rn_first, *num_tables, rm)?,
+            Self::VecLoadStoreMultiple {
+                kind,
+                load,
+                arrangement,
+                rt_first,
+                xn,
+            } => vec_ldst_multiple_word(*kind, *load, *arrangement, rt_first, xn),
+            Self::VecLoadStoreSingleLane {
+                load,
+                count,
+                element,
+                index,
+                rt_first,
+                xn,
+            } => vec_ldst_single_lane_word(*load, *count, *element, *index, rt_first, xn)?,
+            Self::VecLoadStoreReplicate {
+                count,
+                arrangement,
+                rt_first,
+                xn,
+            } => vec_ldst_replicate_word(*count, *arrangement, rt_first, xn)?,
+            Self::VecLoadStoreMultiplePostIndex {
+                kind,
+                load,
+                arrangement,
+                rt_first,
+                xn,
+                xm,
+            } => {
+                vec_ldst_multiple_word(*kind, *load, *arrangement, rt_first, xn)
+                    | post_index_bits(*xm)?
+            }
+            Self::VecLoadStoreSingleLanePostIndex {
+                load,
+                count,
+                element,
+                index,
+                rt_first,
+                xn,
+                xm,
+            } => {
+                vec_ldst_single_lane_word(*load, *count, *element, *index, rt_first, xn)?
+                    | post_index_bits(*xm)?
+            }
+            Self::VecLoadStoreReplicatePostIndex {
+                count,
+                arrangement,
+                rt_first,
+                xn,
+                xm,
+            } => {
+                vec_ldst_replicate_word(*count, *arrangement, rt_first, xn)? | post_index_bits(*xm)?
+            }
+            Self::VecAddPairwiseLong { op, narrow, rd, rn } => {
+                vec_add_pairwise_long_word(*op, *narrow, rd, rn)?
+            }
+            Self::VecFpConvertLength {
+                op,
+                wide,
+                high,
+                rd,
+                rn,
+            } => vec_fp_convert_length_word(*op, *wide, *high, rd, rn)?,
+            Self::VecFcmla {
+                arrangement,
+                rd,
+                rn,
+                rm,
+                rotation,
+            } => vec_fcmla_word(*arrangement, rd, rn, rm, *rotation)?,
+            Self::VecFcadd {
+                arrangement,
+                rd,
+                rn,
+                rm,
+                rotation,
+            } => vec_fcadd_word(*arrangement, rd, rn, rm, *rotation)?,
+            Self::VecFcmlaByElement {
+                arrangement,
+                rd,
+                rn,
+                vm,
+                index,
+                rotation,
+            } => vec_fcmla_by_element_word(*arrangement, rd, rn, vm, *index, *rotation)?,
+            Self::VecShll { high, size, rd, rn } => vec_shll_word(*high, *size, rd, rn)?,
+            Self::VecRdm {
+                op,
+                arrangement,
+                rd,
+                rn,
+                rm,
+            } => vec_rdm_word(*op, *arrangement, rd, rn, rm)?,
+            Self::VecRdmByElement {
+                op,
+                arrangement,
+                rd,
+                rn,
+                vm,
+                index,
+            } => vec_rdm_by_element_word(*op, *arrangement, rd, rn, vm, *index)?,
+            Self::VecAes { op, rd, rn } => op.base() | vec_two_regs(rd, rn),
+            Self::VecSha3 { op, rd, rn, rm } => op.base() | vec_three_regs(rd, rn, rm),
+            Self::VecSha2 { op, rd, rn } => op.base() | vec_two_regs(rd, rn),
+            Self::VecDotProduct {
+                unsigned,
+                arrangement,
+                rd,
+                rn,
+                rm,
+            } => vec_dot_product_word(*unsigned, *arrangement, rd, rn, rm)?,
+            Self::VecDotProductByElement {
+                unsigned,
+                arrangement,
+                rd,
+                rn,
+                vm,
+                index,
+            } => vec_dot_product_by_element_word(*unsigned, *arrangement, rd, rn, vm, *index)?,
+            Self::VecMatrixMultiply { op, rd, rn, rm } => op.base() | vec_three_regs(rd, rn, rm),
+            Self::VecUsdot {
+                arrangement,
+                rd,
+                rn,
+                rm,
+            } => vec_usdot_word(*arrangement, rd, rn, rm)?,
+            Self::VecMixedDotByElement {
+                op,
+                arrangement,
+                rd,
+                rn,
+                vm,
+                index,
+            } => vec_mixed_dot_by_element_word(*op, *arrangement, rd, rn, vm, *index)?,
+            Self::ScalarThreeSame {
+                op,
+                element,
+                rd,
+                rn,
+                rm,
+            } => {
+                if !op.allows_size(element.size_bits()) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "scalar three-same op does not allow this element size",
+                    });
+                }
+                op.base() | (element.size_bits() << 22) | vec_three_regs(rd, rn, rm)
+            }
+            Self::ScalarFpThreeSame {
+                op,
+                double,
+                rd,
+                rn,
+                rm,
+            } => op.base() | (u32::from(*double) << 22) | vec_three_regs(rd, rn, rm),
+            Self::ScalarTwoMisc {
+                op,
+                element,
+                rd,
+                rn,
+            } => {
+                if !op.allows_size(element.size_bits()) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "scalar two-register-misc op does not allow this element size",
+                    });
+                }
+                op.base() | (element.size_bits() << 22) | vec_two_regs(rd, rn)
+            }
+            Self::ScalarFpTwoMisc { op, double, rd, rn } => {
+                op.base() | (u32::from(*double) << 22) | vec_two_regs(rd, rn)
+            }
+            Self::ScalarNarrow {
+                op,
+                dst_element,
+                rd,
+                rn,
+            } => {
+                if matches!(dst_element, Arm64VectorElement::D) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "scalar narrow destination must be .b/.h/.s (the source is one size wider)",
+                    });
+                }
+                op.base() | (dst_element.size_bits() << 22) | vec_two_regs(rd, rn)
+            }
+            Self::ScalarFcvtxn { rd, rn } => 0x7E61_6800 | vec_two_regs(rd, rn),
+            Self::ScalarShiftImm {
+                op,
+                element,
+                rd,
+                rn,
+                shift,
+            } => scalar_shift_imm_word(*op, *element, rd, rn, *shift)?,
+            Self::ScalarShiftNarrow {
+                op,
+                narrow_element,
+                rd,
+                rn,
+                shift,
+            } => {
+                if matches!(narrow_element, Arm64VectorElement::D) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "scalar narrowing shift destination must be .b/.h/.s (source is one size wider)",
+                    });
+                }
+                let narrow_bits = 8u32 << narrow_element.size_bits();
+                let shift = *shift as u32;
+                if shift == 0 || shift > narrow_bits {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "scalar narrowing shift amount must be 1..narrow_bits",
+                    });
+                }
+                op.base() | ((2 * narrow_bits - shift) << 16) | vec_two_regs(rd, rn)
+            }
+            Self::ScalarFixedConvert {
+                op,
+                element,
+                rd,
+                rn,
+                fbits,
+            } => {
+                if !matches!(element, Arm64VectorElement::S | Arm64VectorElement::D) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "scalar fixed-point convert element must be .s or .d",
+                    });
+                }
+                let esize = 8u32 << element.size_bits();
+                let fbits = *fbits as u32;
+                if fbits == 0 || fbits > esize {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "scalar fixed-point fbits must be 1..esize",
+                    });
+                }
+                op.base() | ((2 * esize - fbits) << 16) | vec_two_regs(rd, rn)
+            }
+            Self::Fp8ConvertLong { op, upper, rd, rn } => {
+                FP8_CVTL_BASE
+                    | (op.size_bits() << 22)
+                    | (u32::from(*upper) << 30)
+                    | vec_two_regs(rd, rn)
+            }
+            Self::Fp8Dot {
+                half,
+                wide,
+                rd,
+                rn,
+                rm,
+            } => {
+                FP8_DOT_BASE
+                    | (u32::from(*half) << 22)
+                    | (u32::from(*wide) << 30)
+                    | vec_three_regs(rd, rn, rm)
+            }
+            Self::Fp8MlalLong { top, rd, rn, rm } => {
+                FP8_MLAL_LONG_BASE | (u32::from(*top) << 30) | vec_three_regs(rd, rn, rm)
+            }
+            Self::Fp8MlalLongLong {
+                first_top,
+                second_top,
+                rd,
+                rn,
+                rm,
+            } => {
+                FP8_MLALL_BASE
+                    | (u32::from(*first_top) << 30)
+                    | (u32::from(*second_top) << 22)
+                    | vec_three_regs(rd, rn, rm)
+            }
+            Self::Fp8DotByElement {
+                half,
+                wide,
+                rd,
+                rn,
+                vm,
+                index,
+            } => {
+                // 2-way folds the index halfword-style (size 01: Vm v0-v15, index 0..=7); 4-way word-style (size 10:
+                // Vm v0-v31, index 0..=3). The instruction's size field is 01 (2-way) / 00 (4-way) -- bit22 = `half`.
+                let fold = if *half { 0b01 } else { 0b10 };
+                let (rm, m, l, h) = byelem_fields(fold, vm.as_operand_bits(), *index).ok_or(EncodeError::InvalidOperandCombination {
+                    detail: "FP8 FDOT-by-element Vm/index out of range (2-way: Vm v0-v15, index 0..=7; 4-way: Vm v0-v31, index 0..=3)",
+                })?;
+                (FP8_IDX_DOT_MLALB_BASE | (u32::from(*half) << 22))
+                    | (u32::from(*wide) << 30)
+                    | (l << 21)
+                    | (m << 20)
+                    | (rm << 16)
+                    | (h << 11)
+                    | vec_two_regs(rd, rn)
+            }
+            Self::Fp8MlalLongByElement {
+                top,
+                rd,
+                rn,
+                vm,
+                index,
+            } => {
+                if vm.as_operand_bits() > 7 || *index > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "FP8 FMLALB/T-by-element needs Vm v0-v7 and index 0..=15",
+                    });
+                }
+                let (i, vmb) = (*index as u32, vm.as_operand_bits() as u32);
+                0x0FC0_0000
+                    | (u32::from(*top) << 30)
+                    | ((i >> 3) << 11)
+                    | ((i & 0b111) << 19)
+                    | (vmb << 16)
+                    | vec_two_regs(rd, rn)
+            }
+            Self::Fp8MlalLongLongByElement {
+                first_top,
+                second_top,
+                rd,
+                rn,
+                vm,
+                index,
+            } => {
+                if vm.as_operand_bits() > 7 || *index > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "FP8 FMLALL-by-element needs Vm v0-v7 and index 0..=15",
+                    });
+                }
+                let (i, vmb) = (*index as u32, vm.as_operand_bits() as u32);
+                FP8_IDX_MLALL_BASE
+                    | (u32::from(*first_top) << 30)
+                    | (u32::from(*second_top) << 22)
+                    | ((i >> 3) << 11)
+                    | ((i & 0b111) << 19)
+                    | (vmb << 16)
+                    | vec_two_regs(rd, rn)
+            }
+            Self::VecFp16ThreeSame {
+                op,
+                wide,
+                rd,
+                rn,
+                rm,
+            } => op.fp16_base() | (u32::from(*wide) << 30) | vec_three_regs(rd, rn, rm),
+            Self::VecFp16TwoMisc { op, wide, rd, rn } => {
+                op.base() | (u32::from(*wide) << 30) | vec_two_regs(rd, rn)
+            }
+            Self::VecFp16ByElement {
+                op,
+                wide,
+                rd,
+                rn,
+                vm,
+                index,
+            } => {
+                let (rm, m, l, h) = byelem_fields(0b01, vm.as_operand_bits(), *index).ok_or(
+                    EncodeError::InvalidOperandCombination {
+                        detail: "FP16 by-element index out of range (0..=7)",
+                    },
+                )?;
+                op.base()
+                    | (u32::from(*wide) << 30)
+                    | (l << 21)
+                    | (m << 20)
+                    | (rm << 16)
+                    | (h << 11)
+                    | vec_two_regs(rd, rn)
+            }
+            Self::VecFp16Across { op, wide, rd, rn } => {
+                op.base() | (u32::from(*wide) << 30) | vec_two_regs(rd, rn)
+            }
+            Self::VecFmovImmediate {
+                arrangement,
+                imm8,
+                rd,
+            } => {
+                let (q, op, o2): (u32, u32, u32) = match arrangement {
+                    Arm64VectorArrangement::S2 => (0, 0, 0),
+                    Arm64VectorArrangement::S4 => (1, 0, 0),
+                    Arm64VectorArrangement::D2 => (1, 1, 0),
+                    Arm64VectorArrangement::H4 => (0, 0, 1),
+                    Arm64VectorArrangement::H8 => (1, 0, 1),
+                    _ => {
+                        return Err(EncodeError::InvalidOperandCombination {
+                            detail: "FMOV vector-immediate is .2s/.4s/.2d/.4h/.8h",
+                        });
+                    }
+                };
+                let imm8 = *imm8 as u32;
+                0x0F00_F400
+                    | (q << 30)
+                    | (op << 29)
+                    | (o2 << 11)
+                    | (((imm8 >> 5) & 7) << 16)
+                    | ((imm8 & 0x1F) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::ScalarFp16ThreeSame { op, rd, rn, rm } => {
+                op.fp16_base() | vec_three_regs(rd, rn, rm)
+            }
+            Self::ScalarFp16TwoMisc { op, rd, rn } => op.fp16_base() | vec_two_regs(rd, rn),
+            Self::ScalarFp16ByElement {
+                op,
+                rd,
+                rn,
+                vm,
+                index,
+            } => {
+                if !matches!(
+                    op,
+                    Arm64ScalarByElementOp::Fmul
+                        | Arm64ScalarByElementOp::Fmla
+                        | Arm64ScalarByElementOp::Fmls
+                        | Arm64ScalarByElementOp::Fmulx
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "scalar FP16 by-element is FMUL/FMLA/FMLS/FMULX only",
+                    });
+                }
+                let (rm, m, l, h) = byelem_fields(0b01, vm.as_operand_bits(), *index).ok_or(
+                    EncodeError::InvalidOperandCombination {
+                        detail: "scalar FP16 by-element index out of range (0..=7)",
+                    },
+                )?;
+                op.base() | (l << 21) | (m << 20) | (rm << 16) | (h << 11) | vec_two_regs(rd, rn)
+            }
+            Self::ScalarAddp { rd, rn } => 0x5EF1_B800 | vec_two_regs(rd, rn),
+            Self::ScalarFpPairwise { op, double, rd, rn } => {
+                op.base() | (u32::from(*double) << 22) | vec_two_regs(rd, rn)
+            }
+            Self::ScalarDup {
+                element,
+                rd,
+                rn,
+                index,
+            } => {
+                if *index >= element.lane_count() {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "scalar DUP lane index out of range for the element size",
+                    });
+                }
+                0x5E00_0400 | (lane_imm5(*element, *index) << 16) | vec_two_regs(rd, rn)
+            }
+            Self::ScalarByElement {
+                op,
+                element,
+                rd,
+                rn,
+                vm,
+                index,
+            } => {
+                if !op.allows_size(element.size_bits()) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "scalar by-element op does not allow this element size",
+                    });
+                }
+                let (rm, m, l, h) =
+                    byelem_fields(element.size_bits(), vm.as_operand_bits(), *index).ok_or(
+                        EncodeError::InvalidOperandCombination {
+                            detail: "scalar by-element index out of range",
+                        },
+                    )?;
+                op.base()
+                    | (element.size_bits() << 22)
+                    | (l << 21)
+                    | (m << 20)
+                    | (rm << 16)
+                    | (h << 11)
+                    | vec_two_regs(rd, rn)
+            }
+            Self::ScalarByElementLong {
+                op,
+                src_element,
+                rd,
+                rn,
+                vm,
+                index,
+            } => {
+                let size = src_element.size_bits();
+                if size != 0b01 && size != 0b10 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "scalar by-element long source must be .h or .s",
+                    });
+                }
+                let (rm, m, l, h) = byelem_fields(size, vm.as_operand_bits(), *index).ok_or(
+                    EncodeError::InvalidOperandCombination {
+                        detail: "scalar by-element long index out of range",
+                    },
+                )?;
+                op.base()
+                    | (size << 22)
+                    | (l << 21)
+                    | (m << 20)
+                    | (rm << 16)
+                    | (h << 11)
+                    | vec_two_regs(rd, rn)
+            }
+            Self::VecCrypto3 { op, rd, rn, rm } => op.base() | vec_three_regs(rd, rn, rm),
+            Self::VecCrypto2 { op, rd, rn } => op.base() | vec_two_regs(rd, rn),
+            Self::VecCrypto4 { op, rd, rn, rm, ra } => {
+                op.base()
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((ra.as_operand_bits() as u32) << 10)
+                    | vec_two_regs(rd, rn)
+            }
+            Self::VecXar { rd, rn, rm, rotate } => {
+                if *rotate > 63 {
+                    return Err(EncodeError::ImmediateOutOfRange {
+                        field: "XAR rotate",
+                        value: *rotate as i64,
+                        minimum: 0,
+                        maximum: 63,
+                    });
+                }
+                0xCE80_0000
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((*rotate as u32) << 10)
+                    | vec_two_regs(rd, rn)
+            }
+            Self::VecSm3Tt {
+                op,
+                rd,
+                rn,
+                vm,
+                index,
+            } => {
+                if *index > 3 {
+                    return Err(EncodeError::ImmediateOutOfRange {
+                        field: "SM3TT index",
+                        value: *index as i64,
+                        minimum: 0,
+                        maximum: 3,
+                    });
+                }
+                op.base()
+                    | ((vm.as_operand_bits() as u32) << 16)
+                    | ((*index as u32) << 12)
+                    | vec_two_regs(rd, rn)
+            }
+            Self::VecPmull {
+                high,
+                poly64,
+                rd,
+                rn,
+                rm,
+            } => {
+                let size = if *poly64 { 0b11 } else { 0b00 };
+                0x0E20_E000 | (u32::from(*high) << 30) | (size << 22) | vec_three_regs(rd, rn, rm)
+            }
+            Self::VecBfdot {
+                arrangement,
+                rd,
+                rn,
+                rm,
+            } => vec_bfdot_word(*arrangement, rd, rn, rm)?,
+            Self::VecBfdotByElement {
+                arrangement,
+                rd,
+                rn,
+                vm,
+                index,
+            } => vec_bfdot_by_element_word(*arrangement, rd, rn, vm, *index)?,
+            Self::VecBfmmla { rd, rn, rm } => 0x6E40_EC00 | vec_three_regs(rd, rn, rm),
+            Self::VecBfmlal { top, rd, rn, rm } => {
+                0x2EC0_FC00 | (u32::from(*top) << 30) | vec_three_regs(rd, rn, rm)
+            }
+            Self::VecBfmlalByElement {
+                top,
+                rd,
+                rn,
+                vm,
+                index,
+            } => vec_bfmlal_by_element_word(*top, rd, rn, vm, *index)?,
+            Self::VecBfcvtn { top, rd, rn } => {
+                0x0EA1_6800 | (u32::from(*top) << 30) | vec_two_regs(rd, rn)
+            }
+            Self::BfConvertScalar { rd, rn } => 0x1E63_4000 | vec_two_regs(rd, rn),
+            Self::VecDupGeneral {
+                arrangement,
+                rd,
+                rn,
+            } => vec_dup_general_word(*arrangement, rd, rn)?,
+            Self::VecUmov {
+                element,
+                index,
+                rd,
+                vn,
+            } => vec_umov_word(*element, *index, rd, vn)?,
+            Self::VecSmov {
+                width,
+                element,
+                index,
+                rd,
+                vn,
+            } => vec_smov_word(*width, *element, *index, rd, vn)?,
+            Self::VecInsGeneral {
+                element,
+                index,
+                vd,
+                rn,
+            } => vec_ins_general_word(*element, *index, vd, rn)?,
+            Self::FCmp(precision, fn_, fm) => {
+                FCMP_REG_BASE
+                    | (precision.ftype() << 22)
+                    | ((fm.as_operand_bits() as u32) << 16)
+                    | ((fn_.as_operand_bits() as u32) << 5)
+            }
+            Self::FCmpZero(precision, fn_) => {
+                FCMP_ZERO_BASE | (precision.ftype() << 22) | ((fn_.as_operand_bits() as u32) << 5)
+            }
+            Self::FCmpE(precision, fn_, fm) => {
+                FCMPE_REG_BASE
+                    | (precision.ftype() << 22)
+                    | ((fm.as_operand_bits() as u32) << 16)
+                    | ((fn_.as_operand_bits() as u32) << 5)
+            }
+            Self::FCmpEZero(precision, fn_) => {
+                FCMPE_ZERO_BASE | (precision.ftype() << 22) | ((fn_.as_operand_bits() as u32) << 5)
+            }
+            Self::FccmpScalar {
+                precision,
+                signaling,
+                fn_,
+                fm,
+                nzcv,
+                cond,
+            } => {
+                if *nzcv > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "FCCMP/FCCMPE nzcv is a 4-bit value (0..=15)",
+                    });
+                }
+                FCCMP_BASE
+                    | (precision.ftype() << 22)
+                    | ((fm.as_operand_bits() as u32) << 16)
+                    | ((cond.as_operand_bits() as u32) << 12)
+                    | ((fn_.as_operand_bits() as u32) << 5)
+                    | ((*signaling as u32) << 4)
+                    | (*nzcv as u32)
+            }
+
+            Self::Scvtf(fp_precision, gp_width, fd, rn) => {
+                int_to_fp_word(SCVTF_BASE, *fp_precision, *gp_width, fd, rn)
+            }
+            Self::Ucvtf(fp_precision, gp_width, fd, rn) => {
+                int_to_fp_word(UCVTF_BASE, *fp_precision, *gp_width, fd, rn)
+            }
+            Self::Fcvtzs(gp_width, fp_precision, rd, fn_) => {
+                fp_to_int_word(FCVTZS_BASE, *gp_width, *fp_precision, rd, fn_)
+            }
+            Self::Fcvtzu(gp_width, fp_precision, rd, fn_) => {
+                fp_to_int_word(FCVTZU_BASE, *gp_width, *fp_precision, rd, fn_)
+            }
+            Self::FcvtFpToIntRound {
+                op,
+                gp_width,
+                fp_precision,
+                rd,
+                fn_,
+            } => fp_to_int_word(
+                FP_TO_INT_ROUND_BASE | (op.rmode() << 19) | (op.opcode() << 16),
+                *gp_width,
+                *fp_precision,
+                rd,
+                fn_,
+            ),
+
+            Self::FmovGeneralToFp(size, fd, rn) => {
+                let bit = size.sf(); // W<->S => sf = ftype = 0; X<->D => both 1
+                FMOV_GENERAL_TO_FP_BASE
+                    | (bit << 31)
+                    | (bit << 22)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (fd.as_operand_bits() as u32)
+            }
+            Self::FmovFpToGeneral(size, rd, fn_) => {
+                let bit = size.sf();
+                FMOV_FP_TO_GENERAL_BASE
+                    | (bit << 31)
+                    | (bit << 22)
+                    | ((fn_.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            // FMOV half: ftype = 11; the GP width (sf) is independent of the (fixed) half precision.
+            Self::FmovHalfToGeneral(width, rd, fn_) => {
+                FMOV_FP_TO_GENERAL_BASE
+                    | (width.sf() << 31)
+                    | (0b11 << 22)
+                    | ((fn_.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::FmovGeneralToHalf(width, fd, rn) => {
+                FMOV_GENERAL_TO_FP_BASE
+                    | (width.sf() << 31)
+                    | (0b11 << 22)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (fd.as_operand_bits() as u32)
+            }
+            // FMOV top-half: rmode = 01, ftype = 10, sf = 1 (X-only).
+            Self::FmovTopHalfToGeneral(rd, vn) => {
+                FMOV_TOP_HALF_TO_GENERAL_BASE
+                    | (1 << 31)
+                    | (0b10 << 22)
+                    | ((vn.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::FmovGeneralToTopHalf(vd, rn) => {
+                FMOV_GENERAL_TO_TOP_HALF_BASE
+                    | (1 << 31)
+                    | (0b10 << 22)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (vd.as_operand_bits() as u32)
+            }
+
+            Self::FMovImmediate(precision, fd, imm8) => {
+                FMOV_IMM_BASE
+                    | (precision.ftype() << 22)
+                    | ((*imm8 as u32) << 13)
+                    | (fd.as_operand_bits() as u32)
+            }
+
+            Self::FMax(precision, fd, fn_, fm) => {
+                float_data2_word(FMAX_FP_BASE, *precision, fd, fn_, fm)
+            }
+            Self::FMin(precision, fd, fn_, fm) => {
+                float_data2_word(FMIN_FP_BASE, *precision, fd, fn_, fm)
+            }
+            Self::FMaxnm(precision, fd, fn_, fm) => {
+                float_data2_word(FMAXNM_FP_BASE, *precision, fd, fn_, fm)
+            }
+            Self::FMinnm(precision, fd, fn_, fm) => {
+                float_data2_word(FMINNM_FP_BASE, *precision, fd, fn_, fm)
+            }
+            Self::FNmul(precision, fd, fn_, fm) => {
+                float_data2_word(FNMUL_FP_BASE, *precision, fd, fn_, fm)
+            }
+
+            Self::FRoundIntScalar {
+                op,
+                precision,
+                fd,
+                fn_,
+            } => float_data1_word(op.base(), *precision, fd, fn_),
+            Self::FRintX(precision, fd, fn_) => {
+                float_data1_word(FRINTX_FP_BASE, *precision, fd, fn_)
+            }
+            Self::FRintI(precision, fd, fn_) => {
+                float_data1_word(FRINTI_FP_BASE, *precision, fd, fn_)
+            }
+            Self::FRintN(precision, fd, fn_) => {
+                float_data1_word(FRINTN_FP_BASE, *precision, fd, fn_)
+            }
+            Self::FRintP(precision, fd, fn_) => {
+                float_data1_word(FRINTP_FP_BASE, *precision, fd, fn_)
+            }
+            Self::FRintM(precision, fd, fn_) => {
+                float_data1_word(FRINTM_FP_BASE, *precision, fd, fn_)
+            }
+            Self::FRintZ(precision, fd, fn_) => {
+                float_data1_word(FRINTZ_FP_BASE, *precision, fd, fn_)
+            }
+            Self::FRintA(precision, fd, fn_) => {
+                float_data1_word(FRINTA_FP_BASE, *precision, fd, fn_)
+            }
+
+            Self::FMadd(precision, fd, fn_, fm, fa) => {
+                float_data3_word(FMADD_FP_BASE, *precision, fd, fn_, fm, fa)
+            }
+            Self::FMsub(precision, fd, fn_, fm, fa) => {
+                float_data3_word(FMSUB_FP_BASE, *precision, fd, fn_, fm, fa)
+            }
+            Self::FNmadd(precision, fd, fn_, fm, fa) => {
+                float_data3_word(FNMADD_FP_BASE, *precision, fd, fn_, fm, fa)
+            }
+            Self::FNmsub(precision, fd, fn_, fm, fa) => {
+                float_data3_word(FNMSUB_FP_BASE, *precision, fd, fn_, fm, fa)
+            }
+
+            Self::FCsel(precision, fd, fn_, fm, cond) => {
+                FCSEL_FP_BASE
+                    | (precision.ftype() << 22)
+                    | ((fm.as_operand_bits() as u32) << 16)
+                    | ((cond.as_operand_bits() as u32) << 12)
+                    | ((fn_.as_operand_bits() as u32) << 5)
+                    | (fd.as_operand_bits() as u32)
+            }
+
+            Self::Rbit(width, xd, xn) => dp_one_source_word(RBIT_BASE, *width, xd, xn),
+            Self::Rev16(width, xd, xn) => dp_one_source_word(REV16_BASE, *width, xd, xn),
+            Self::Rev(width, xd, xn) => {
+                // REV's opcode differs by width: W uses opcode 000010, X uses 000011.
+                let base = if matches!(width, Arm64RegisterWidth::X) {
+                    REV_OPC011_BASE
+                } else {
+                    REV_OPC010_BASE
+                };
+                base | (width.sf() << 31)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (xd.as_operand_bits() as u32)
+            }
+            Self::Rev32(xd, xn) => {
+                REV_OPC010_BASE
+                    | (1 << 31)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (xd.as_operand_bits() as u32)
+            }
+            Self::Clz(width, xd, xn) => dp_one_source_word(CLZ_BASE, *width, xd, xn),
+            Self::Cls(width, xd, xn) => dp_one_source_word(CLS_BASE, *width, xd, xn),
+            Self::CsscUnary { op, width, rd, rn } => dp_one_source_word(op.base(), *width, rd, rn),
+            Self::CsscMinMaxReg {
+                op,
+                width,
+                rd,
+                rn,
+                rm,
+            } => two_source_word(op.reg_base(), *width, rd, rn, rm),
+            Self::CsscMinMaxImm {
+                op,
+                width,
+                rd,
+                rn,
+                imm,
+            } => {
+                if op.imm_is_signed() {
+                    check_signed_range("CSSC min/max immediate", *imm as i64, -128, 127)?;
+                } else {
+                    check_signed_range("CSSC min/max immediate", *imm as i64, 0, 255)?;
+                }
+                CSSC_MINMAX_IMM_BASE
+                    | (width.sf() << 31)
+                    | (op.imm_opcode() << 18)
+                    | (((*imm as u32) & 0xFF) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+
+            Self::Adc(width, xd, xn, xm) => two_source_word(ADC_BASE, *width, xd, xn, xm),
+            Self::Sbc(width, xd, xn, xm) => two_source_word(SBC_BASE, *width, xd, xn, xm),
+            Self::Adcs(width, xd, xn, xm) => two_source_word(ADCS_BASE, *width, xd, xn, xm),
+            Self::Sbcs(width, xd, xn, xm) => two_source_word(SBCS_BASE, *width, xd, xn, xm),
+
+            Self::Extr(width, xd, xn, xm, lsb) => {
+                let max = if matches!(width, Arm64RegisterWidth::X) {
+                    63
+                } else {
+                    31
+                };
+                check_unsigned_maximum("lsb", *lsb as u32, max)?;
+                let base = if matches!(width, Arm64RegisterWidth::X) {
+                    EXTR_X_BASE
+                } else {
+                    EXTR_W_BASE
+                };
+                base | ((xm.as_operand_bits() as u32) << 16)
+                    | ((*lsb as u32) << 10)
+                    | ((xn.as_operand_bits() as u32) << 5)
+                    | (xd.as_operand_bits() as u32)
+            }
+
+            Self::SvePtrue {
+                sets_flags,
+                size,
+                pattern,
+                pd,
+            } => {
+                check_unsigned_maximum("pattern", *pattern as u32, 31)?;
+                SVE_PTRUE_BASE
+                    | (size.size_bits() << 22)
+                    | ((*sets_flags as u32) << 16)
+                    | ((*pattern as u32) << 5)
+                    | (pd.as_operand_bits() as u32)
+            }
+            Self::SveIntBinaryUnpredicated {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+            } => {
+                SVE_INT_BIN_UNPRED_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (op.opcode() << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveWhile {
+                op,
+                size,
+                compare_64,
+                pd,
+                rn,
+                rm,
+            } => {
+                SVE_WHILE_BASE
+                    | (size.size_bits() << 22)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((*compare_64 as u32) << 12)
+                    | (op.unsigned_bit() << 11)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (op.equal_bit() << 4)
+                    | (pd.as_operand_bits() as u32)
+            }
+            Self::SveIntBinaryPredicated {
+                op,
+                size,
+                pg,
+                zdn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_PRED_INT_BIN_BASE
+                    | (size.size_bits() << 22)
+                    | (op.opcode() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::SveContiguousLoad {
+                load,
+                pg,
+                zt,
+                rn,
+                imm4,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_signed_range("imm4", *imm4 as i64, -8, 7)?;
+                SVE_LD1_BASE
+                    | (load.dtype() << 21)
+                    | (((*imm4 as u32) & 0xF) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveContiguousStore {
+                msize,
+                esize,
+                pg,
+                zt,
+                rn,
+                imm4,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_signed_range("imm4", *imm4 as i64, -8, 7)?;
+                if esize.size_bits() < msize.size_bits() {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "SVE store element size must be >= the access size",
+                    });
+                }
+                let dtype = (msize.size_bits() << 2) | esize.size_bits();
+                SVE_ST1_BASE
+                    | (dtype << 21)
+                    | (((*imm4 as u32) & 0xF) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveContiguousLoadScalar {
+                load,
+                pg,
+                zt,
+                rn,
+                rm,
+            } => {
+                check_governing_predicate(*pg)?;
+                if rm.as_operand_bits() == 31 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SVE scalar+scalar index Xm cannot be XZR (use the scalar+immediate form)",
+                    });
+                }
+                SVE_LD1_SS_BASE
+                    | (load.dtype() << 21)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveContiguousStoreScalar {
+                msize,
+                esize,
+                pg,
+                zt,
+                rn,
+                rm,
+            } => {
+                check_governing_predicate(*pg)?;
+                if esize.size_bits() < msize.size_bits() {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "SVE store element size must be >= the access size",
+                    });
+                }
+                if rm.as_operand_bits() == 31 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SVE scalar+scalar index Xm cannot be XZR (use the scalar+immediate form)",
+                    });
+                }
+                let dtype = (msize.size_bits() << 2) | esize.size_bits();
+                SVE_ST1_SS_BASE
+                    | (dtype << 21)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveLoadReplicate {
+                load,
+                pg,
+                zt,
+                rn,
+                imm6,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_unsigned_maximum("imm6", *imm6 as u32, 63)?;
+                let dtype = load.dtype();
+                SVE_LD1R_BASE
+                    | ((dtype >> 2) << 23)
+                    | ((*imm6 as u32) << 16)
+                    | ((dtype & 0b11) << 13)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveLoadReplicateQuadScalar {
+                size,
+                pg,
+                zt,
+                rn,
+                rm,
+            } => {
+                check_governing_predicate(*pg)?;
+                if rm.as_operand_bits() == 31 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SVE scalar+scalar index Xm cannot be XZR (use the scalar+immediate form)",
+                    });
+                }
+                SVE_LD1RQ_SS_BASE
+                    | (size.size_bits() << 23)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveLoadReplicateQuadImm {
+                size,
+                pg,
+                zt,
+                rn,
+                imm4,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_signed_range("imm4", *imm4 as i64, -8, 7)?;
+                SVE_LD1RQ_IMM_BASE
+                    | (size.size_bits() << 23)
+                    | (((*imm4 as u32) & 0xF) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveNonTemporalScalar {
+                store,
+                size,
+                pg,
+                zt,
+                rn,
+                rm,
+            } => {
+                check_governing_predicate(*pg)?;
+                if rm.as_operand_bits() == 31 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SVE scalar+scalar index Xm cannot be XZR (use the scalar+immediate form)",
+                    });
+                }
+                let base = if *store {
+                    SVE_NT_STORE_SS_BASE
+                } else {
+                    SVE_NT_LOAD_SS_BASE
+                };
+                base | (size.size_bits() << 23)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveNonTemporalImm {
+                store,
+                size,
+                pg,
+                zt,
+                rn,
+                imm4,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_signed_range("imm4", *imm4 as i64, -8, 7)?;
+                let base = if *store {
+                    SVE_NT_STORE_IMM_BASE
+                } else {
+                    SVE_NT_LOAD_IMM_BASE
+                };
+                base | (size.size_bits() << 23)
+                    | (((*imm4 as u32) & 0xF) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveStructuredLoadStoreImm {
+                store,
+                count,
+                size,
+                zt,
+                pg,
+                rn,
+                imm4,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_signed_range("imm4", *imm4 as i64, -8, 7)?;
+                let base = if *store {
+                    SVE_STRUCT_ST_IMM_BASE
+                } else {
+                    SVE_STRUCT_LD_IMM_BASE
+                };
+                base | (size.size_bits() << 23)
+                    | (count.count_bits() << 21)
+                    | (((*imm4 as u32) & 0xF) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveStructuredLoadStoreScalar {
+                store,
+                count,
+                size,
+                zt,
+                pg,
+                rn,
+                rm,
+            } => {
+                check_governing_predicate(*pg)?;
+                if rm.as_operand_bits() == 31 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SVE structured load/store scalar index Xm cannot be XZR (use the scalar+immediate form)",
+                    });
+                }
+                let base = if *store {
+                    SVE_STRUCT_ST_SS_BASE
+                } else {
+                    SVE_STRUCT_LD_SS_BASE
+                };
+                base | (size.size_bits() << 23)
+                    | (count.count_bits() << 21)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveLoadFirstFault {
+                load,
+                pg,
+                zt,
+                rn,
+                rm,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_LDFF1_SS_BASE
+                    | (load.dtype() << 21)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveLoadNonFault {
+                load,
+                pg,
+                zt,
+                rn,
+                imm4,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_signed_range("imm4", *imm4 as i64, -8, 7)?;
+                SVE_LDNF1_IMM_BASE
+                    | (load.dtype() << 21)
+                    | (((*imm4 as u32) & 0xF) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveLoadReplicateOctScalar {
+                size,
+                pg,
+                zt,
+                rn,
+                rm,
+            } => {
+                check_governing_predicate(*pg)?;
+                if rm.as_operand_bits() == 31 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SVE scalar+scalar index Xm cannot be XZR (use the scalar+immediate form)",
+                    });
+                }
+                SVE_LD1RO_SS_BASE
+                    | (size.size_bits() << 23)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveLoadReplicateOctImm {
+                size,
+                pg,
+                zt,
+                rn,
+                imm4,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_signed_range("imm4", *imm4 as i64, -8, 7)?;
+                SVE_LD1RO_IMM_BASE
+                    | (size.size_bits() << 23)
+                    | (((*imm4 as u32) & 0xF) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SvePrefetchImm {
+                msz,
+                prfop,
+                pg,
+                rn,
+                imm6,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_unsigned_maximum("prfop", *prfop as u32, 15)?;
+                check_signed_range("imm6", *imm6 as i64, -32, 31)?;
+                SVE_PRF_IMM_BASE
+                    | (msz.size_bits() << 13)
+                    | (((*imm6 as u32) & 0x3F) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (*prfop as u32)
+            }
+            Self::SvePrefetchScalar {
+                msz,
+                prfop,
+                pg,
+                rn,
+                rm,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_unsigned_maximum("prfop", *prfop as u32, 15)?;
+                if rm.as_operand_bits() == 31 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SVE scalar+scalar index Xm cannot be XZR (use the scalar+immediate form)",
+                    });
+                }
+                SVE_PRF_SS_BASE
+                    | (msz.size_bits() << 23)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (*prfop as u32)
+            }
+            Self::SveGatherPrefetchVectorImm {
+                msz,
+                element,
+                prfop,
+                pg,
+                zn,
+                imm5,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_unsigned_maximum("prfop", *prfop as u32, 15)?;
+                check_unsigned_maximum("imm5", *imm5 as u32, 31)?;
+                if !matches!(element, Arm64VectorElement::S | Arm64VectorElement::D) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE gather-prefetch base element must be .s or .d",
+                    });
+                }
+                let esz_d = (matches!(element, Arm64VectorElement::D)) as u32;
+                SVE_GATHER_PRF_IMM_BASE
+                    | (esz_d << 30)
+                    | (msz.size_bits() << 23)
+                    | ((*imm5 as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (*prfop as u32)
+            }
+            Self::SveGatherPrefetchScalarVector {
+                msz,
+                element,
+                mode,
+                prfop,
+                pg,
+                rn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_unsigned_maximum("prfop", *prfop as u32, 15)?;
+                if !matches!(element, Arm64VectorElement::S | Arm64VectorElement::D) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE gather-prefetch offset element must be .s or .d",
+                    });
+                }
+                if matches!(mode, Arm64SveOffsetMode::Lsl)
+                    && !matches!(element, Arm64VectorElement::D)
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE gather-prefetch LSL offset requires a .d offset vector",
+                    });
+                }
+                let esz_d = (matches!(element, Arm64VectorElement::D)) as u32;
+                SVE_GATHER_PRF_SV_BASE
+                    | (esz_d << 30)
+                    | (mode.xs_bit() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (mode.lsl_bit() << 15)
+                    | (msz.size_bits() << 13)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (*prfop as u32)
+            }
+            Self::SveGatherLoadVectorImm {
+                msz,
+                element,
+                signed,
+                pg,
+                zt,
+                zn,
+                imm5,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_unsigned_maximum("imm5", *imm5 as u32, 31)?;
+                check_sve_gather_element(*msz, *element, *signed)?;
+                let esz = (matches!(element, Arm64VectorElement::D)) as u32;
+                SVE_GATHER_VEC_IMM_BASE
+                    | (esz << 30)
+                    | (msz.size_bits() << 23)
+                    | ((*imm5 as u32) << 16)
+                    | ((!*signed as u32) << 14)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveScatterStoreVectorImm {
+                msz,
+                element,
+                pg,
+                zt,
+                zn,
+                imm5,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_unsigned_maximum("imm5", *imm5 as u32, 31)?;
+                if !matches!(element, Arm64VectorElement::S | Arm64VectorElement::D) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE scatter base element must be .s or .d",
+                    });
+                }
+                if msz.size_bits() > element.size_bits() {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE scatter access size cannot exceed the element size",
+                    });
+                }
+                let element_s = (matches!(element, Arm64VectorElement::S)) as u32;
+                SVE_SCATTER_VEC_IMM_BASE
+                    | (msz.size_bits() << 23)
+                    | (element_s << 21)
+                    | ((*imm5 as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveScatterStoreScalarVector {
+                msz,
+                element,
+                mode,
+                scaled,
+                pg,
+                zt,
+                rn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                if !matches!(element, Arm64VectorElement::S | Arm64VectorElement::D) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE scatter offset element must be .s or .d",
+                    });
+                }
+                if matches!(mode, Arm64SveOffsetMode::Lsl)
+                    && !matches!(element, Arm64VectorElement::D)
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE scatter LSL offset requires a .d offset vector",
+                    });
+                }
+                if msz.size_bits() > element.size_bits() {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE scatter access size cannot exceed the element size",
+                    });
+                }
+                let element_s = (matches!(element, Arm64VectorElement::S)) as u32;
+                SVE_SCATTER_SV_BASE
+                    | (msz.size_bits() << 23)
+                    | (element_s << 22)
+                    | ((*scaled as u32) << 21)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (mode.signed_bit() << 14)
+                    | (mode.lsl_bit() << 13)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveGatherLoadScalarVector {
+                msz,
+                element,
+                signed,
+                first_fault,
+                mode,
+                scaled,
+                pg,
+                zt,
+                rn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_sve_gather_element(*msz, *element, *signed)?;
+                if matches!(mode, Arm64SveOffsetMode::Lsl)
+                    && !matches!(element, Arm64VectorElement::D)
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE gather LSL offset requires a .d offset vector",
+                    });
+                }
+                if matches!(msz, Arm64VectorElement::B) && *scaled {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "a byte-granule SVE gather has no scaled form (it is the gather-prefetch encoding)",
+                    });
+                }
+                let esz_d = (matches!(element, Arm64VectorElement::D)) as u32;
+                SVE_GATHER_LOAD_SV_BASE
+                    | (esz_d << 30)
+                    | (msz.size_bits() << 23)
+                    | (mode.xs_bit() << 22)
+                    | ((*scaled as u32) << 21)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (mode.lsl_bit() << 15)
+                    | ((!*signed as u32) << 14)
+                    | ((*first_fault as u32) << 13)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::Sve2GatherNonTemporalLoad {
+                msz,
+                element,
+                signed,
+                pg,
+                zt,
+                zn,
+                rm,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_sve_gather_element(*msz, *element, *signed)?;
+                let (base, u_shift) = if matches!(element, Arm64VectorElement::D) {
+                    (SVE2_NT_GATHER_D_BASE, 14)
+                } else {
+                    (SVE2_NT_GATHER_S_BASE, 13)
+                };
+                base | (msz.size_bits() << 23)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((!*signed as u32) << u_shift)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::Sve2ScatterNonTemporalStore {
+                msz,
+                element,
+                pg,
+                zt,
+                zn,
+                rm,
+            } => {
+                check_governing_predicate(*pg)?;
+                if !matches!(element, Arm64VectorElement::S | Arm64VectorElement::D) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE2 NT-scatter base element must be .s or .d",
+                    });
+                }
+                if msz.size_bits() > element.size_bits() {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE2 NT-scatter access size cannot exceed the element size",
+                    });
+                }
+                let element_s = (matches!(element, Arm64VectorElement::S)) as u32;
+                SVE2_NT_SCATTER_BASE
+                    | (msz.size_bits() << 23)
+                    | (element_s << 22)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SmeStartStop { start, target } => {
+                let crm = (target.code() << 1) | (*start as u32);
+                SME_SMSTART_BASE | (crm << 8)
+            }
+            Self::SmeReadStreamingVectorLength { rd, imm6 } => {
+                check_signed_range("imm6", *imm6 as i64, -32, 31)?;
+                SME_RDSVL_BASE | (((*imm6 as u32) & 0x3F) << 5) | (rd.as_operand_bits() as u32)
+            }
+            Self::SmeAddStreamingVectorLength { rd, rn, imm6 } => {
+                check_signed_range("imm6", *imm6 as i64, -32, 31)?;
+                SME_ADDSVL_BASE
+                    | ((rn.as_operand_bits() as u32) << 16)
+                    | (((*imm6 as u32) & 0x3F) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::SmeAddStreamingPredicateLength { rd, rn, imm6 } => {
+                check_signed_range("imm6", *imm6 as i64, -32, 31)?;
+                SME_ADDSPL_BASE
+                    | ((rn.as_operand_bits() as u32) << 16)
+                    | (((*imm6 as u32) & 0x3F) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::SmeFpOuterProduct {
+                precision,
+                subtract,
+                za_tile,
+                pn,
+                pm,
+                zn,
+                zm,
+            } => {
+                check_governing_predicate(*pn)?;
+                check_governing_predicate(*pm)?;
+                if *za_tile > precision.max_tile() {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME outer-product ZA tile is out of range for the element (.s: ZA0-3, .d: ZA0-7)",
+                    });
+                }
+                precision.base()
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((pm.as_operand_bits() as u32) << 13)
+                    | ((pn.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | ((*subtract as u32) << 4)
+                    | (*za_tile as u32)
+            }
+            Self::Sme16BitOuterProductH {
+                bf16,
+                subtract,
+                za_tile,
+                pn,
+                pm,
+                zn,
+                zm,
+            } => {
+                check_governing_predicate(*pn)?;
+                check_governing_predicate(*pm)?;
+                if *za_tile > 1 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the .h outer-product ZA tile is ZA0.H or ZA1.H",
+                    });
+                }
+                SME_16BIT_MOP_H_BASE
+                    | ((*bf16 as u32) << 21)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((pm.as_operand_bits() as u32) << 13)
+                    | ((pn.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | ((*subtract as u32) << 4)
+                    | (*za_tile as u32)
+            }
+            Self::SmeIntOuterProduct {
+                unsigned_first,
+                unsigned_second,
+                subtract,
+                size,
+                za_tile,
+                pn,
+                pm,
+                zn,
+                zm,
+            } => {
+                check_governing_predicate(*pn)?;
+                check_governing_predicate(*pm)?;
+                let max_tile = if matches!(size, Arm64VectorElement::D) {
+                    7
+                } else {
+                    3
+                };
+                if !matches!(size, Arm64VectorElement::S | Arm64VectorElement::D)
+                    || *za_tile > max_tile
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME integer outer product is .s (ZA0-3) or .d (ZA0-7)",
+                    });
+                }
+                let size_d = (matches!(size, Arm64VectorElement::D)) as u32;
+                SME_INT_MOP_BASE
+                    | ((*unsigned_first as u32) << 24)
+                    | (size_d << 22)
+                    | ((*unsigned_second as u32) << 21)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((pm.as_operand_bits() as u32) << 13)
+                    | ((pn.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | ((*subtract as u32) << 4)
+                    | (*za_tile as u32)
+            }
+            Self::SmeBitwiseOuterProduct {
+                subtract,
+                za_tile,
+                pn,
+                pm,
+                zn,
+                zm,
+            } => {
+                check_governing_predicate(*pn)?;
+                check_governing_predicate(*pm)?;
+                if *za_tile > 3 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 bitwise outer product is .s (ZA0-3)",
+                    });
+                }
+                SME_BMOP_BASE
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((pm.as_operand_bits() as u32) << 13)
+                    | ((pn.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | ((*subtract as u32) << 4)
+                    | (*za_tile as u32)
+            }
+            Self::SmeFp8OuterProduct {
+                single,
+                za_tile,
+                pn,
+                pm,
+                zn,
+                zm,
+            } => {
+                check_governing_predicate(*pn)?;
+                check_governing_predicate(*pm)?;
+                let max_tile = if *single { 3 } else { 1 };
+                if *za_tile > max_tile {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the FP8 outer-product ZA tile is .s (ZA0-3) or .h (ZA0-1)",
+                    });
+                }
+                // single (.s/F8F32) => [3]=0; .h (F8F16) => [3]=1. No subtract bit.
+                SME_FP8_MOP_BASE
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((pm.as_operand_bits() as u32) << 13)
+                    | ((pn.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | ((!*single as u32) << 3)
+                    | (*za_tile as u32)
+            }
+            Self::SmeTmop {
+                op,
+                za_tile,
+                zn,
+                zm,
+                zk,
+                index,
+            } => {
+                let max_tile = if op.tile_is_h() { 1 } else { 3 }; // .h -> ZA0-1, .s -> ZA0-3
+                if *za_tile > max_tile {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME TMOP ZA tile is .s (ZA0-3) or .h (ZA0-1)",
+                    });
+                }
+                if zn.as_operand_bits() % 2 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME TMOP Zn source is a 2-vector list -- its base must be even (z0/z2/.../z30)",
+                    });
+                }
+                let zk_bits = zk.as_operand_bits();
+                if !(20..=23).contains(&zk_bits) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME TMOP Zk sparsity register must be z20-z23",
+                    });
+                }
+                if *index > 3 {
+                    return Err(EncodeError::ImmediateOutOfRange {
+                        field: "index",
+                        value: *index as i64,
+                        minimum: 0,
+                        maximum: 3,
+                    });
+                }
+                SME_TMOP_BASE
+                    | op.op_bits()
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (((zk_bits - 20) as u32) << 10)
+                    | (((zn.as_operand_bits() >> 1) as u32) << 6)
+                    | ((*index as u32) << 4)
+                    | (*za_tile as u32)
+            }
+            Self::SmeMop4 {
+                kind,
+                subtract,
+                za_tile,
+                zn,
+                zn_list,
+                zm,
+                zm_list,
+            } => {
+                if *za_tile > 3 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME MOP4 .s accumulator tile is za0-za3",
+                    });
+                }
+                let zn_bits = zn.as_operand_bits();
+                if zn_bits % 2 != 0 || zn_bits > 14 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME MOP4 Zn is an even vector z0-z14 (single or 2-vector-list base)",
+                    });
+                }
+                let zm_bits = zm.as_operand_bits();
+                if zm_bits % 2 != 0 || !(16..=30).contains(&zm_bits) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME MOP4 Zm is an even vector z16-z30 (single or 2-vector-list base)",
+                    });
+                }
+                SME_MOP4_BASE
+                    | kind.selector_bits()
+                    | ((*zm_list as u32) << 20)
+                    | ((((zm_bits - 16) >> 1) as u32) << 17)
+                    | ((*zn_list as u32) << 9)
+                    | (((zn_bits >> 1) as u32) << 6)
+                    | ((*subtract as u32) << 4)
+                    | (*za_tile as u32)
+            }
+            Self::SmeMop4Double {
+                kind,
+                subtract,
+                za_tile,
+                zn,
+                zn_list,
+                zm,
+                zm_list,
+            } => {
+                if *za_tile > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME MOP4 .d accumulator tile is za0-za7",
+                    });
+                }
+                let zn_bits = zn.as_operand_bits();
+                if zn_bits % 2 != 0 || zn_bits > 14 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME MOP4 Zn is an even vector z0-z14 (single or 2-vector-list base)",
+                    });
+                }
+                let zm_bits = zm.as_operand_bits();
+                if zm_bits % 2 != 0 || !(16..=30).contains(&zm_bits) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME MOP4 Zm is an even vector z16-z30 (single or 2-vector-list base)",
+                    });
+                }
+                SME_MOP4_D_BASE
+                    | kind.selector_bits()
+                    | ((*zm_list as u32) << 20)
+                    | ((((zm_bits - 16) >> 1) as u32) << 17)
+                    | ((*zn_list as u32) << 9)
+                    | (((zn_bits >> 1) as u32) << 6)
+                    | ((*subtract as u32) << 4)
+                    | (*za_tile as u32)
+            }
+            Self::SmeMop4Half {
+                bf16,
+                subtract,
+                za_tile,
+                zn,
+                zn_list,
+                zm,
+                zm_list,
+            } => {
+                if *za_tile > 1 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME MOP4 .h accumulator tile is za0 or za1",
+                    });
+                }
+                let zn_bits = zn.as_operand_bits();
+                if zn_bits % 2 != 0 || zn_bits > 14 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME MOP4 Zn is an even vector z0-z14 (single or 2-vector-list base)",
+                    });
+                }
+                let zm_bits = zm.as_operand_bits();
+                if zm_bits % 2 != 0 || !(16..=30).contains(&zm_bits) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME MOP4 Zm is an even vector z16-z30 (single or 2-vector-list base)",
+                    });
+                }
+                SME_MOP4_H_BASE
+                    | ((*bf16 as u32) << 21)
+                    | ((*zm_list as u32) << 20)
+                    | ((((zm_bits - 16) >> 1) as u32) << 17)
+                    | ((*zn_list as u32) << 9)
+                    | (((zn_bits >> 1) as u32) << 6)
+                    | ((*subtract as u32) << 4)
+                    | (*za_tile as u32)
+            }
+            Self::SmeMova {
+                to_vector,
+                size,
+                vertical,
+                za_tile,
+                slice_reg,
+                slice_offset,
+                pg,
+                z,
+            } => {
+                check_governing_predicate(*pg)?;
+                let offs_bits = sme_tile_offset_bits(*size);
+                if *slice_reg > 3
+                    || *za_tile >= (1 << (4 - offs_bits))
+                    || (*slice_offset as u32) >= (1 << offs_bits)
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME MOVA tile/offset/slice-register is out of range for the element size",
+                    });
+                }
+                let tile_offs = ((*za_tile as u32) << offs_bits) | (*slice_offset as u32);
+                let frame = SME_MOVA_BASE
+                    | (size.size_bits() << 22)
+                    | ((*to_vector as u32) << 17)
+                    | ((*vertical as u32) << 15)
+                    | ((*slice_reg as u32) << 13)
+                    | ((pg.as_operand_bits() as u32) << 10);
+                if *to_vector {
+                    frame | (tile_offs << 5) | (z.as_operand_bits() as u32)
+                } else {
+                    frame | ((z.as_operand_bits() as u32) << 5) | tile_offs
+                }
+            }
+            Self::SmeTileLoadStore {
+                store,
+                size,
+                vertical,
+                za_tile,
+                slice_reg,
+                slice_offset,
+                pg,
+                rn,
+                rm,
+            } => {
+                check_governing_predicate(*pg)?;
+                let offs_bits = size.offset_bits();
+                if *slice_reg > 3
+                    || *za_tile >= (1 << (4 - offs_bits))
+                    || (*slice_offset as u32) >= (1 << offs_bits)
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME tile load/store tile/offset/slice-register is out of range for the element size",
+                    });
+                }
+                let tile_offs = ((*za_tile as u32) << offs_bits) | (*slice_offset as u32);
+                SME_TILE_LDST_BASE
+                    | (size.msz_code() << 22)
+                    | ((*store as u32) << 21)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((*vertical as u32) << 15)
+                    | ((*slice_reg as u32) << 13)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | tile_offs
+            }
+            Self::SmeZero { mask } => SME_ZERO_BASE | (*mask as u32),
+            Self::SmeZeroZt0 => 0xC048_0001,
+            Self::SmeAddHorizVert {
+                vertical,
+                size,
+                za_tile,
+                pn,
+                pm,
+                zn,
+            } => {
+                check_governing_predicate(*pn)?;
+                check_governing_predicate(*pm)?;
+                let max_tile = if matches!(size, Arm64VectorElement::D) {
+                    7
+                } else {
+                    3
+                };
+                if !matches!(size, Arm64VectorElement::S | Arm64VectorElement::D)
+                    || *za_tile > max_tile
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "ADDHA/ADDVA is .s (ZA0-3) or .d (ZA0-7)",
+                    });
+                }
+                let size_d = (matches!(size, Arm64VectorElement::D)) as u32;
+                SME_ADDHV_BASE
+                    | (size_d << 22)
+                    | ((*vertical as u32) << 16)
+                    | ((pm.as_operand_bits() as u32) << 13)
+                    | ((pn.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (*za_tile as u32)
+            }
+            Self::SmeArrayLoadStore {
+                store,
+                slice_reg,
+                offset,
+                rn,
+            } => {
+                if *slice_reg > 3 || *offset > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME ZA-array slice register is W12..W15 and the offset is 0..15",
+                    });
+                }
+                SME_ARRAY_LDST_BASE
+                    | ((*store as u32) << 21)
+                    | ((*slice_reg as u32) << 13)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (*offset as u32)
+            }
+            Self::MopsCopy {
+                forward,
+                stage,
+                read_nt,
+                write_nt,
+                read_unpriv,
+                write_unpriv,
+                rd,
+                rs,
+                rn,
+            } => {
+                let base = if *forward {
+                    MOPS_CPYF_BASE
+                } else {
+                    MOPS_CPY_BASE
+                };
+                // options [15:12]: read-nontemporal[15], write-nontemporal[14], read-unprivileged[13], write-unprivileged[12].
+                base | (stage.code() << 22)
+                    | ((*read_nt as u32) << 15)
+                    | ((*write_nt as u32) << 14)
+                    | ((*read_unpriv as u32) << 13)
+                    | ((*write_unpriv as u32) << 12)
+                    | ((rs.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::Sme2MultiVecZipUzp {
+                uzp,
+                size,
+                zd_base,
+                zn,
+                zm,
+            } => {
+                if zd_base.as_operand_bits() & 1 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 two-vector destination list must start at an even Z register",
+                    });
+                }
+                SME2_ZIPUZP2_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (((zd_base.as_operand_bits() as u32) >> 1) << 1)
+                    | (*uzp as u32)
+            }
+            Self::Sme2MultiVecClamp {
+                kind,
+                size,
+                zd_base,
+                zn,
+                zm,
+            } => {
+                if zd_base.as_operand_bits() & 1 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 two-vector destination list must start at an even Z register",
+                    });
+                }
+                if kind.is_fp() && matches!(size, Arm64VectorElement::B) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "FCLAMP operates on .h/.s/.d",
+                    });
+                }
+                if kind.is_bf16() && !matches!(size, Arm64VectorElement::H) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "BFCLAMP operates on .h (BFloat16)",
+                    });
+                }
+                // BFCLAMP lives in the size==00 slot of FCLAMP; every other clamp uses its real element size.
+                let size_bits = if kind.is_bf16() { 0 } else { size.size_bits() };
+                kind.base()
+                    | (size_bits << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (((zd_base.as_operand_bits() as u32) >> 1) << 1)
+                    | kind.low_bit()
+            }
+            Self::Sme2Vgx4Clamp {
+                kind,
+                size,
+                zd_base,
+                zn,
+                zm,
+            } => {
+                if zd_base.as_operand_bits() & 0b11 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 four-vector destination list must start at a multiple-of-4 Z register",
+                    });
+                }
+                if kind.is_fp() && matches!(size, Arm64VectorElement::B) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "FCLAMP operates on .h/.s/.d",
+                    });
+                }
+                if kind.is_bf16() && !matches!(size, Arm64VectorElement::H) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "BFCLAMP operates on .h (BFloat16)",
+                    });
+                }
+                let size_bits = if kind.is_bf16() { 0 } else { size.size_bits() };
+                // The four-register list sets the [11] marker; the destination quad base is Zd>>2 at [4:2].
+                kind.base()
+                    | (1 << 11)
+                    | (size_bits << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (((zd_base.as_operand_bits() as u32) >> 2) << 2)
+                    | kind.low_bit()
+            }
+            Self::Sme2MultiVecMinMax {
+                op,
+                size,
+                zd_base,
+                zm,
+            } => {
+                if zd_base.as_operand_bits() & 1 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 two-vector destination list must start at an even Z register",
+                    });
+                }
+                if op.is_fp() && matches!(size, Arm64VectorElement::B) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FP min/max forms operate on .h/.s/.d",
+                    });
+                }
+                if op.is_bf16() && !matches!(size, Arm64VectorElement::H) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 BF16 min/max forms operate on .h",
+                    });
+                }
+                if zm.as_operand_bits() > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 min/max single source vector is restricted to Z0..Z15",
+                    });
+                }
+                let size_bits = if op.is_bf16() { 0 } else { size.size_bits() }; // BF16 lives in the size==00 slot
+                op.base()
+                    | (size_bits << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (op.bit5() << 5)
+                    | (((zd_base.as_operand_bits() as u32) >> 1) << 1)
+                    | op.bit0()
+            }
+            Self::Sme2MultiVecMinMaxMulti {
+                op,
+                size,
+                zd_base,
+                zm_base,
+            } => {
+                if zd_base.as_operand_bits() & 1 != 0 || zm_base.as_operand_bits() & 1 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 two-vector list must start at an even Z register",
+                    });
+                }
+                if op.is_fp() && matches!(size, Arm64VectorElement::B) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FP min/max forms operate on .h/.s/.d",
+                    });
+                }
+                if op.is_bf16() && !matches!(size, Arm64VectorElement::H) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 BF16 min/max forms operate on .h",
+                    });
+                }
+                // The multi-vector source list sets the [12] marker; the source pair base sits at [20:16] (even) and op.base() folds in the FP [8].
+                let size_bits = if op.is_bf16() { 0 } else { size.size_bits() }; // BF16 lives in the size==00 slot
+                op.base()
+                    | (1 << 12)
+                    | (size_bits << 22)
+                    | ((zm_base.as_operand_bits() as u32) << 16)
+                    | (op.bit5() << 5)
+                    | (((zd_base.as_operand_bits() as u32) >> 1) << 1)
+                    | op.bit0()
+            }
+            Self::Sme2MultiVecShiftMul {
+                op,
+                size,
+                zd_base,
+                zm,
+            } => {
+                if zd_base.as_operand_bits() & 1 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 two-vector destination list must start at an even Z register",
+                    });
+                }
+                if zm.as_operand_bits() > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 shift/multiply single source vector is restricted to Z0..Z15",
+                    });
+                }
+                op.base()
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (((zd_base.as_operand_bits() as u32) >> 1) << 1)
+                    | op.bit0()
+            }
+            Self::Sme2MultiVecShiftMulMulti {
+                op,
+                size,
+                zd_base,
+                zm_base,
+            } => {
+                if zd_base.as_operand_bits() & 1 != 0 || zm_base.as_operand_bits() & 1 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 two-vector list must start at an even Z register",
+                    });
+                }
+                op.base()
+                    | (1 << 12)
+                    | (size.size_bits() << 22)
+                    | ((zm_base.as_operand_bits() as u32) << 16)
+                    | (((zd_base.as_operand_bits() as u32) >> 1) << 1)
+                    | op.bit0()
+            }
+            Self::Sme2MultiVecUnary {
+                op,
+                zd_base,
+                zn_base,
+            } => {
+                if zd_base.as_operand_bits() & 1 != 0 || zn_base.as_operand_bits() & 1 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 two-vector list must start at an even Z register",
+                    });
+                }
+                op.base()
+                    | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                    | (((zd_base.as_operand_bits() as u32) >> 1) << 1)
+            }
+            Self::Sme2Vgx4MinMax {
+                op,
+                size,
+                zd_base,
+                zm,
+            } => {
+                if zd_base.as_operand_bits() & 0b11 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 four-vector list must start at a multiple-of-4 Z register",
+                    });
+                }
+                if op.is_fp() && matches!(size, Arm64VectorElement::B) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FP min/max forms operate on .h/.s/.d",
+                    });
+                }
+                if op.is_bf16() && !matches!(size, Arm64VectorElement::H) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 BF16 min/max forms operate on .h",
+                    });
+                }
+                if zm.as_operand_bits() > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 min/max single source vector is restricted to Z0..Z15",
+                    });
+                }
+                // The four-register list sets the [11] size bit; the destination quad base is Zd>>2 at [4:2]. BF16 -> size==00.
+                let size_bits = if op.is_bf16() { 0 } else { size.size_bits() };
+                op.base()
+                    | (1 << 11)
+                    | (size_bits << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (op.bit5() << 5)
+                    | (((zd_base.as_operand_bits() as u32) >> 2) << 2)
+                    | op.bit0()
+            }
+            Self::Sme2Vgx4MinMaxMulti {
+                op,
+                size,
+                zd_base,
+                zm_base,
+            } => {
+                if zd_base.as_operand_bits() & 0b11 != 0 || zm_base.as_operand_bits() & 0b11 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 four-vector list must start at a multiple-of-4 Z register",
+                    });
+                }
+                if op.is_fp() && matches!(size, Arm64VectorElement::B) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FP min/max forms operate on .h/.s/.d",
+                    });
+                }
+                if op.is_bf16() && !matches!(size, Arm64VectorElement::H) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 BF16 min/max forms operate on .h",
+                    });
+                }
+                let size_bits = if op.is_bf16() { 0 } else { size.size_bits() }; // BF16 -> size==00 slot
+                op.base()
+                    | (1 << 12)
+                    | (1 << 11)
+                    | (size_bits << 22)
+                    | ((zm_base.as_operand_bits() as u32) << 16)
+                    | (op.bit5() << 5)
+                    | (((zd_base.as_operand_bits() as u32) >> 2) << 2)
+                    | op.bit0()
+            }
+            Self::Sme2MultiVecFmul {
+                size,
+                vgx4,
+                multi_src,
+                zd_base,
+                zn_base,
+                zm,
+            } => {
+                if matches!(size, Arm64VectorElement::B) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 multi-vector FMUL operates on .h/.s/.d",
+                    });
+                }
+                let align = if *vgx4 { 0b11 } else { 0b1 }; // four-vec lists start at multiples of 4, two-vec at evens
+                if zd_base.as_operand_bits() & align != 0 || zn_base.as_operand_bits() & align != 0
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 multi-vector list must start at an aligned Z register",
+                    });
+                }
+                if *multi_src {
+                    if zm.as_operand_bits() & align != 0 {
+                        return Err(EncodeError::InvalidOperandCombination {
+                            detail: "an SME2 multi-vector source list must start at an aligned Z register",
+                        });
+                    }
+                } else if zm.as_operand_bits() > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FMUL single source vector is restricted to Z0..Z15",
+                    });
+                }
+                let base = match (*vgx4, *multi_src) {
+                    (false, false) => 0xC120_E800,
+                    (false, true) => 0xC120_E400,
+                    (true, false) => 0xC121_E800,
+                    (true, true) => 0xC121_E400,
+                };
+                let zm_field = if *multi_src {
+                    (zm.as_operand_bits() as u32) >> 1
+                } else {
+                    zm.as_operand_bits() as u32
+                };
+                let (zn_field, zd_field) = if *vgx4 {
+                    (
+                        ((zn_base.as_operand_bits() as u32) >> 2) << 7,
+                        ((zd_base.as_operand_bits() as u32) >> 2) << 2,
+                    )
+                } else {
+                    (
+                        ((zn_base.as_operand_bits() as u32) >> 1) << 6,
+                        ((zd_base.as_operand_bits() as u32) >> 1) << 1,
+                    )
+                };
+                base | (size.size_bits() << 22) | (zm_field << 17) | zn_field | zd_field
+            }
+            Self::Sme2Vgx4ShiftMul {
+                op,
+                size,
+                zd_base,
+                zm,
+            } => {
+                if zd_base.as_operand_bits() & 0b11 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 four-vector list must start at a multiple-of-4 Z register",
+                    });
+                }
+                if zm.as_operand_bits() > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 shift/multiply single source vector is restricted to Z0..Z15",
+                    });
+                }
+                op.base()
+                    | (1 << 11)
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (((zd_base.as_operand_bits() as u32) >> 2) << 2)
+                    | op.bit0()
+            }
+            Self::Sme2Vgx4ShiftMulMulti {
+                op,
+                size,
+                zd_base,
+                zm_base,
+            } => {
+                if zd_base.as_operand_bits() & 0b11 != 0 || zm_base.as_operand_bits() & 0b11 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 four-vector list must start at a multiple-of-4 Z register",
+                    });
+                }
+                op.base()
+                    | (1 << 12)
+                    | (1 << 11)
+                    | (size.size_bits() << 22)
+                    | ((zm_base.as_operand_bits() as u32) << 16)
+                    | (((zd_base.as_operand_bits() as u32) >> 2) << 2)
+                    | op.bit0()
+            }
+            Self::Sme2Vgx4Unary {
+                op,
+                zd_base,
+                zn_base,
+            } => {
+                if zd_base.as_operand_bits() & 0b11 != 0 || zn_base.as_operand_bits() & 0b11 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 four-vector list must start at a multiple-of-4 Z register",
+                    });
+                }
+                // The vgx4 form sets [20] in the [23:16] selector; the field layout is otherwise identical to the 2-vec form.
+                op.base()
+                    | (1 << 20)
+                    | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                    | (((zd_base.as_operand_bits() as u32) >> 1) << 1)
+            }
+            Self::Sme2ZaAddSub {
+                sub,
+                size,
+                four,
+                wv,
+                off,
+                zn_base,
+            } => {
+                if !matches!(size, Arm64VectorElement::S | Arm64VectorElement::D) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 ZA-group add/sub operates on .s or .d",
+                    });
+                }
+                if *wv > 3 || *off > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA slice register is W8..W11 and the offset is 0..=7",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 ZA-group source list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                SME2_ZA_ADDSUB_BASE
+                    | ((size.size_bits() & 1) << 22)
+                    | ((*four as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                    | ((*sub as u32) << 3)
+                    | (*off as u32)
+            }
+            Self::Sme2ZaFpAddSub {
+                sub,
+                size,
+                four,
+                wv,
+                off,
+                zn_base,
+            } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::S | Arm64VectorElement::D | Arm64VectorElement::H
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 ZA-group FADD/FSUB operates on .h, .s or .d",
+                    });
+                }
+                if *wv > 3 || *off > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA slice register is W8..W11 and the offset is 0..=7",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 ZA-group source list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                // .h carries the size at [18]; .d at [22]; .s neither.
+                let size_bit = match size {
+                    Arm64VectorElement::H => 1 << 18,
+                    Arm64VectorElement::D => 1 << 22,
+                    _ => 0,
+                };
+                SME2_ZA_FP_ADDSUB_BASE
+                    | size_bit
+                    | ((*four as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                    | ((*sub as u32) << 3)
+                    | (*off as u32)
+            }
+            Self::Sme2ZaBfAddSub {
+                sub,
+                four,
+                wv,
+                off,
+                zn_base,
+            } => {
+                check_za_group_off(*wv, *off)?;
+                let zn_field = check_za_group_zn(*four, *zn_base)?;
+                SME2_ZA_BF_ADDSUB_BASE
+                    | ((*four as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | zn_field
+                    | ((*sub as u32) << 3)
+                    | (*off as u32)
+            }
+            Self::Sme2ZaBfmlaSingle {
+                sub,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm,
+            } => {
+                check_za_group_off(*wv, *off)?;
+                if zm.as_operand_bits() > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 BF16 ZA-group FMLA single multiplier is Z0..Z15",
+                    });
+                }
+                let zn_field = check_za_group_zn(*four, *zn_base)?;
+                SME2_ZA_BFMLA_SINGLE_BASE
+                    | ((*four as u32) << 20)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | zn_field
+                    | ((*sub as u32) << 3)
+                    | (*off as u32)
+            }
+            Self::Sme2ZaBfmlaMulti {
+                sub,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm_base,
+            } => {
+                check_za_group_off(*wv, *off)?;
+                let align = if *four { 0b11 } else { 0b1 };
+                if zm_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 BF16 ZA-group multiplier list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                let zn_field = check_za_group_zn(*four, *zn_base)?;
+                SME2_ZA_BFMLA_MULTI_BASE
+                    | (((zm_base.as_operand_bits() as u32) >> 1) << 17)
+                    | ((*four as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | zn_field
+                    | ((*sub as u32) << 4)
+                    | (*off as u32)
+            }
+            Self::Sme2ZaBfmlaIndexed {
+                sub,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm,
+                index,
+            } => {
+                check_za_group_off(*wv, *off)?;
+                if zm.as_operand_bits() > 15 || *index > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 BF16 indexed FMLA multiplier is Z0..Z15 and the index is 0..=7",
+                    });
+                }
+                let zn_field = check_za_group_zn(*four, *zn_base)?;
+                // .h index (0..=7) splits: high two bits at [11:10], low bit at [3].
+                SME2_ZA_BFMLA_INDEXED_BASE
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*four as u32) << 15)
+                    | ((*wv as u32) << 13)
+                    | (((*index as u32) >> 1) << 10)
+                    | (((*index as u32) & 1) << 3)
+                    | zn_field
+                    | ((*sub as u32) << 4)
+                    | (*off as u32)
+            }
+            Self::Sme2ZaFmlaSingle {
+                sub,
+                size,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm,
+            } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::S | Arm64VectorElement::D | Arm64VectorElement::H
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 ZA-group FMLA/FMLS operates on .h, .s or .d",
+                    });
+                }
+                if *wv > 3 || *off > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA slice register is W8..W11 and the offset is 0..=7",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 ZA-group source list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                if zm.as_operand_bits() > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 ZA-group FMLA single multiplier is Z0..Z15",
+                    });
+                }
+                // .h (FEAT_SME_F16F16) is a separate base with [10]=1; .s/.d carry the size bit at [22]. Op stays at [3].
+                let base = if matches!(size, Arm64VectorElement::H) {
+                    SME2_ZA_FMLA_SINGLE_HALF_BASE
+                } else {
+                    SME2_ZA_FMLA_SINGLE_BASE | ((size.size_bits() & 1) << 22)
+                };
+                base | ((*four as u32) << 20)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                    | ((*sub as u32) << 3)
+                    | (*off as u32)
+            }
+            Self::Sme2ZaFmlaMulti {
+                sub,
+                size,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm_base,
+            } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::S | Arm64VectorElement::D | Arm64VectorElement::H
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 ZA-group FMLA/FMLS operates on .h, .s or .d",
+                    });
+                }
+                if *wv > 3 || *off > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA slice register is W8..W11 and the offset is 0..=7",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 || zm_base.as_operand_bits() & align != 0
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 ZA-group source/multiplier list bases must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                let zm_field = ((zm_base.as_operand_bits() as u32) >> 1) << 17;
+                if matches!(size, Arm64VectorElement::H) {
+                    // .h multi (FEAT_SME_F16F16): [12:11]=10, [3]=1 fixed, the op (FMLS) moves to [4].
+                    SME2_ZA_FMLA_MULTI_HALF_BASE
+                        | zm_field
+                        | ((*four as u32) << 16)
+                        | ((*wv as u32) << 13)
+                        | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                        | ((*sub as u32) << 4)
+                        | (*off as u32)
+                } else {
+                    SME2_ZA_FMLA_MULTI_BASE
+                        | ((size.size_bits() & 1) << 22)
+                        | zm_field
+                        | ((*four as u32) << 16)
+                        | ((*wv as u32) << 13)
+                        | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                        | ((*sub as u32) << 3)
+                        | (*off as u32)
+                }
+            }
+            Self::Sme2ZaFmlaIndexed {
+                sub,
+                size,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm,
+                index,
+            } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::S | Arm64VectorElement::D | Arm64VectorElement::H
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 ZA-group indexed FMLA/FMLS operates on .h, .s or .d",
+                    });
+                }
+                check_za_group_off(*wv, *off)?;
+                let max_index = match size {
+                    Arm64VectorElement::H => 7,
+                    Arm64VectorElement::S => 3,
+                    _ => 1,
+                };
+                if zm.as_operand_bits() > 15 || *index > max_index {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 indexed FMLA multiplier is Z0..Z15 and the index is in range (.h 0..=7, .s 0..=3, .d 0..=1)",
+                    });
+                }
+                let zn_field = check_za_group_zn(*four, *zn_base)?;
+                let common = ((zm.as_operand_bits() as u32) << 16)
+                    | ((*four as u32) << 15)
+                    | ((*wv as u32) << 13)
+                    | zn_field
+                    | ((*sub as u32) << 4)
+                    | (*off as u32);
+                if matches!(size, Arm64VectorElement::H) {
+                    // .h index (0..=7) splits: high two bits at [11:10], low bit at [3].
+                    SME2_ZA_FMLA_INDEXED_HALF_BASE
+                        | common
+                        | (((*index as u32) >> 1) << 10)
+                        | (((*index as u32) & 1) << 3)
+                } else {
+                    SME2_ZA_FMLA_INDEXED_BASE
+                        | ((size.size_bits() & 1) << 23)
+                        | common
+                        | ((*index as u32) << 10)
+                }
+            }
+            Self::Sme2ZaDotSingle {
+                op,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm,
+            } => {
+                if *wv > 3 || *off > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA slice register is W8..W11 and the offset is 0..=7",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 ZA-group source list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                if zm.as_operand_bits() > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 ZA-group dot single multiplier is Z0..Z15",
+                    });
+                }
+                SME2_ZA_DOT_SINGLE_BASE
+                    | op.discriminant()
+                    | ((*four as u32) << 20)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                    | (*off as u32)
+            }
+            Self::Sme2ZaDotMulti {
+                op,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm_base,
+            } => {
+                if *wv > 3 || *off > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA slice register is W8..W11 and the offset is 0..=7",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 || zm_base.as_operand_bits() & align != 0
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 ZA-group source/multiplier list bases must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                SME2_ZA_DOT_MULTI_BASE
+                    | op.discriminant()
+                    | (((zm_base.as_operand_bits() as u32) >> 1) << 17)
+                    | ((*four as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                    | (*off as u32)
+            }
+            Self::Sme2ZaDotIndexed {
+                op,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm,
+                index,
+            } => {
+                check_za_group_off(*wv, *off)?;
+                let max_index = if matches!(op.za_element(), Arm64VectorElement::D) {
+                    1
+                } else {
+                    3
+                };
+                if zm.as_operand_bits() > 15 || *index > max_index {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 indexed dot multiplier is Z0..Z15 and the index is 0..=3 (.s) / 0..=1 (.d)",
+                    });
+                }
+                let zn_field = check_za_group_zn(*four, *zn_base)?;
+                op.indexed_base()
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*four as u32) << 15)
+                    | ((*wv as u32) << 13)
+                    | ((*index as u32) << 10)
+                    | zn_field
+                    | (*off as u32)
+            }
+            Self::Sme2ZaVdot {
+                op,
+                wv,
+                off,
+                zn_base,
+                zm,
+                index,
+            } => {
+                if *wv > 3 || *off > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA slice register is W8..W11 and the offset is 0..=7",
+                    });
+                }
+                if zm.as_operand_bits() > 15 || *index > op.max_index() {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 VDOT multiplier is Z0..Z15 and the index is in range (0..=3, or 0..=1 for the .d forms)",
+                    });
+                }
+                let four = op.four();
+                let align = if four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 VDOT source list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                let zn = zn_base.as_operand_bits() as u32;
+                let zn_field = if four { (zn >> 2) << 7 } else { (zn >> 1) << 6 };
+                SME2_ZA_VDOT_BASE
+                    | op.op_bits()
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | ((*index as u32) << 10)
+                    | zn_field
+                    | (*off as u32)
+            }
+            Self::Sme2ZaMlalSingle {
+                op,
+                widen,
+                wv,
+                slice,
+                zn,
+                zm,
+            } => {
+                let off = mlal_slice_off(*op, *widen, *wv, *slice, false)?;
+                if zm.as_operand_bits() > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 MLAL single multiplier is Z0..Z15",
+                    });
+                }
+                let base = SME2_ZA_MLAL_SINGLE_BASE
+                    | ((widen.h_source() as u32) << 22)
+                    | ((widen.two_way() as u32) << 11);
+                base | op.op_bits()
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | off
+            }
+            Self::Sme2ZaMlalMulti {
+                op,
+                widen,
+                four,
+                wv,
+                slice,
+                zn_base,
+                zm,
+            } => {
+                let off = mlal_slice_off(*op, *widen, *wv, *slice, false)?;
+                if zm.as_operand_bits() > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 MLAL multi multiplier is Z0..Z15",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 MLAL source list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                let zn = zn_base.as_operand_bits() as u32;
+                let zn_field = if *four {
+                    (zn >> 2) << 7
+                } else {
+                    (zn >> 1) << 6
+                };
+                let base = SME2_ZA_MLAL_MULTI_BASE
+                    | ((widen.h_source() as u32) << 22)
+                    | ((widen.two_way() as u32) << 11);
+                base | op.op_bits()
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*four as u32) << 20)
+                    | ((*wv as u32) << 13)
+                    | zn_field
+                    | off
+            }
+            Self::Sme2ZaMlalMultiZm {
+                op,
+                widen,
+                four,
+                wv,
+                slice,
+                zn_base,
+                zm_base,
+            } => {
+                let off = mlal_slice_off(*op, *widen, *wv, *slice, false)?;
+                let align = if *four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 || zm_base.as_operand_bits() & align != 0
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 MLAL source/multiplier list bases must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                let zn = zn_base.as_operand_bits() as u32;
+                let zn_field = if *four {
+                    (zn >> 2) << 7
+                } else {
+                    (zn >> 1) << 6
+                };
+                let base = SME2_ZA_MLAL_MULTIZM_BASE
+                    | ((widen.h_source() as u32) << 22)
+                    | ((widen.two_way() as u32) << 11);
+                base | op.op_bits()
+                    | (((zm_base.as_operand_bits() as u32) >> 1) << 17)
+                    | ((*four as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | zn_field
+                    | off
+            }
+            Self::Sme2ZaMlalIndexed {
+                op,
+                widen,
+                wv,
+                slice,
+                zn,
+                zm,
+                index,
+            } => {
+                let off = mlal_slice_off(*op, *widen, *wv, *slice, true)?;
+                if zm.as_operand_bits() > 15 || *index > widen.max_index() {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 indexed MLAL multiplier is Z0..Z15 and the index is 0..=7 (.h) / 0..=15 (.b)",
+                    });
+                }
+                let idx = *index as u32;
+                let h = widen.h_source();
+                let two = widen.two_way();
+                let mut w = SME2_ZA_MLAL_INDEXED_BASE
+                    | ((h as u32) << 23)
+                    | ((two as u32) << 22)
+                    | op.op_bits()
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | off;
+                if h {
+                    // .h: [12] is the two-way marker; index (0..=7) at [15]+[11:10].
+                    w |= (two as u32) << 12;
+                    w |= ((idx >> 2) & 1) << 15 | ((idx >> 1) & 1) << 11 | (idx & 1) << 10;
+                } else {
+                    // .b: index (0..=15) at [15]+[12]+[11:10].
+                    w |= ((idx >> 3) & 1) << 15
+                        | ((idx >> 2) & 1) << 12
+                        | ((idx >> 1) & 1) << 11
+                        | (idx & 1) << 10;
+                }
+                w
+            }
+            Self::Sme2ZaFmlalSingle {
+                subtract,
+                wv,
+                slice,
+                zn,
+                zm,
+            } => {
+                let off = fmlal_slice_off(*wv, *slice)?;
+                if zm.as_operand_bits() > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FMLAL single multiplier is Z0..Z15",
+                    });
+                }
+                SME2_ZA_FMLAL_SINGLE_BASE
+                    | ((*subtract as u32) << 3)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | off
+            }
+            Self::Sme2ZaFmlalMulti {
+                subtract,
+                four,
+                wv,
+                slice,
+                zn_base,
+                zm,
+            } => {
+                let off = fmlal_slice_off(*wv, *slice)?;
+                if zm.as_operand_bits() > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FMLAL multi multiplier is Z0..Z15",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FMLAL source list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                let zn = zn_base.as_operand_bits() as u32;
+                let zn_field = if *four {
+                    (zn >> 2) << 7
+                } else {
+                    (zn >> 1) << 6
+                };
+                SME2_ZA_FMLAL_MULTI_BASE
+                    | ((*subtract as u32) << 3)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*four as u32) << 20)
+                    | ((*wv as u32) << 13)
+                    | zn_field
+                    | off
+            }
+            Self::Sme2ZaFmlalIndexed {
+                subtract,
+                wv,
+                slice,
+                zn,
+                zm,
+                index,
+            } => {
+                let off = fmlal_slice_off(*wv, *slice)?;
+                if zm.as_operand_bits() > 15 || *index > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FMLAL indexed multiplier is Z0..Z15 and the index is 0..=7",
+                    });
+                }
+                let idx = *index as u32;
+                SME2_ZA_FMLAL_INDEXED_BASE
+                    | ((*subtract as u32) << 3)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | off
+                    | (((idx >> 2) & 1) << 15)
+                    | (((idx >> 1) & 1) << 11)
+                    | ((idx & 1) << 10)
+            }
+            Self::Sme2ZaFmlalMultiZm {
+                subtract,
+                four,
+                wv,
+                slice,
+                zn_base,
+                zm_base,
+            } => {
+                let off = fmlal_slice_off(*wv, *slice)?;
+                let align = if *four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 || zm_base.as_operand_bits() & align != 0
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FMLAL source/multiplier list bases must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                let zn = zn_base.as_operand_bits() as u32;
+                let zn_field = if *four {
+                    (zn >> 2) << 7
+                } else {
+                    (zn >> 1) << 6
+                };
+                SME2_ZA_FMLAL_MULTIZM_BASE
+                    | ((*subtract as u32) << 3)
+                    | (((zm_base.as_operand_bits() as u32) >> 1) << 17)
+                    | ((*four as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | zn_field
+                    | off
+            }
+            Self::Sme2ZaFdotSingle {
+                bf16,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm,
+            } => {
+                check_za_group_off(*wv, *off)?;
+                if zm.as_operand_bits() > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FDOT single multiplier is Z0..Z15",
+                    });
+                }
+                let zn_field = check_za_group_zn(*four, *zn_base)?;
+                SME2_ZA_FDOT_SINGLE_BASE
+                    | ((*bf16 as u32) << 4)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*four as u32) << 20)
+                    | ((*wv as u32) << 13)
+                    | zn_field
+                    | (*off as u32)
+            }
+            Self::Sme2ZaFdotMulti {
+                bf16,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm_base,
+            } => {
+                check_za_group_off(*wv, *off)?;
+                let zn_field = check_za_group_zn(*four, *zn_base)?;
+                if zm_base.as_operand_bits() & (if *four { 0b11 } else { 0b1 }) != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FDOT multiplier list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                SME2_ZA_FDOT_MULTI_BASE
+                    | ((*bf16 as u32) << 4)
+                    | (((zm_base.as_operand_bits() as u32) >> 1) << 17)
+                    | ((*four as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | zn_field
+                    | (*off as u32)
+            }
+            Self::Sme2ZaFdotIndexed {
+                bf16,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm,
+                index,
+            } => {
+                check_za_group_off(*wv, *off)?;
+                if zm.as_operand_bits() > 15 || *index > 3 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FDOT indexed multiplier is Z0..Z15 and the index is 0..=3",
+                    });
+                }
+                let zn_field = check_za_group_zn(*four, *zn_base)?;
+                SME2_ZA_FDOT_INDEXED_BASE
+                    | ((*bf16 as u32) << 4)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*four as u32) << 15)
+                    | ((*wv as u32) << 13)
+                    | ((*index as u32) << 10)
+                    | zn_field
+                    | (*off as u32)
+            }
+            Self::Sme2ZaFp8DotSingle {
+                size,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm,
+            } => {
+                if !matches!(size, Arm64VectorElement::S | Arm64VectorElement::H) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 FP8 FDOT into ZA accumulates into .h or .s",
+                    });
+                }
+                if *wv > 3 || *off > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA slice register is W8..W11 and the offset is 0..=7",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 ZA-group source list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                if zm.as_operand_bits() > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FP8 FDOT single multiplier is Z0..Z15",
+                    });
+                }
+                let acc_s = matches!(size, Arm64VectorElement::S) as u32;
+                SME2_ZA_FP8_DOT_SINGLE_BASE
+                    | (acc_s << 4)
+                    | ((*four as u32) << 20)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                    | (*off as u32)
+            }
+            Self::Sme2ZaFp8DotMulti {
+                size,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm_base,
+            } => {
+                if !matches!(size, Arm64VectorElement::S | Arm64VectorElement::H) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 FP8 FDOT into ZA accumulates into .h or .s",
+                    });
+                }
+                if *wv > 3 || *off > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA slice register is W8..W11 and the offset is 0..=7",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 || zm_base.as_operand_bits() & align != 0
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 ZA-group source/multiplier list bases must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                let acc_s = matches!(size, Arm64VectorElement::S) as u32;
+                SME2_ZA_FP8_DOT_MULTI_BASE
+                    | (acc_s << 4)
+                    | (((zm_base.as_operand_bits() as u32) >> 1) << 17)
+                    | ((*four as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                    | (*off as u32)
+            }
+            Self::Sme2ZaFp8DotIndexed {
+                size,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm,
+                index,
+            } => {
+                if !matches!(size, Arm64VectorElement::S | Arm64VectorElement::H) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 FP8 indexed FDOT into ZA accumulates into .h or .s",
+                    });
+                }
+                if *wv > 3 || *off > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA slice register is W8..W11 and the offset is 0..=7",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 ZA-group source list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                if zm.as_operand_bits() > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FP8 indexed FDOT multiplier is Z0..Z7",
+                    });
+                }
+                let is_s = matches!(size, Arm64VectorElement::S);
+                if *index > if is_s { 3 } else { 7 } {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FP8 indexed FDOT element index is 0..=7 (.h) or 0..=3 (.s)",
+                    });
+                }
+                let base = match (is_s, *four) {
+                    (false, false) => SME2_ZA_FP8_DOTIDX_H_VGX2_BASE,
+                    (false, true) => SME2_ZA_FP8_DOTIDX_H_VGX4_BASE,
+                    (true, false) => SME2_ZA_FP8_DOTIDX_S_VGX2_BASE,
+                    (true, true) => SME2_ZA_FP8_DOTIDX_S_VGX4_BASE,
+                };
+                let idx = *index as u32;
+                // .h spreads the 3-bit index as bit11:bit10:bit3; .s spreads the 2-bit index as bit11:bit10.
+                let idx_bits = if is_s {
+                    ((idx & 1) << 10) | (((idx >> 1) & 1) << 11)
+                } else {
+                    ((idx & 1) << 3) | (((idx >> 1) & 1) << 10) | (((idx >> 2) & 1) << 11)
+                };
+                let zn = zn_base.as_operand_bits() as u32;
+                let zn_field = if *four {
+                    (zn >> 2) << 7
+                } else {
+                    (zn >> 1) << 6
+                };
+                base | zn_field
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | idx_bits
+                    | (*off as u32)
+            }
+            Self::Sme2ZaFp8VerticalDot {
+                wv,
+                off,
+                zn_base,
+                zm,
+                index,
+            } => {
+                if *wv > 3 || *off > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA slice register is W8..W11 and the offset is 0..=7",
+                    });
+                }
+                if zn_base.as_operand_bits() & 1 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FVDOT source list base must be a multiple of 2 (vgx2)",
+                    });
+                }
+                if zm.as_operand_bits() > 7 || *index > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FVDOT multiplier is Z0..Z7 and the index is 0..=7",
+                    });
+                }
+                let idx = *index as u32;
+                let idx_bits =
+                    ((idx & 1) << 3) | (((idx >> 1) & 1) << 10) | (((idx >> 2) & 1) << 11);
+                SME2_ZA_FP8_FVDOT_BASE
+                    | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | idx_bits
+                    | (*off as u32)
+            }
+            Self::Sme2ZaFp8VerticalDotBottomTop {
+                top,
+                wv,
+                off,
+                zn_base,
+                zm,
+                index,
+            } => {
+                if *wv > 3 || *off > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA slice register is W8..W11 and the offset is 0..=7",
+                    });
+                }
+                if zn_base.as_operand_bits() & 1 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FVDOTB/FVDOTT source list base must be a multiple of 2",
+                    });
+                }
+                if zm.as_operand_bits() > 7 || *index > 3 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FVDOTB/FVDOTT multiplier is Z0..Z7 and the index is 0..=3",
+                    });
+                }
+                let idx = *index as u32;
+                let idx_bits = ((idx & 1) << 3) | (((idx >> 1) & 1) << 10); // index = bit10:bit3
+                SME2_ZA_FP8_FVDOTBT_BASE
+                    | ((*top as u32) << 4)
+                    | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | idx_bits
+                    | (*off as u32)
+            }
+            Self::Sme2ZaFp8MlalSingle {
+                size,
+                wv,
+                slice,
+                zn,
+                zm,
+            } => {
+                if !matches!(size, Arm64VectorElement::S | Arm64VectorElement::H) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 FP8 FMLAL/FMLALL into ZA accumulates into .h (FMLAL) or .s (FMLALL)",
+                    });
+                }
+                if *wv > 3 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA slice register is W8..W11",
+                    });
+                }
+                if zm.as_operand_bits() > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FP8 FMLAL multiplier is Z0..Z15",
+                    });
+                }
+                let is_h = matches!(size, Arm64VectorElement::H);
+                let step = if is_h { 2 } else { 4 };
+                if *slice % step != 0 || *slice / step > if is_h { 3 } else { 1 } {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the FP8 FMLAL slice range is {0,2,4,6}:+1 (.h) or {0,4}:+3 (.s)",
+                    });
+                }
+                let base = if is_h {
+                    SME2_ZA_FP8_FMLAL_H_SINGLE_BASE
+                } else {
+                    SME2_ZA_FP8_FMLALL_S_SINGLE_BASE
+                };
+                base | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | ((*slice / step) as u32)
+            }
+            Self::Sme2ZaFp8MlalMulti {
+                size,
+                four,
+                wv,
+                slice,
+                zn_base,
+                zm,
+            } => {
+                if !matches!(size, Arm64VectorElement::S | Arm64VectorElement::H) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 FP8 FMLAL/FMLALL into ZA accumulates into .h (FMLAL) or .s (FMLALL)",
+                    });
+                }
+                if *wv > 3 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA slice register is W8..W11",
+                    });
+                }
+                if zm.as_operand_bits() > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FP8 FMLAL multiplier is Z0..Z15",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 ZA-group source list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                let is_h = matches!(size, Arm64VectorElement::H);
+                let step = if is_h { 2 } else { 4 };
+                if *slice % step != 0 || *slice / step > if is_h { 3 } else { 1 } {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the FP8 FMLAL slice range is {0,2,4,6}:+1 (.h) or {0,4}:+3 (.s)",
+                    });
+                }
+                let base = (if is_h {
+                    SME2_ZA_FP8_FMLAL_H_MULTI_BASE
+                } else {
+                    SME2_ZA_FP8_FMLALL_S_MULTI_BASE
+                }) | ((*four as u32) << 20);
+                let zn = zn_base.as_operand_bits() as u32;
+                let zn_field = if *four {
+                    (zn >> 2) << 7
+                } else {
+                    (zn >> 1) << 6
+                };
+                base | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | zn_field
+                    | ((*slice / step) as u32)
+            }
+            Self::Sme2ZaFp8MlalIndexed {
+                size,
+                wv,
+                slice,
+                zn,
+                zm,
+                index,
+            } => {
+                if !matches!(size, Arm64VectorElement::S | Arm64VectorElement::H) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 FP8 FMLAL/FMLALL into ZA accumulates into .h (FMLAL) or .s (FMLALL)",
+                    });
+                }
+                if *wv > 3 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA slice register is W8..W11",
+                    });
+                }
+                if zm.as_operand_bits() > 7 || *index > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 FP8 indexed FMLAL multiplier is Z0..Z7 and the index is 0..=15",
+                    });
+                }
+                let is_h = matches!(size, Arm64VectorElement::H);
+                let step = if is_h { 2 } else { 4 };
+                if *slice % step != 0 || *slice / step > if is_h { 3 } else { 1 } {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the FP8 FMLAL slice range is {0,2,4,6}:+1 (.h) or {0,4}:+3 (.s)",
+                    });
+                }
+                let idx = *index as u32;
+                let (base, idx_bits) = if is_h {
+                    (
+                        SME2_ZA_FP8_FMLAL_H_IDX_BASE,
+                        ((idx & 1) << 3)
+                            | (((idx >> 1) & 1) << 10)
+                            | (((idx >> 2) & 1) << 11)
+                            | (((idx >> 3) & 1) << 15),
+                    )
+                } else {
+                    (
+                        SME2_ZA_FP8_FMLALL_S_IDX_BASE,
+                        ((idx & 1) << 10)
+                            | (((idx >> 1) & 1) << 11)
+                            | (((idx >> 2) & 1) << 12)
+                            | (((idx >> 3) & 1) << 15),
+                    )
+                };
+                base | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | idx_bits
+                    | ((*slice / step) as u32)
+            }
+            Self::Sme2ZaFp8MlalMultiZm {
+                size,
+                four,
+                wv,
+                slice,
+                zn_base,
+                zm_base,
+            } => {
+                if !matches!(size, Arm64VectorElement::S | Arm64VectorElement::H) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 FP8 FMLAL/FMLALL into ZA accumulates into .h (FMLAL) or .s (FMLALL)",
+                    });
+                }
+                if *wv > 3 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA slice register is W8..W11",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 || zm_base.as_operand_bits() & align != 0
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 ZA-group source/multiplier list bases must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                let is_h = matches!(size, Arm64VectorElement::H);
+                let step = if is_h { 2 } else { 4 };
+                if *slice % step != 0 || *slice / step > if is_h { 3 } else { 1 } {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the FP8 FMLAL slice range is {0,2,4,6}:+1 (.h) or {0,4}:+3 (.s)",
+                    });
+                }
+                let base = if is_h {
+                    SME2_ZA_FP8_FMLAL_H_GRP_BASE
+                } else {
+                    SME2_ZA_FP8_FMLALL_S_GRP_BASE
+                };
+                let zn = zn_base.as_operand_bits() as u32;
+                let zn_field = if *four {
+                    (zn >> 2) << 7
+                } else {
+                    (zn >> 1) << 6
+                };
+                base | (((zm_base.as_operand_bits() as u32) >> 1) << 17)
+                    | ((*four as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | zn_field
+                    | ((*slice / step) as u32)
+            }
+            Self::Sme2ZaBfmlalSingle {
+                subtract,
+                wv,
+                slice,
+                zn,
+                zm,
+            } => {
+                let off = check_bfmlal_slice(*wv, *slice)?;
+                if zm.as_operand_bits() > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 BFMLAL/BFMLSL multiplier is Z0..Z15",
+                    });
+                }
+                SME2_ZA_BFMLAL_SINGLE_BASE
+                    | ((*subtract as u32) << 3)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | off
+            }
+            Self::Sme2ZaBfmlalMulti {
+                subtract,
+                four,
+                wv,
+                slice,
+                zn_base,
+                zm,
+            } => {
+                let off = check_bfmlal_slice(*wv, *slice)?;
+                if zm.as_operand_bits() > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 BFMLAL/BFMLSL multiplier is Z0..Z15",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 ZA-group source list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                let zn = zn_base.as_operand_bits() as u32;
+                let zn_field = if *four {
+                    (zn >> 2) << 7
+                } else {
+                    (zn >> 1) << 6
+                };
+                SME2_ZA_BFMLAL_MULTI_BASE
+                    | ((*subtract as u32) << 3)
+                    | ((*four as u32) << 20)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | zn_field
+                    | off
+            }
+            Self::Sme2ZaBfmlalIndexed {
+                subtract,
+                wv,
+                slice,
+                zn,
+                zm,
+                index,
+            } => {
+                let off = check_bfmlal_slice(*wv, *slice)?;
+                if zm.as_operand_bits() > 7 || *index > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 indexed BFMLAL/BFMLSL multiplier is Z0..Z7 and the index is 0..=7",
+                    });
+                }
+                let idx = *index as u32;
+                let idx_bits =
+                    ((idx & 1) << 10) | (((idx >> 1) & 1) << 11) | (((idx >> 2) & 1) << 15);
+                SME2_ZA_BFMLAL_IDX_BASE
+                    | ((*subtract as u32) << 3)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | idx_bits
+                    | off
+            }
+            Self::Sme2ZaBfmlalMultiZm {
+                subtract,
+                four,
+                wv,
+                slice,
+                zn_base,
+                zm_base,
+            } => {
+                let off = check_bfmlal_slice(*wv, *slice)?;
+                let align = if *four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 || zm_base.as_operand_bits() & align != 0
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 ZA-group source/multiplier list bases must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                let zn = zn_base.as_operand_bits() as u32;
+                let zn_field = if *four {
+                    (zn >> 2) << 7
+                } else {
+                    (zn >> 1) << 6
+                };
+                SME2_ZA_BFMLAL_GRP_BASE
+                    | ((*subtract as u32) << 3)
+                    | (((zm_base.as_operand_bits() as u32) >> 1) << 17)
+                    | ((*four as u32) << 16)
+                    | ((*wv as u32) << 13)
+                    | zn_field
+                    | off
+            }
+            Self::Sme2MovaArrayToVec {
+                four,
+                wv,
+                off,
+                zd_base,
+            } => {
+                if *wv > 3 || *off > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA array slice register is W8..W11 and the offset is 0..=7",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zd_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 multi-vector list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                SME2_MOVA_ARRAY_TO_VEC_BASE
+                    | ((*wv as u32) << 13)
+                    | ((*four as u32) << 10)
+                    | ((*off as u32) << 5)
+                    | (((zd_base.as_operand_bits() as u32) >> 1) << 1)
+            }
+            Self::Sme2MovaVecToArray {
+                four,
+                wv,
+                off,
+                zn_base,
+            } => {
+                if *wv > 3 || *off > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA array slice register is W8..W11 and the offset is 0..=7",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zn_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 multi-vector list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                SME2_MOVA_VEC_TO_ARRAY_BASE
+                    | ((*wv as u32) << 13)
+                    | ((*four as u32) << 10)
+                    | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                    | (*off as u32)
+            }
+            Self::Sme2MovaTileSlice {
+                to_vector,
+                size,
+                vertical,
+                four,
+                za_tile,
+                slice_reg,
+                slice_offset,
+                z_base,
+            } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::B
+                        | Arm64VectorElement::H
+                        | Arm64VectorElement::S
+                        | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 tile-slice MOVA operates on .b/.h/.s/.d",
+                    });
+                }
+                let size_bits = size.size_bits();
+                let vg_log2 = if *four { 2 } else { 1 };
+                let goff_bits = (4 - size_bits).saturating_sub(vg_log2);
+                if *slice_reg > 3
+                    || (*za_tile as u32) >= (1u32 << size_bits)
+                    || (*slice_offset as u32) >= (1u32 << goff_bits)
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 tile-slice MOVA tile/offset/slice-register is out of range for the element size and vector group",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if z_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 multi-vector list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                let combined = ((*za_tile as u32) << goff_bits) | (*slice_offset as u32);
+                let zb = (z_base.as_operand_bits() as u32) >> 1;
+                let frame = SME2_MOVA_TILE_BASE
+                    | ((*to_vector as u32) << 17)
+                    | (size_bits << 22)
+                    | ((*vertical as u32) << 15)
+                    | ((*slice_reg as u32) << 13)
+                    | ((*four as u32) << 10);
+                if *to_vector {
+                    frame | (combined << 5) | (zb << 1)
+                } else {
+                    frame | (zb << 6) | combined
+                }
+            }
+            Self::Sme2MovazArray {
+                four,
+                wv,
+                off,
+                zd_base,
+            } => {
+                if *wv > 3 || *off > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the ZA array slice register is W8..W11 and the offset is 0..=7",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zd_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 multi-vector list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                SME2_MOVAZ_ARRAY_BASE
+                    | ((*wv as u32) << 13)
+                    | ((*four as u32) << 10)
+                    | ((*off as u32) << 5)
+                    | (((zd_base.as_operand_bits() as u32) >> 1) << 1)
+            }
+            Self::Sme2MovazTileSingle {
+                size,
+                vertical,
+                za_tile,
+                slice_offset,
+                slice_reg,
+                z,
+            } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::B
+                        | Arm64VectorElement::H
+                        | Arm64VectorElement::S
+                        | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "a MOVAZ tile-slice operates on .b/.h/.s/.d",
+                    });
+                }
+                let size_bits = size.size_bits();
+                let goff_bits = 4 - size_bits;
+                if *slice_reg > 3
+                    || (*za_tile as u32) >= (1u32 << size_bits)
+                    || (*slice_offset as u32) >= (1u32 << goff_bits)
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the MOVAZ tile-slice tile/offset/slice-register is out of range for the element size",
+                    });
+                }
+                let combined = ((*za_tile as u32) << goff_bits) | (*slice_offset as u32);
+                SME2_MOVAZ_TILE_SINGLE_BASE
+                    | (size_bits << 22)
+                    | ((*vertical as u32) << 15)
+                    | ((*slice_reg as u32) << 13)
+                    | (combined << 5)
+                    | (z.as_operand_bits() as u32)
+            }
+            Self::Sme2MovazTileMulti {
+                size,
+                vertical,
+                four,
+                za_tile,
+                slice_offset,
+                slice_reg,
+                z_base,
+            } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::B
+                        | Arm64VectorElement::H
+                        | Arm64VectorElement::S
+                        | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "a MOVAZ tile-slice operates on .b/.h/.s/.d",
+                    });
+                }
+                let size_bits = size.size_bits();
+                let vg_log2 = if *four { 2 } else { 1 };
+                let goff_bits = (4 - size_bits).saturating_sub(vg_log2);
+                if *slice_reg > 3
+                    || (*za_tile as u32) >= (1u32 << size_bits)
+                    || (*slice_offset as u32) >= (1u32 << goff_bits)
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the MOVAZ tile-slice tile/offset/slice-register is out of range for the element size and vector group",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if z_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 multi-vector list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                let combined = ((*za_tile as u32) << goff_bits) | (*slice_offset as u32);
+                let zb = (z_base.as_operand_bits() as u32) >> 1;
+                SME2_MOVAZ_TILE_MULTI_BASE
+                    | (size_bits << 22)
+                    | ((*vertical as u32) << 15)
+                    | ((*slice_reg as u32) << 13)
+                    | ((*four as u32) << 10)
+                    | (combined << 5)
+                    | (zb << 1)
+            }
+            Self::Sme2MovtTable { offset, zt } => {
+                if *offset > 3 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the MOVT ZT0 table offset is 0..=3 (MUL VL)",
+                    });
+                }
+                SME2_MOVT_TABLE_BASE | ((*offset as u32) << 12) | (zt.as_operand_bits() as u32)
+            }
+            Self::Sme2MultiVecContiguousImm {
+                store,
+                non_temporal,
+                msz,
+                four,
+                png,
+                zt_base,
+                rn,
+                imm,
+            } => {
+                if !matches!(
+                    msz,
+                    Arm64VectorElement::B
+                        | Arm64VectorElement::H
+                        | Arm64VectorElement::S
+                        | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 multi-vector contiguous load/store uses an access size of .b/.h/.s/.d",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zt_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 multi-vector list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                let vg: i8 = if *four { 4 } else { 2 };
+                if *imm % vg != 0 || *imm / vg < -8 || *imm / vg > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 multi-vector offset must be a multiple of the vector group in -8*VG..=7*VG",
+                    });
+                }
+                let q = (*imm / vg) as u32 & 0xF;
+                SME2_MULTIVEC_LDST_IMM_BASE
+                    | ((*store as u32) << 21)
+                    | (q << 16)
+                    | ((*four as u32) << 15)
+                    | (msz.size_bits() << 13)
+                    | (png.index() << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (((zt_base.as_operand_bits() as u32) >> 1) << 1)
+                    | (*non_temporal as u32)
+            }
+            Self::Sme2MultiVecContiguousScalar {
+                store,
+                non_temporal,
+                msz,
+                four,
+                png,
+                zt_base,
+                rn,
+                rm,
+            } => {
+                if !matches!(
+                    msz,
+                    Arm64VectorElement::B
+                        | Arm64VectorElement::H
+                        | Arm64VectorElement::S
+                        | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 multi-vector contiguous load/store uses an access size of .b/.h/.s/.d",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zt_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 multi-vector list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                if rm.as_operand_bits() == 31 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 multi-vector scalar index register cannot be XZR",
+                    });
+                }
+                SME2_MULTIVEC_LDST_SCALAR_BASE
+                    | ((*store as u32) << 21)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((*four as u32) << 15)
+                    | (msz.size_bits() << 13)
+                    | (png.index() << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (((zt_base.as_operand_bits() as u32) >> 1) << 1)
+                    | (*non_temporal as u32)
+            }
+            Self::Sme2MultiVecStridedImm {
+                store,
+                non_temporal,
+                msz,
+                four,
+                png,
+                strided_base,
+                rn,
+                imm,
+            } => {
+                let n = check_sme2_strided_base(*msz, *four, *strided_base)?;
+                let vg: i8 = if *four { 4 } else { 2 };
+                if *imm % vg != 0 || *imm / vg < -8 || *imm / vg > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 multi-vector offset must be a multiple of the vector group in -8*VG..=7*VG",
+                    });
+                }
+                let q = (*imm / vg) as u32 & 0xF;
+                SME2_MULTIVEC_STRIDED_IMM_BASE
+                    | ((*store as u32) << 21)
+                    | (q << 16)
+                    | ((*four as u32) << 15)
+                    | (msz.size_bits() << 13)
+                    | (png.index() << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | n
+                    | ((*non_temporal as u32) << 3)
+            }
+            Self::Sme2MultiVecStridedScalar {
+                store,
+                non_temporal,
+                msz,
+                four,
+                png,
+                strided_base,
+                rn,
+                rm,
+            } => {
+                let n = check_sme2_strided_base(*msz, *four, *strided_base)?;
+                if rm.as_operand_bits() == 31 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 multi-vector scalar index register cannot be XZR",
+                    });
+                }
+                SME2_MULTIVEC_STRIDED_SCALAR_BASE
+                    | ((*store as u32) << 21)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((*four as u32) << 15)
+                    | (msz.size_bits() << 13)
+                    | (png.index() << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | n
+                    | ((*non_temporal as u32) << 3)
+            }
+            Self::Sme2Luti {
+                lut4,
+                four,
+                half,
+                zd_base,
+                zm,
+                index,
+            } => {
+                let Some((base, shift, max_index)) = luti_form(*lut4, *four, *half) else {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the LUTI4 .b four-register form does not exist",
+                    });
+                };
+                if *index > max_index {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the LUTI segment index is out of range for this form",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zd_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 multi-vector list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+                    });
+                }
+                base | ((*index as u32) << shift)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zd_base.as_operand_bits() as u32)
+            }
+            Self::WhileToPredicateCounter {
+                op,
+                size,
+                four,
+                pn,
+                rn,
+                rm,
+            } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::B
+                        | Arm64VectorElement::H
+                        | Arm64VectorElement::S
+                        | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "a WHILE-to-predicate-counter operates on .b/.h/.s/.d",
+                    });
+                }
+                WHILE_PN_BASE
+                    | (size.size_bits() << 22)
+                    | op.discriminant()
+                    | ((*four as u32) << 13)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | pn.index()
+            }
+            Self::SveQuadPermute {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+            } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::B
+                        | Arm64VectorElement::H
+                        | Arm64VectorElement::S
+                        | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE quadword permute operates on .b/.h/.s/.d",
+                    });
+                }
+                SVE_QUAD_PERMUTE_BASE
+                    | (size.size_bits() << 22)
+                    | op.discriminant()
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveQuadTableLookup { size, zd, zn, zm } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::B
+                        | Arm64VectorElement::H
+                        | Arm64VectorElement::S
+                        | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE quadword table lookup operates on .b/.h/.s/.d",
+                    });
+                }
+                SVE_QUAD_TBLQ_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveQuadTableExtend { size, zd, zn, zm } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::B
+                        | Arm64VectorElement::H
+                        | Arm64VectorElement::S
+                        | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE quadword table lookup operates on .b/.h/.s/.d",
+                    });
+                }
+                SVE_QUAD_TBXQ_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveQuadDupIndexed {
+                size,
+                zd,
+                zn,
+                index,
+            } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::B
+                        | Arm64VectorElement::H
+                        | Arm64VectorElement::S
+                        | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "DUPQ operates on .b/.h/.s/.d",
+                    });
+                }
+                let size_bits = size.size_bits();
+                if (*index as u32) >= (16 >> size_bits) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the DUPQ index is out of range for the element size",
+                    });
+                }
+                let tsz = (1 << size_bits) | ((*index as u32) << (size_bits + 1));
+                SVE_QUAD_DUPQ_BASE
+                    | (tsz << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveQuadExtract { zd, zn, imm } => {
+                if *imm > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the EXTQ immediate is 0..=15",
+                    });
+                }
+                SVE_QUAD_EXTQ_BASE
+                    | ((*imm as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveBf16PredicatedBinary { op, pg, zdn, zm } => {
+                check_governing_predicate(*pg)?;
+                SVE_BF16_PRED_BIN_BASE
+                    | op.discriminant()
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::SveBf16UnpredicatedBinary { op, zd, zn, zm } => {
+                if op.value() > 2 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "unpredicated BF16 binary supports only BFADD/BFSUB/BFMUL",
+                    });
+                }
+                SVE_BF16_UNPRED_BIN_BASE
+                    | (op.value() << 10)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveBf16Clamp { zd, zn, zm } => {
+                SVE_BF16_CLAMP_BASE
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveBf16MulAdd {
+                sub,
+                pg,
+                zda,
+                zn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_BF16_MLA_BASE
+                    | ((*sub as u32) << 13)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::SveBf16MulIndexed { zd, zn, zm, index } => {
+                let zm_bits = zm.as_operand_bits() as u32;
+                if zm_bits > 7 || *index > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "BF16 indexed: Zm must be Z0..Z7 and index 0..=7",
+                    });
+                }
+                let idx = ((((*index as u32) >> 2) & 1) << 22) | (((*index as u32) & 3) << 19);
+                SVE_BF16_MUL_IDX_BASE
+                    | idx
+                    | (zm_bits << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveBf16MulAddIndexed {
+                sub,
+                zda,
+                zn,
+                zm,
+                index,
+            } => {
+                let zm_bits = zm.as_operand_bits() as u32;
+                if zm_bits > 7 || *index > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "BF16 indexed: Zm must be Z0..Z7 and index 0..=7",
+                    });
+                }
+                let idx = ((((*index as u32) >> 2) & 1) << 22) | (((*index as u32) & 3) << 19);
+                SVE_BF16_MLA_IDX_BASE
+                    | ((*sub as u32) << 10)
+                    | idx
+                    | (zm_bits << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::SveQuadReduceInt {
+                op,
+                size,
+                vd,
+                pg,
+                zn,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_INT_REDUCE_BASE
+                    | (size.size_bits() << 22)
+                    | (op.opcode() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (vd.as_operand_bits() as u32)
+            }
+            Self::SveQuadReduceFp {
+                op,
+                size,
+                vd,
+                pg,
+                zn,
+            } => {
+                check_governing_predicate(*pg)?;
+                if matches!(size, Arm64VectorElement::B) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "FP quadword reduction is .h/.s/.d only",
+                    });
+                }
+                SVE_FP_QUAD_REDUCE_BASE
+                    | (size.size_bits() << 22)
+                    | (op.opcode() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (vd.as_operand_bits() as u32)
+            }
+            Self::SveNarrowConvert { op, zd, zn_base } => {
+                if zn_base.as_operand_bits() & 1 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "a two-vector narrowing convert source must start at an even Z register",
+                    });
+                }
+                SVE_NARROW_CONVERT_BASE
+                    | (op.code() << 11)
+                    | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveShiftNarrow {
+                op,
+                zd,
+                zn_base,
+                shift,
+            } => {
+                if zn_base.as_operand_bits() & 1 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "a two-vector shift-narrow source must start at an even Z register",
+                    });
+                }
+                if *shift < 1 || *shift > 16 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "a .h shift-narrow shift amount must be in 1..=16",
+                    });
+                }
+                SVE_SHIFT_NARROW_BASE
+                    | (op.code() << 12)
+                    | ((32 - *shift as u32) << 16)
+                    | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sme2QuadShiftNarrow {
+                op,
+                dest,
+                zd,
+                zn_base,
+                shift,
+            } => {
+                if zn_base.as_operand_bits() & 0b11 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 four-vector list must start at a multiple-of-4 Z register",
+                    });
+                }
+                let v = match dest {
+                    Arm64VectorElement::B => {
+                        if *shift < 1 || *shift > 32 {
+                            return Err(EncodeError::InvalidOperandCombination {
+                                detail: "a .b four-vector shift-narrow shift is 1..=32",
+                            });
+                        }
+                        128 - *shift as u32
+                    }
+                    Arm64VectorElement::H => {
+                        if *shift < 1 || *shift > 64 {
+                            return Err(EncodeError::InvalidOperandCombination {
+                                detail: "a .h four-vector shift-narrow shift is 1..=64",
+                            });
+                        }
+                        if *shift <= 32 {
+                            256 - *shift as u32
+                        } else {
+                            224 - *shift as u32
+                        }
+                    }
+                    _ => {
+                        return Err(EncodeError::InvalidOperandCombination {
+                            detail: "an SME2 four-vector shift-narrow result is .b or .h",
+                        });
+                    }
+                };
+                SME2_QUAD_SHIFT_NARROW_BASE
+                    | (v << 16)
+                    | (((zn_base.as_operand_bits() as u32) >> 2) << 7)
+                    | (op.quad_code() << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sme2ShiftNarrowNoN {
+                op,
+                four,
+                dest,
+                zd,
+                zn_base,
+                shift,
+            } => {
+                use Arm64SveShiftNarrowOp::{Sqrshrn, Sqrshrun, Uqrshrn};
+                if *four {
+                    if zn_base.as_operand_bits() & 0b11 != 0 {
+                        return Err(EncodeError::InvalidOperandCombination {
+                            detail: "an SME2 four-vector list must start at a multiple-of-4 Z register",
+                        });
+                    }
+                    let v = match dest {
+                        Arm64VectorElement::B => {
+                            if *shift < 1 || *shift > 32 {
+                                return Err(EncodeError::InvalidOperandCombination {
+                                    detail: "a .b four-vector shift-narrow shift is 1..=32",
+                                });
+                            }
+                            128 - *shift as u32
+                        }
+                        Arm64VectorElement::H => {
+                            if *shift < 1 || *shift > 64 {
+                                return Err(EncodeError::InvalidOperandCombination {
+                                    detail: "a .h four-vector shift-narrow shift is 1..=64",
+                                });
+                            }
+                            if *shift <= 32 {
+                                256 - *shift as u32
+                            } else {
+                                224 - *shift as u32
+                            }
+                        }
+                        _ => {
+                            return Err(EncodeError::InvalidOperandCombination {
+                                detail: "an SME2 four-vector shift-narrow result is .b or .h",
+                            });
+                        }
+                    };
+                    SME2_SHIFT_NARROW_NON4_BASE
+                        | (v << 16)
+                        | (((zn_base.as_operand_bits() as u32) >> 2) << 7)
+                        | (op.quad_code() << 5)
+                        | (zd.as_operand_bits() as u32)
+                } else {
+                    if !matches!(dest, Arm64VectorElement::H) {
+                        return Err(EncodeError::InvalidOperandCombination {
+                            detail: "an SME2 two-vector shift-narrow result is .h",
+                        });
+                    }
+                    if zn_base.as_operand_bits() & 1 != 0 {
+                        return Err(EncodeError::InvalidOperandCombination {
+                            detail: "an SME2 two-vector list must start at an even Z register",
+                        });
+                    }
+                    if *shift < 1 || *shift > 16 {
+                        return Err(EncodeError::InvalidOperandCombination {
+                            detail: "a .s->.h two-vector shift-narrow shift is 1..=16",
+                        });
+                    }
+                    // op split: to-unsigned (SQRSHRU) at [20], unsigned-source (UQRSHR) at [5].
+                    let (to_uns, uns_src) = match op {
+                        Sqrshrn => (0, 0),
+                        Uqrshrn => (0, 1),
+                        Sqrshrun => (1, 0),
+                    };
+                    SME2_SHIFT_NARROW_NON2_BASE
+                        | ((16 - *shift as u32) << 16)
+                        | (to_uns << 20)
+                        | (uns_src << 5)
+                        | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                        | (zd.as_operand_bits() as u32)
+                }
+            }
+            Self::Sme2UnpackWiden {
+                unsigned,
+                four,
+                src_size,
+                zd_base,
+                zn_base,
+            } => {
+                let size_code = match src_size {
+                    Arm64VectorElement::B => 1,
+                    Arm64VectorElement::H => 2,
+                    Arm64VectorElement::S => 3,
+                    _ => {
+                        return Err(EncodeError::InvalidOperandCombination {
+                            detail: "an SME2 unpack source is .b, .h or .s (widening to .h/.s/.d)",
+                        });
+                    }
+                };
+                if zd_base.as_operand_bits() & 1 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 unpack destination list base must be even (vgx2) or a multiple of 4 (vgx4)",
+                    });
+                }
+                // four=true: vgx4 dest (mult-of-4) + 2-vector source (even base). four=false: single-vector source, any Zn.
+                if *four
+                    && (zd_base.as_operand_bits() & 0b11 != 0 || zn_base.as_operand_bits() & 1 != 0)
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 unpack vgx4 dest is a multiple of 4 and its source list base is even",
+                    });
+                }
+                SME2_UNPACK_WIDEN_BASE
+                    | (size_code << 22)
+                    | ((*four as u32) << 20)
+                    | ((zn_base.as_operand_bits() as u32) << 5)
+                    | (zd_base.as_operand_bits() as u32)
+                    | (*unsigned as u32)
+            }
+            Self::Sme2VectorSelect {
+                size,
+                four,
+                png,
+                zd_base,
+                zn_base,
+                zm_base,
+            } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::B
+                        | Arm64VectorElement::H
+                        | Arm64VectorElement::S
+                        | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 multi-vector SEL operates on .b/.h/.s/.d",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if (zd_base.as_operand_bits()
+                    | zn_base.as_operand_bits()
+                    | zm_base.as_operand_bits())
+                    & align
+                    != 0
+                {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SME2 SEL list bases must be even (vgx2) or a multiple of 4 (vgx4)",
+                    });
+                }
+                SME2_VEC_SELECT_BASE
+                    | (size.size_bits() << 22)
+                    | (((zm_base.as_operand_bits() as u32) >> 1) << 17)
+                    | ((*four as u32) << 16)
+                    | (png.index() << 10)
+                    | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                    | (zd_base.as_operand_bits() as u32)
+            }
+            Self::Sme2NarrowConvert {
+                op,
+                dest,
+                zd,
+                zn_base,
+            } => {
+                if !matches!(dest, Arm64VectorElement::B | Arm64VectorElement::H) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 four-vector narrowing convert produces a .b or .h result",
+                    });
+                }
+                if zn_base.as_operand_bits() & 0b11 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 four-vector list must start at a multiple-of-4 Z register",
+                    });
+                }
+                let dest_size = matches!(dest, Arm64VectorElement::H) as u32; // [23]
+                SME2_NARROW_CONVERT_BASE
+                    | (dest_size << 23)
+                    | op.sme2_op_bits()
+                    | (((zn_base.as_operand_bits() as u32) >> 2) << 7)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sme2NarrowConvertNoN {
+                op,
+                four,
+                dest,
+                zd,
+                zn_base,
+            } => {
+                if *four {
+                    if !matches!(dest, Arm64VectorElement::B | Arm64VectorElement::H) {
+                        return Err(EncodeError::InvalidOperandCombination {
+                            detail: "an SME2 four-vector narrowing convert produces a .b or .h result",
+                        });
+                    }
+                    if zn_base.as_operand_bits() & 0b11 != 0 {
+                        return Err(EncodeError::InvalidOperandCombination {
+                            detail: "an SME2 four-vector list must start at a multiple-of-4 Z register",
+                        });
+                    }
+                    let dest_size = matches!(dest, Arm64VectorElement::H) as u32; // [23]: .d->.h
+                    SME2_NARROW_CVT_NON4_BASE
+                        | (dest_size << 23)
+                        | op.sme2_op_bits()
+                        | (((zn_base.as_operand_bits() as u32) >> 2) << 7)
+                        | (zd.as_operand_bits() as u32)
+                } else {
+                    if !matches!(dest, Arm64VectorElement::H) {
+                        return Err(EncodeError::InvalidOperandCombination {
+                            detail: "an SME2 two-vector narrowing convert produces a .h result",
+                        });
+                    }
+                    if zn_base.as_operand_bits() & 1 != 0 {
+                        return Err(EncodeError::InvalidOperandCombination {
+                            detail: "an SME2 two-vector list must start at an even Z register",
+                        });
+                    }
+                    SME2_NARROW_CVT_NON2_BASE
+                        | op.sme2_op_bits()
+                        | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                        | (zd.as_operand_bits() as u32)
+                }
+            }
+            Self::Sme2FpCvtNarrow { op, zd, zn_base } => {
+                if zn_base.as_operand_bits() & 1 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SME2 two-vector FP narrowing convert source must start at an even Z register",
+                    });
+                }
+                SME2_FP_CVT_NARROW_BASE
+                    | op.op_bits()
+                    | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::WhileToPredicatePair {
+                op,
+                size,
+                pd_base,
+                rn,
+                rm,
+            } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::B
+                        | Arm64VectorElement::H
+                        | Arm64VectorElement::S
+                        | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "a WHILE-to-predicate-pair operates on .b/.h/.s/.d",
+                    });
+                }
+                if pd_base.as_operand_bits() & 1 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the WHILE predicate pair base must be even",
+                    });
+                }
+                WHILE_PAIR_BASE
+                    | (size.size_bits() << 22)
+                    | (op.category() << 10)
+                    | op.eq_bit()
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (((pd_base.as_operand_bits() as u32) >> 1) << 1)
+            }
+            Self::PTruePredicateCounter { size, pn } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::B
+                        | Arm64VectorElement::H
+                        | Arm64VectorElement::S
+                        | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "a PTRUE predicate-counter operates on .b/.h/.s/.d",
+                    });
+                }
+                PTRUE_PN_BASE | (size.size_bits() << 22) | pn.index()
+            }
+            Self::CountPredicateCounter { size, four, pn, rd } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::B
+                        | Arm64VectorElement::H
+                        | Arm64VectorElement::S
+                        | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "a CNTP predicate-counter operates on .b/.h/.s/.d",
+                    });
+                }
+                CNTP_PN_BASE
+                    | (size.size_bits() << 22)
+                    | ((*four as u32) << 10)
+                    | (pn.index() << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::PredicateExtractSingle {
+                size,
+                pd,
+                pn,
+                index,
+            } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::B
+                        | Arm64VectorElement::H
+                        | Arm64VectorElement::S
+                        | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "PEXT operates on .b/.h/.s/.d",
+                    });
+                }
+                if *index > 3 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the PEXT single index is 0..=3",
+                    });
+                }
+                PEXT_SINGLE_BASE
+                    | (size.size_bits() << 22)
+                    | ((*index as u32) << 8)
+                    | (pn.index() << 5)
+                    | (pd.as_operand_bits() as u32)
+            }
+            Self::PredicateExtractPair {
+                size,
+                pd_base,
+                pn,
+                index,
+            } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::B
+                        | Arm64VectorElement::H
+                        | Arm64VectorElement::S
+                        | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "PEXT operates on .b/.h/.s/.d",
+                    });
+                }
+                if *index > 1 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the PEXT pair index is 0..=1",
+                    });
+                }
+                if pd_base.as_operand_bits() & 1 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the PEXT predicate pair base must be even",
+                    });
+                }
+                PEXT_PAIR_BASE
+                    | (size.size_bits() << 22)
+                    | ((*index as u32) << 8)
+                    | (pn.index() << 5)
+                    | (((pd_base.as_operand_bits() as u32) >> 1) << 1)
+            }
+            Self::SmePredicateSelect {
+                size,
+                pd,
+                pn,
+                pm,
+                slice_reg,
+                slice_offset,
+            } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::B
+                        | Arm64VectorElement::H
+                        | Arm64VectorElement::S
+                        | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "PSEL operates on .b/.h/.s/.d",
+                    });
+                }
+                let max_offset = (1u32 << (4 - size.size_bits())) - 1;
+                if *slice_reg > 3 || (*slice_offset as u32) > max_offset {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the PSEL slice register is W12..W15 and the offset range depends on the element size",
+                    });
+                }
+                SME_PSEL_BASE
+                    | sme_psel_tsz_field(*size, *slice_offset as u32)
+                    | ((*slice_reg as u32) << 16)
+                    | ((pn.as_operand_bits() as u32) << 10)
+                    | ((pm.as_operand_bits() as u32) << 5)
+                    | (pd.as_operand_bits() as u32)
+            }
+            Self::MopsSet {
+                tagged,
+                stage,
+                non_temporal,
+                unpriv,
+                rd,
+                rn,
+                rm,
+            } => {
+                let base = if *tagged {
+                    MOPS_SETG_BASE
+                } else {
+                    MOPS_SET_BASE
+                };
+                base | (stage.code() << 14)
+                    | ((*non_temporal as u32) << 13)
+                    | ((*unpriv as u32) << 12)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::SveIntCompareVectors {
+                op,
+                size,
+                pd,
+                pg,
+                zn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_INT_CMP_VEC_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (op.op_high() << 13)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (op.op_low() << 4)
+                    | (pd.as_operand_bits() as u32)
+            }
+            Self::SveFpBinaryPredicated {
+                op,
+                size,
+                pg,
+                zdn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_FP_PRED_BIN_BASE
+                    | (size.size_bits() << 22)
+                    | (op.opcode() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::SveBfscale { pg, zdn, zm } => {
+                check_governing_predicate(*pg)?;
+                SVE_BFSCALE_BASE
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::SvePredExtractIndex {
+                last,
+                size,
+                rd,
+                pg,
+                pn,
+            } => {
+                check_governing_predicate(*pg)?;
+                let op = if *last { 2 } else { 1 };
+                SVE_PRED_EXTRACT_BASE
+                    | (size.size_bits() << 22)
+                    | (op << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((pn.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::SveExpand { size, zd, pg, zn } => {
+                check_governing_predicate(*pg)?;
+                SVE_EXPAND_BASE
+                    | (size.size_bits() << 22)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveFpCompareVectors {
+                op,
+                size,
+                pd,
+                pg,
+                zn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_FP_CMP_VEC_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (op.op_high() << 13)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (op.op_low() << 4)
+                    | (pd.as_operand_bits() as u32)
+            }
+            Self::SveFpAddStrictReduction { size, pg, vdn, zm } => {
+                check_governing_predicate(*pg)?;
+                SVE_FADDA_BASE
+                    | (size.size_bits() << 22)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (vdn.as_operand_bits() as u32)
+            }
+            Self::SveFpTrigMulAdd {
+                size,
+                zdn,
+                zm,
+                imm3,
+            } => {
+                check_unsigned_maximum("imm3", *imm3 as u32, 7)?;
+                SVE_FTMAD_BASE
+                    | (size.size_bits() << 22)
+                    | ((*imm3 as u32) << 16)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::SvePredicateUnpack { high, pd, pn } => {
+                SVE_PUNPK_BASE
+                    | ((*high as u32) << 16)
+                    | ((pn.as_operand_bits() as u32) << 5)
+                    | (pd.as_operand_bits() as u32)
+            }
+            Self::SveRdffrSetFlags { pd, pg } => {
+                SVE_RDFFRS_PRED_BASE
+                    | ((pg.as_operand_bits() as u32) << 5)
+                    | (pd.as_operand_bits() as u32)
+            }
+            Self::Sve2InterleavingEor {
+                top,
+                size,
+                zd,
+                zn,
+                zm,
+            } => {
+                SVE2_EORBT_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*top as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveIndex {
+                size,
+                zd,
+                base,
+                step,
+            } => {
+                let base_field = sve_index_field(base)?;
+                let step_field = sve_index_field(step)?;
+                SVE_INDEX_BASE
+                    | (size.size_bits() << 22)
+                    | (step_field << 16)
+                    | ((step.is_register() as u32) << 11)
+                    | ((base.is_register() as u32) << 10)
+                    | (base_field << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveElementCount {
+                element,
+                rd,
+                pattern,
+                mul,
+            } => {
+                check_unsigned_maximum("pattern", *pattern as u32, 31)?;
+                if !(1..=16).contains(mul) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the MUL factor of an SVE element count must be 1..=16",
+                    });
+                }
+                SVE_CNT_BASE
+                    | (element.size_bits() << 22)
+                    | (((*mul as u32) - 1) << 16)
+                    | ((*pattern as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::SveIncDecScalar {
+                element,
+                decrement,
+                rdn,
+                pattern,
+                mul,
+            } => {
+                check_unsigned_maximum("pattern", *pattern as u32, 31)?;
+                if !(1..=16).contains(mul) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the MUL factor of an SVE inc/dec must be 1..=16",
+                    });
+                }
+                SVE_INCDEC_BASE
+                    | (element.size_bits() << 22)
+                    | (((*mul as u32) - 1) << 16)
+                    | ((*decrement as u32) << 10)
+                    | ((*pattern as u32) << 5)
+                    | (rdn.as_operand_bits() as u32)
+            }
+            Self::SveSaturatingIncDecScalar {
+                element,
+                decrement,
+                unsigned,
+                wide,
+                rdn,
+                pattern,
+                mul,
+            } => {
+                check_unsigned_maximum("pattern", *pattern as u32, 31)?;
+                if !(1..=16).contains(mul) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the MUL factor of an SVE saturating inc/dec must be 1..=16",
+                    });
+                }
+                SVE_SAT_INCDEC_SCALAR_BASE
+                    | (element.size_bits() << 22)
+                    | ((*wide as u32) << 20)
+                    | (((*mul as u32) - 1) << 16)
+                    | ((*decrement as u32) << 11)
+                    | ((*unsigned as u32) << 10)
+                    | ((*pattern as u32) << 5)
+                    | (rdn.as_operand_bits() as u32)
+            }
+            Self::SveSaturatingIncDecVector {
+                element,
+                decrement,
+                unsigned,
+                zd,
+                pattern,
+                mul,
+            } => {
+                if matches!(element, Arm64VectorElement::B) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "SVE saturating vector inc/dec has no byte-element form",
+                    });
+                }
+                check_unsigned_maximum("pattern", *pattern as u32, 31)?;
+                if !(1..=16).contains(mul) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the MUL factor of an SVE saturating inc/dec must be 1..=16",
+                    });
+                }
+                SVE_SAT_INCDEC_VECTOR_BASE
+                    | (element.size_bits() << 22)
+                    | (((*mul as u32) - 1) << 16)
+                    | ((*decrement as u32) << 11)
+                    | ((*unsigned as u32) << 10)
+                    | ((*pattern as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveDupScalar { size, zd, rn } => {
+                SVE_DUP_SCALAR_BASE
+                    | (size.size_bits() << 22)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveDupImmediate {
+                size,
+                zd,
+                imm8,
+                shift,
+            } => {
+                SVE_DUP_IMM_BASE
+                    | (size.size_bits() << 22)
+                    | ((*shift as u32) << 13)
+                    | (((*imm8 as u32) & 0xFF) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveDupIndexed {
+                size,
+                zd,
+                zn,
+                index,
+            } => {
+                // The element size + index pack into a 7-bit `imm2:tsz` lane field: (index << (size+1)) | (1 << size).
+                let lane = (index << (size.size_bits() + 1)) | (1 << size.size_bits());
+                if lane > 0x7F {
+                    return Err(EncodeError::ImmediateOutOfRange {
+                        field: "index",
+                        value: *index as i64,
+                        minimum: 0,
+                        maximum: ((0x7F >> (size.size_bits() + 1)) as i64),
+                    });
+                }
+                let tsz = lane & 0x1F;
+                let imm2 = (lane >> 5) & 0x3;
+                SVE_DUP_IDX_BASE
+                    | (imm2 << 22)
+                    | (tsz << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SvePredicateLogical { op, pd, pg, pn, pm } => {
+                SVE_PRED_LOGICAL_BASE
+                    | op.encoding_bits()
+                    | ((pm.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((pn.as_operand_bits() as u32) << 5)
+                    | (pd.as_operand_bits() as u32)
+            }
+            Self::SveIntUnaryPredicated {
+                op,
+                size,
+                pg,
+                zd,
+                zn,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_PRED_UNARY_BASE
+                    | (size.size_bits() << 22)
+                    | (op.opcode() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveIntUnaryZeroing {
+                op,
+                size,
+                pg,
+                zd,
+                zn,
+            } => {
+                check_governing_predicate(*pg)?;
+                // Same frame as the merging form, but bit [20] cleared (opcode 0x1x -> 0x0x).
+                SVE_PRED_UNARY_BASE
+                    | (size.size_bits() << 22)
+                    | ((op.opcode() & 0xF) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveIntReduction {
+                op,
+                size,
+                vd,
+                pg,
+                zn,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_INT_REDUCE_BASE
+                    | (size.size_bits() << 22)
+                    | (op.opcode() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (vd.as_operand_bits() as u32)
+            }
+            Self::SveFpReduction {
+                op,
+                size,
+                vd,
+                pg,
+                zn,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_FP_REDUCE_BASE
+                    | (size.size_bits() << 22)
+                    | (op.opcode() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (vd.as_operand_bits() as u32)
+            }
+            Self::SveShiftImmediatePredicated {
+                op,
+                size,
+                pg,
+                zdn,
+                shift,
+            } => {
+                check_governing_predicate(*pg)?;
+                let esize = 8u32 << size.size_bits();
+                let shift = *shift as u32;
+                let v = if op.is_left() {
+                    check_signed_range("shift", shift as i64, 0, (esize - 1) as i64)?;
+                    esize + shift
+                } else {
+                    check_signed_range("shift", shift as i64, 1, esize as i64)?;
+                    2 * esize - shift
+                };
+                let (tszh, tszl, imm3) = ((v >> 5) & 0x3, (v >> 3) & 0x3, v & 0x7);
+                SVE_SHIFT_IMM_BASE
+                    | (tszh << 22)
+                    | (op.opc() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | (tszl << 8)
+                    | (imm3 << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::SvePredicateCountScalar {
+                op,
+                size,
+                width,
+                pm,
+                rdn,
+            } => {
+                if op.is_saturating() {
+                    SVE_QINCP_SCALAR_BASE
+                        | (size.size_bits() << 22)
+                        | ((op.decrement() as u32) << 17)
+                        | ((op.unsigned() as u32) << 16)
+                        | (width.sf() << 10)
+                        | ((pm.as_operand_bits() as u32) << 5)
+                        | (rdn.as_operand_bits() as u32)
+                } else {
+                    if !matches!(width, Arm64RegisterWidth::X) {
+                        return Err(EncodeError::InvalidOperandCombination {
+                            detail: "INCP/DECP scalar is always 64-bit (use the X register)",
+                        });
+                    }
+                    SVE_INCP_SCALAR_BASE
+                        | (size.size_bits() << 22)
+                        | ((op.decrement() as u32) << 16)
+                        | ((pm.as_operand_bits() as u32) << 5)
+                        | (rdn.as_operand_bits() as u32)
+                }
+            }
+            Self::SvePredicateCountVector { op, size, pm, zdn } => {
+                if op.is_saturating() {
+                    SVE_QINCP_VECTOR_BASE
+                        | (size.size_bits() << 22)
+                        | ((op.decrement() as u32) << 17)
+                        | ((op.unsigned() as u32) << 16)
+                        | ((pm.as_operand_bits() as u32) << 5)
+                        | (zdn.as_operand_bits() as u32)
+                } else {
+                    SVE_INCP_VECTOR_BASE
+                        | (size.size_bits() << 22)
+                        | ((op.decrement() as u32) << 16)
+                        | ((pm.as_operand_bits() as u32) << 5)
+                        | (zdn.as_operand_bits() as u32)
+                }
+            }
+            Self::SveShiftVectorPredicated {
+                op,
+                size,
+                pg,
+                zdn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_SHIFT_VEC_BASE
+                    | (size.size_bits() << 22)
+                    | (op.opc() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::SveFillSpillVector {
+                store,
+                zt,
+                rn,
+                imm9,
+            } => {
+                check_signed_range("imm9", *imm9 as i64, -256, 255)?;
+                let v = (*imm9 as u32) & 0x1FF;
+                let base = if *store {
+                    SVE_STR_Z_BASE
+                } else {
+                    SVE_LDR_Z_BASE
+                };
+                base | ((v >> 3) << 16)
+                    | ((v & 0x7) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveFillSpillPredicate {
+                store,
+                pt,
+                rn,
+                imm9,
+            } => {
+                check_signed_range("imm9", *imm9 as i64, -256, 255)?;
+                let v = (*imm9 as u32) & 0x1FF;
+                let base = if *store {
+                    SVE_STR_P_BASE
+                } else {
+                    SVE_LDR_P_BASE
+                };
+                base | ((v >> 3) << 16)
+                    | ((v & 0x7) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (pt.as_operand_bits() as u32)
+            }
+            Self::SveFpFma {
+                op,
+                size,
+                pg,
+                zda,
+                zn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_FP_FMA_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (op.opcode() << 13)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::SveBitwiseLogicalUnpredicated { op, zd, zn, zm } => {
+                SVE_BITWISE_LOGICAL_BASE
+                    | (op.opc() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveIntMac {
+                op,
+                size,
+                pg,
+                dst,
+                reg16,
+                reg5,
+            } => {
+                check_governing_predicate(*pg)?;
+                op.base()
+                    | (size.size_bits() << 22)
+                    | ((reg16.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((reg5.as_operand_bits() as u32) << 5)
+                    | (dst.as_operand_bits() as u32)
+            }
+            Self::SveIntCompareImmSigned {
+                op,
+                size,
+                pd,
+                pg,
+                zn,
+                imm5,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_signed_range("imm5", *imm5 as i64, -16, 15)?;
+                SVE_CMP_IMM_SIGNED_BASE
+                    | op.encoding_bits()
+                    | (size.size_bits() << 22)
+                    | (((*imm5 as u32) & 0x1F) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (pd.as_operand_bits() as u32)
+            }
+            Self::SveIntCompareImmUnsigned {
+                op,
+                size,
+                pd,
+                pg,
+                zn,
+                imm7,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_unsigned_maximum("imm7", *imm7 as u32, 127)?;
+                SVE_CMP_IMM_UNSIGNED_BASE
+                    | op.encoding_bits()
+                    | (size.size_bits() << 22)
+                    | ((*imm7 as u32) << 14)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (pd.as_operand_bits() as u32)
+            }
+            Self::SveMovprfxUnpredicated { zd, zn } => {
+                SVE_MOVPRFX_UNPRED_BASE
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveMovprfxPredicated {
+                merge,
+                size,
+                pg,
+                zd,
+                zn,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_MOVPRFX_PRED_BASE
+                    | (size.size_bits() << 22)
+                    | ((*merge as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SvePermute {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+            } => {
+                SVE_PERMUTE_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (op.sve_opcode() << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveFpBinaryUnpredicated {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+            } => {
+                SVE_FP_BIN_UNPRED_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (op.opcode() << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveCopyImmediate {
+                merge,
+                size,
+                pg,
+                zd,
+                imm8,
+                shift,
+            } => {
+                SVE_CPY_IMM_BASE
+                    | (size.size_bits() << 22)
+                    | ((pg.as_operand_bits() as u32) << 16)
+                    | ((*merge as u32) << 14)
+                    | ((*shift as u32) << 13)
+                    | (((*imm8 as u32) & 0xFF) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveCopyScalar { size, pg, zd, rn } => {
+                check_governing_predicate(*pg)?;
+                SVE_CPY_SCALAR_BASE
+                    | (size.size_bits() << 22)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveFdup { size, zd, imm8 } => {
+                if matches!(size, Arm64VectorElement::B) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "SVE FDUP (fmov #imm) is .h/.s/.d only",
+                    });
+                }
+                SVE_FDUP_BASE
+                    | (size.size_bits() << 22)
+                    | ((*imm8 as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveFcpy { size, pg, zd, imm8 } => {
+                if matches!(size, Arm64VectorElement::B) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "SVE FCPY (fmov #imm) is .h/.s/.d only",
+                    });
+                }
+                SVE_FCPY_BASE
+                    | (size.size_bits() << 22)
+                    | ((pg.as_operand_bits() as u32) << 16)
+                    | ((*imm8 as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveReverseElements { size, zd, zn } => {
+                SVE_REV_BASE
+                    | (size.size_bits() << 22)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveReverseBytes {
+                width,
+                size,
+                pg,
+                zd,
+                zn,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_REVB_BASE
+                    | (size.size_bits() << 22)
+                    | (width.opc() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveReverseBytesZeroing {
+                width,
+                size,
+                pg,
+                zd,
+                zn,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_REVB_ZEROING_BASE
+                    | (size.size_bits() << 22)
+                    | (width.opc() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveReverseDoublewords { pg, zd, zn } => {
+                check_governing_predicate(*pg)?;
+                SVE_REVD_BASE
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveTableLookup { size, zd, zn, zm } => {
+                SVE_TBL_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveFpUnaryPredicated {
+                op,
+                size,
+                pg,
+                zd,
+                zn,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_FP_UNARY_BASE
+                    | (size.size_bits() << 22)
+                    | (op.opcode() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveFpUnaryZeroing {
+                op,
+                size,
+                pg,
+                zd,
+                zn,
+            } => {
+                check_governing_predicate(*pg)?;
+                let (opcode6, sub2) = op.zeroing_fields();
+                SVE_FP_UNARY_ZEROING_BASE
+                    | (size.size_bits() << 22)
+                    | (opcode6 << 16)
+                    | (sub2 << 13)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SvePfalse(pd) => SVE_PFALSE_BASE | (pd.as_operand_bits() as u32),
+            Self::SvePtest { pg, pn } => {
+                SVE_PTEST_BASE
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((pn.as_operand_bits() as u32) << 5)
+            }
+            Self::SveRdffr(pd) => SVE_RDFFR_BASE | (pd.as_operand_bits() as u32),
+            Self::SveRdffrPredicated { pd, pg } => {
+                SVE_RDFFR_PRED_BASE
+                    | ((pg.as_operand_bits() as u32) << 5)
+                    | (pd.as_operand_bits() as u32)
+            }
+            Self::SveWrffr(pn) => SVE_WRFFR_BASE | ((pn.as_operand_bits() as u32) << 5),
+            Self::SveSetffr => SVE_SETFFR_WORD,
+            Self::SvePfirst { pdn, pg } => {
+                SVE_PFIRST_BASE
+                    | ((pg.as_operand_bits() as u32) << 5)
+                    | (pdn.as_operand_bits() as u32)
+            }
+            Self::SvePnext { size, pdn, pg } => {
+                SVE_PNEXT_BASE
+                    | (size.size_bits() << 22)
+                    | ((pg.as_operand_bits() as u32) << 5)
+                    | (pdn.as_operand_bits() as u32)
+            }
+            Self::SveInsr { size, zdn, rn } => {
+                SVE_INSR_BASE
+                    | (size.size_bits() << 22)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::SveExtractLast {
+                last_b,
+                size,
+                rd,
+                pg,
+                zn,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_LAST_GP_BASE
+                    | (size.size_bits() << 22)
+                    | ((*last_b as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::SveExtractLastSimd {
+                last_b,
+                size,
+                vd,
+                pg,
+                zn,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_LAST_SIMD_BASE
+                    | (size.size_bits() << 22)
+                    | ((*last_b as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (vd.as_operand_bits() as u32)
+            }
+            Self::SveConditionalExtractVector {
+                last_b,
+                size,
+                pg,
+                zdn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_CLAST_VEC_BASE
+                    | (size.size_bits() << 22)
+                    | ((*last_b as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::SveConditionalExtractGpr {
+                last_b,
+                size,
+                pg,
+                rdn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_CLAST_GP_BASE
+                    | (size.size_bits() << 22)
+                    | ((*last_b as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (rdn.as_operand_bits() as u32)
+            }
+            Self::SveConditionalExtractSimd {
+                last_b,
+                size,
+                pg,
+                vd,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_CLAST_SIMD_BASE
+                    | (size.size_bits() << 22)
+                    | ((*last_b as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (vd.as_operand_bits() as u32)
+            }
+            Self::SveAddressGeneration {
+                mode,
+                shift,
+                zd,
+                zn,
+                zm,
+            } => {
+                if *shift > 3 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SVE ADR shift amount must be 0..=3",
+                    });
+                }
+                SVE_ADR_BASE
+                    | (mode.sel() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*shift as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveFpReciprocalEstimate { sqrt, size, zd, zn } => {
+                SVE_FP_RECIP_EST_BASE
+                    | (size.size_bits() << 22)
+                    | ((*sqrt as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveFexpa { size, zd, zn } => {
+                SVE_FEXPA_BASE
+                    | (size.size_bits() << 22)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveFtssel { size, zd, zn, zm } => {
+                SVE_FTSSEL_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveCompareTerminate { ne, wide, rn, rm } => {
+                SVE_CTERM_BASE
+                    | ((*wide as u32) << 22)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | ((*ne as u32) << 4)
+            }
+            Self::SveFp8Dot { half, zda, zn, zm } => {
+                SVE_FP8_DOT_VEC_BASE
+                    | (u32::from(!*half) << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::SveFp8DotByElement {
+                half,
+                zda,
+                zn,
+                zm,
+                index,
+            } => {
+                let (zm_bits, idx) = (zm.as_operand_bits() as u32, *index as u32);
+                if zm_bits > 7 || (*half && idx > 7) || (!*half && idx > 3) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "SVE FP8 indexed FDOT needs Zm in Z0..Z7 and index 0..7 (.h) / 0..3 (.s)",
+                    });
+                }
+                // .s: 2-bit index in [20:19]. .h: 3-bit index = [20:19]:bit11 with bit11 the LSB.
+                let (hi, lo11) = if *half {
+                    ((idx >> 1) & 0b11, idx & 1)
+                } else {
+                    (idx & 0b11, 0)
+                };
+                SVE_FP8_DOT_IDX_BASE
+                    | (u32::from(!*half) << 22)
+                    | (hi << 19)
+                    | (lo11 << 11)
+                    | (zm_bits << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::SveFp8MlalLong { top, zda, zn, zm } => {
+                SVE_FP8_MLALB_BASE
+                    | (u32::from(*top) << 12)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::SveFp8MlalLongLong {
+                first_top,
+                second_top,
+                zda,
+                zn,
+                zm,
+            } => {
+                SVE_FP8_MLALL_BASE
+                    | (u32::from(*first_top) << 13)
+                    | (u32::from(*second_top) << 12)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::SveFp8MlalLongByElement {
+                top,
+                zda,
+                zn,
+                zm,
+                index,
+            } => {
+                let zm_bits = zm.as_operand_bits() as u32;
+                if zm_bits > 7 || *index > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "SVE FP8 indexed FMLALB/T needs Zm in Z0..Z7 and index 0..15",
+                    });
+                }
+                SVE_FP8_MLALB_IDX_BASE
+                    | (u32::from(*top) << 23)
+                    | sve_fp8_idx_pack(*index as u32)
+                    | (zm_bits << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::SveFp8MlalLongLongByElement {
+                first_top,
+                second_top,
+                zda,
+                zn,
+                zm,
+                index,
+            } => {
+                let zm_bits = zm.as_operand_bits() as u32;
+                if zm_bits > 7 || *index > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "SVE FP8 indexed FMLALL needs Zm in Z0..Z7 and index 0..15",
+                    });
+                }
+                SVE_FP8_MLALL_IDX_BASE
+                    | (u32::from(*first_top) << 23)
+                    | (u32::from(*second_top) << 22)
+                    | sve_fp8_idx_pack(*index as u32)
+                    | (zm_bits << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::SveFp8Convert { op, top, zd, zn } => {
+                SVE_FP8_CONVERT_BASE
+                    | (op.format_bits() << 10)
+                    | (u32::from(*top) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveFp8Narrow { op, zd, zn_base } => {
+                if zn_base.as_operand_bits() & 1 != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE FP8 narrowing convert source list must start at an even Z register",
+                    });
+                }
+                SVE_FP8_NARROW_BASE
+                    | (op.op_bits() << 10)
+                    | (((zn_base.as_operand_bits() as u32) >> 1) << 6)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveDotProduct {
+                unsigned,
+                size,
+                zda,
+                zn,
+                zm,
+            } => {
+                if !matches!(size, Arm64VectorElement::S | Arm64VectorElement::D) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE dot product accumulates into .s or .d only",
+                    });
+                }
+                SVE_DOT_VEC_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*unsigned as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::SveDotProductIndexed {
+                unsigned,
+                size,
+                zda,
+                zn,
+                zm,
+                index,
+            } => {
+                let zm_bits = zm.as_operand_bits() as u32;
+                let idx = *index as u32;
+                let index_zm = match size {
+                    Arm64VectorElement::S => {
+                        if idx > 3 || zm_bits > 7 {
+                            return Err(EncodeError::InvalidOperandCombination {
+                                detail: "an SVE .s indexed dot product needs index 0..3 and Zm in Z0..Z7",
+                            });
+                        }
+                        (idx << 19) | (zm_bits << 16)
+                    }
+                    Arm64VectorElement::D => {
+                        if idx > 1 {
+                            return Err(EncodeError::InvalidOperandCombination {
+                                detail: "an SVE .d indexed dot product needs index 0..1",
+                            });
+                        }
+                        (idx << 20) | (zm_bits << 16)
+                    }
+                    _ => {
+                        return Err(EncodeError::InvalidOperandCombination {
+                            detail: "an SVE dot product accumulates into .s or .d only",
+                        });
+                    }
+                };
+                SVE_DOT_IDX_BASE
+                    | (size.size_bits() << 22)
+                    | index_zm
+                    | ((*unsigned as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::SveDotIndexedMixed {
+                op,
+                zda,
+                zn,
+                zm,
+                index,
+            } => {
+                let zm_bits = zm.as_operand_bits() as u32;
+                if *index > 3 || zm_bits > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE indexed mixed/bf dot needs index 0..3 and Zm in Z0..Z7",
+                    });
+                }
+                op.base()
+                    | ((*index as u32) << 19)
+                    | (zm_bits << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::Sve2CryptoDestructive { op, zdn, zm } => {
+                op.base() | ((zm.as_operand_bits() as u32) << 5) | (zdn.as_operand_bits() as u32)
+            }
+            Self::SveFp8Matmul { half, zda, zn, zm } => {
+                SVE_FP8_MATMUL_BASE
+                    | ((*half as u32) << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::VecFp8Narrow {
+                q,
+                fp32,
+                rd,
+                rn,
+                rm,
+            } => {
+                if *fp32 && *q {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "a .4s-source FP8 FCVTN narrows to Vd.8b only (no Q form)",
+                    });
+                }
+                VEC_FP8_NARROW_BASE
+                    | ((*q as u32) << 30)
+                    | ((!*fp32 as u32) << 22)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::VecFp8Matmul { half, rd, rn, rm } => {
+                VEC_FP8_MMLA_BASE
+                    | ((!*half as u32) << 23)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::Fprcvt {
+                op,
+                wide_dest,
+                rd,
+                rn,
+            } => {
+                // [31] = (the integer operand is 64-bit); [22] = (the FP operand is 64-bit). Both follow from the op
+                // direction and which register is wide.
+                let itf = op.is_int_to_fp();
+                let sf = (itf != *wide_dest) as u32;
+                let ftype = (itf == *wide_dest) as u32;
+                FPRCVT_BASE
+                    | (sf << 31)
+                    | (ftype << 22)
+                    | (op.opcode() << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::VecLuti {
+                lut4,
+                half,
+                rd,
+                rn,
+                rm,
+                index,
+            } => {
+                let index_bits = (if *lut4 { 1 } else { 2 }) + (*half as u32);
+                if (*index as u32) >= (1 << index_bits) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the NEON LUTI element index is out of range for the lut/element size",
+                    });
+                }
+                let shift = 12 + (3 - index_bits);
+                let marker = if index_bits < 3 { 1 << (shift - 1) } else { 0 };
+                let index_field = ((*index as u32) << shift) | marker;
+                // [23] = luti2 (= !lut4); [22] = lut4 || half (luti2.16b is the only [22]=0 form).
+                0x4E00_0000
+                    | ((!*lut4 as u32) << 23)
+                    | (((*lut4 || *half) as u32) << 22)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | index_field
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::SveQuadwordGatherScatter {
+                store,
+                pg,
+                zt,
+                zn,
+                rm,
+            } => {
+                check_governing_predicate(*pg)?;
+                let base = if *store { SVE_ST1Q_BASE } else { SVE_LD1Q_BASE };
+                base | ((rm.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
+            Self::SveStructuredQuadwordImm {
+                store,
+                count,
+                pg,
+                zt_base,
+                rn,
+                imm,
+            } => {
+                check_governing_predicate(*pg)?;
+                if *count < 2 || *count > 4 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE structured quadword access has 2..=4 registers",
+                    });
+                }
+                if *imm < -8 || *imm > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SVE structured-quadword immediate is -8..=7 (times the register count)",
+                    });
+                }
+                let cm1 = (*count - 1) as u32;
+                let imm4 = (*imm as u32) & 0xF;
+                let common = (imm4 << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt_base.as_operand_bits() as u32);
+                if *store {
+                    SVE_STRUCTQ_ST_IMM_BASE | (cm1 << 22) | common
+                } else {
+                    SVE_STRUCTQ_LD_IMM_BASE | (cm1 << 23) | common
+                }
+            }
+            Self::SveStructuredQuadwordScalar {
+                store,
+                count,
+                pg,
+                zt_base,
+                rn,
+                rm,
+            } => {
+                check_governing_predicate(*pg)?;
+                if *count < 2 || *count > 4 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE structured quadword access has 2..=4 registers",
+                    });
+                }
+                let cm1 = (*count - 1) as u32;
+                let common = ((rm.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt_base.as_operand_bits() as u32);
+                if *store {
+                    SVE_STRUCTQ_ST_SCALAR_BASE | (cm1 << 22) | common
+                } else {
+                    SVE_STRUCTQ_LD_SCALAR_BASE | (cm1 << 23) | common
+                }
+            }
+            Self::SvePredVectorMove {
+                to_vector,
+                size,
+                reg,
+                pred,
+                index,
+            } => {
+                // the element + index interleave into the [23:16] byte (the SVE tsz field) with direction at [16].
+                let sidx = match size {
+                    Arm64VectorElement::B => {
+                        if *index != 0 {
+                            return Err(EncodeError::InvalidOperandCombination {
+                                detail: "PMOV .b has no element index",
+                            });
+                        }
+                        0x2A
+                    }
+                    Arm64VectorElement::H => {
+                        if *index > 1 {
+                            return Err(EncodeError::InvalidOperandCombination {
+                                detail: "a PMOV .h index is 0..=1",
+                            });
+                        }
+                        0x2C | ((*index as u32) << 1)
+                    }
+                    Arm64VectorElement::S => {
+                        if *index > 3 {
+                            return Err(EncodeError::InvalidOperandCombination {
+                                detail: "a PMOV .s index is 0..=3",
+                            });
+                        }
+                        0x68 | ((*index as u32) << 1)
+                    }
+                    Arm64VectorElement::D => {
+                        if *index > 7 {
+                            return Err(EncodeError::InvalidOperandCombination {
+                                detail: "a PMOV .d index is 0..=7",
+                            });
+                        }
+                        let i = *index as u32;
+                        0xA8 | ((i & 1) << 1) | (((i >> 1) & 1) << 2) | (((i >> 2) & 1) << 6)
+                    }
+                };
+                let ops = if *to_vector {
+                    ((pred.as_operand_bits() as u32) << 5) | (reg.as_operand_bits() as u32)
+                } else {
+                    ((reg.as_operand_bits() as u32) << 5) | (pred.as_operand_bits() as u32)
+                };
+                SVE_PMOV_BASE | ((sidx | (*to_vector as u32)) << 16) | ops
+            }
+            Self::SveAes2MultiVec {
+                decrypt,
+                four,
+                zdn_base,
+                zm,
+                index,
+            } => {
+                if zm.as_operand_bits() > 7 || *index > 3 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SVE AES2 multiplier is Z0..Z7 and the index is 0..=3",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zdn_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SVE AES2 destination list base must be even (vgx2) or a multiple of 4 (vgx4)",
+                    });
+                }
+                SVE2_AES2_MULTIVEC_BASE
+                    | ((*decrypt as u32) << 10)
+                    | ((*four as u32) << 18)
+                    | ((*index as u32) << 19)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn_base.as_operand_bits() as u32)
+            }
+            Self::Sve2AesMixColumns { inverse, zdn } => {
+                let base = if *inverse {
+                    SVE2_AESIMC_BASE
+                } else {
+                    SVE2_AESMC_BASE
+                };
+                base | (zdn.as_operand_bits() as u32)
+            }
+            Self::Sve2CryptoBinary { op, zd, zn, zm } => {
+                op.base()
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2HistCnt {
+                size,
+                pg,
+                zd,
+                zn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                if !matches!(size, Arm64VectorElement::S | Arm64VectorElement::D) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "HISTCNT operates on .s/.d",
+                    });
+                }
+                SVE2_HISTCNT_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2HistSeg { zd, zn, zm } => {
+                SVE2_HISTSEG_BASE
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2PolyMultiply128 { top, zd, zn, zm } => {
+                SVE2_PMULL128_BASE
+                    | ((*top as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveClamp {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+            } => {
+                if op.is_fp() && matches!(size, Arm64VectorElement::B) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "FCLAMP operates on .h/.s/.d",
+                    });
+                }
+                op.base()
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2MultiplyUnpredicated {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+            } => {
+                if matches!(op, Arm64Sve2MulOp::Pmul) && !matches!(size, Arm64VectorElement::B) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "SVE2 PMUL is defined only for the .b element",
+                    });
+                }
+                SVE2_MUL_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (op.opcode() << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2TernaryLogical { op, zdn, zm, zk } => {
+                SVE2_TERNARY_LOGICAL_BASE
+                    | (op.opc() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (op.group_bit() << 10)
+                    | ((zk.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::Sve2WhileGreater {
+                op,
+                size,
+                compare_64,
+                pd,
+                rn,
+                rm,
+            } => {
+                SVE2_WHILE_GE_BASE
+                    | (size.size_bits() << 22)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((*compare_64 as u32) << 12)
+                    | (op.unsigned_bit() << 11)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (op.strict_bit() << 4)
+                    | (pd.as_operand_bits() as u32)
+            }
+            Self::Sve2WhilePointerHazard {
+                write_after_read,
+                size,
+                pd,
+                rn,
+                rm,
+            } => {
+                SVE2_WHILE_HAZARD_BASE
+                    | (size.size_bits() << 22)
+                    | ((rm.as_operand_bits() as u32) << 16)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | ((!*write_after_read as u32) << 4)
+                    | (pd.as_operand_bits() as u32)
+            }
+            Self::Sve2AbsDiffAccumulate {
+                unsigned,
+                size,
+                zd,
+                zn,
+                zm,
+            } => {
+                SVE2_ABA_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*unsigned as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2UnaryPredicated {
+                op,
+                size,
+                pg,
+                zd,
+                zn,
+            } => {
+                check_governing_predicate(*pg)?;
+                if op.is_single_only() && !matches!(size, Arm64VectorElement::S) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "URECPE/URSQRTE operate on the .s element only",
+                    });
+                }
+                SVE2_UNARY_PRED_BASE
+                    | (size.size_bits() << 22)
+                    | (op.code() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2UnaryZeroing {
+                op,
+                size,
+                pg,
+                zd,
+                zn,
+            } => {
+                check_governing_predicate(*pg)?;
+                if op.is_single_only() && !matches!(size, Arm64VectorElement::S) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "URECPE/URSQRTE operate on the .s element only",
+                    });
+                }
+                // Same frame as the merging form, but with bit [17] carried by the zeroing base ([18:17] 00 -> 01).
+                SVE2_UNARY_PRED_ZEROING_BASE
+                    | (size.size_bits() << 22)
+                    | (op.code() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2ShiftLeftPredicated {
+                op,
+                size,
+                pg,
+                zdn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE2_SHIFT_LEFT_PRED_BASE
+                    | (size.size_bits() << 22)
+                    | (op.code() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::Sve2SaturatingAddSub {
+                op,
+                size,
+                pg,
+                zdn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE2_SAT_ADDSUB_BASE
+                    | (size.size_bits() << 22)
+                    | (op.code() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::Sve2FpConvertUpdown { op, pg, zd, zn } => {
+                check_governing_predicate(*pg)?;
+                SVE2_FP_UPDOWN_BASE
+                    | (op.discriminant() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2FpConvertUpdownZeroing { op, pg, zd, zn } => {
+                check_governing_predicate(*pg)?;
+                op.zeroing_base()
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2FpLogb { size, pg, zd, zn } => {
+                check_governing_predicate(*pg)?;
+                if !matches!(
+                    size,
+                    Arm64VectorElement::H | Arm64VectorElement::S | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "FLOGB operates on .h/.s/.d",
+                    });
+                }
+                SVE2_FLOGB_BASE
+                    | (size.size_bits() << 17)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2FpLogbZeroing { size, pg, zd, zn } => {
+                check_governing_predicate(*pg)?;
+                if !matches!(
+                    size,
+                    Arm64VectorElement::H | Arm64VectorElement::S | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "FLOGB operates on .h/.s/.d",
+                    });
+                }
+                SVE2_FLOGB_ZEROING_BASE
+                    | (size.size_bits() << 13)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveFrintTs {
+                op,
+                zeroing,
+                size,
+                pg,
+                zd,
+                zn,
+            } => {
+                check_governing_predicate(*pg)?;
+                if !matches!(size, Arm64VectorElement::S | Arm64VectorElement::D) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "SVE FRINT32/64 operate on .s/.d",
+                    });
+                }
+                let is_d = matches!(size, Arm64VectorElement::D) as u32;
+                let (is64, is_x) = (op.is_64() as u32, op.is_x() as u32);
+                let pg_zn_zd = ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32);
+                if *zeroing {
+                    SVE_FRINTTS_Z_BASE | (is64 << 16) | (is_d << 14) | (is_x << 13) | pg_zn_zd
+                } else {
+                    SVE_FRINTTS_M_BASE | (is64 << 18) | (is_d << 17) | (is_x << 16) | pg_zn_zd
+                }
+            }
+            Self::Sve2FpWidenMulAddLong {
+                bf16,
+                subtract,
+                top,
+                zda,
+                zn,
+                zm,
+            } => {
+                // bf16 + subtract = BFMLSLB/T (FEAT_SVE2p1); the rest are FMLAL*/FMLSL* (FEAT_SVE2) / BFMLAL* (FEAT_BF16).
+                SVE2_FMLAL_BASE
+                    | ((*bf16 as u32) << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*subtract as u32) << 13)
+                    | ((*top as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::Sve2FpWidenMulAddLongIndexed {
+                bf16,
+                subtract,
+                top,
+                zda,
+                zn,
+                zm,
+                index,
+            } => {
+                // bf16 + subtract = BFMLSLB/T indexed (FEAT_SVE2p1).
+                let zm_bits = zm.as_operand_bits() as u32;
+                if *index > 7 || zm_bits > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "indexed widening MAC needs index 0..7 and Zm in Z0..Z7",
+                    });
+                }
+                let index = *index as u32;
+                let index_field =
+                    (((index >> 2) & 1) << 20) | (((index >> 1) & 1) << 19) | ((index & 1) << 11);
+                SVE2_FMLAL_INDEXED_BASE
+                    | ((*bf16 as u32) << 22)
+                    | index_field
+                    | (zm_bits << 16)
+                    | ((*subtract as u32) << 13)
+                    | ((*top as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::SveMatrixMul { op, zda, zn, zm } => {
+                op.word()
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            #[cfg(feature = "experimental")]
+            Self::SveFp16Matmul { zda, zn, zm } => {
+                SVE_FP16_MATMUL_BASE
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::Sve2FpPairwise {
+                op,
+                size,
+                pg,
+                zdn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE2_FP_PAIRWISE_BASE
+                    | (size.size_bits() << 22)
+                    | (op.opc() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::Sve2UnsignedSignedDot { zda, zn, zm } => {
+                SVE_USDOT_BASE
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::Sve2ComplexDot {
+                size,
+                rotation,
+                zda,
+                zn,
+                zm,
+            } => {
+                if !matches!(size, Arm64VectorElement::S | Arm64VectorElement::D) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "CDOT accumulates into .s or .d",
+                    });
+                }
+                SVE2_CDOT_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (rotation.code() << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::Sve2SaturatingDoublingMulHigh {
+                rounding,
+                size,
+                zd,
+                zn,
+                zm,
+            } => {
+                SVE2_SQDMULH_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*rounding as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2SaturatingDoublingMulAddHigh {
+                subtract,
+                size,
+                zda,
+                zn,
+                zm,
+            } => {
+                SVE2_SQRDMLAH_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*subtract as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::Sve2TableLookup {
+                extend,
+                size,
+                zd,
+                zn,
+                zm,
+            } => {
+                SVE2_TBL_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*extend as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2Match {
+                negate,
+                half,
+                pd,
+                pg,
+                zn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE2_MATCH_BASE
+                    | ((*half as u32) << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | ((*negate as u32) << 4)
+                    | (pd.as_operand_bits() as u32)
+            }
+            Self::Sve2WideningIndexed {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+                index,
+            } => {
+                let zm_bits = zm.as_operand_bits() as u32;
+                let idx = *index as u32;
+                // Per-size index/Zm packing: .s -> index[2:1] @[20:19], Zm @[18:16] (Z0-Z7); .d -> index[1] @[20],
+                // Zm @[19:16] (Z0-Z15). index[0] is the `il` bit at [11].
+                let (bits_20_16, il) = match size {
+                    Arm64VectorElement::S => {
+                        if idx > 7 || zm_bits > 7 {
+                            return Err(EncodeError::InvalidOperandCombination {
+                                detail: "an SVE2 .s widening-indexed op needs index 0..7 and Zm in Z0..Z7",
+                            });
+                        }
+                        (((idx >> 1) << 3) | zm_bits, idx & 1)
+                    }
+                    Arm64VectorElement::D => {
+                        if idx > 3 {
+                            return Err(EncodeError::InvalidOperandCombination {
+                                detail: "an SVE2 .d widening-indexed op needs index 0..3",
+                            });
+                        }
+                        (((idx >> 1) << 4) | zm_bits, idx & 1)
+                    }
+                    _ => {
+                        return Err(EncodeError::InvalidOperandCombination {
+                            detail: "an SVE2 widening-indexed result is .s or .d",
+                        });
+                    }
+                };
+                SVE2_WIDEN_INDEXED_BASE
+                    | (size.size_bits() << 22)
+                    | (bits_20_16 << 16)
+                    | (op.discriminator() << 12)
+                    | (il << 11)
+                    | ((op.top() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2BitwisePermute {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+            } => {
+                SVE2_BITPERM_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (op.opc() << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2AddSubLongCarry {
+                subtract,
+                top,
+                element_double,
+                zd,
+                zn,
+                zm,
+            } => {
+                SVE2_ADCL_BASE
+                    | ((*subtract as u32) << 23)
+                    | ((*element_double as u32) << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*top as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2ShiftRightAccumulate {
+                rounding,
+                unsigned,
+                size,
+                zd,
+                zn,
+                shift,
+            } => {
+                let esize = 8u32 << size.size_bits();
+                check_signed_range("shift", *shift as i64, 1, esize as i64)?;
+                let v = 2 * esize - (*shift as u32);
+                SVE2_SSRA_BASE
+                    | sve2_tsz_field(v)
+                    | ((*rounding as u32) << 11)
+                    | ((*unsigned as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2ShiftInsert {
+                left,
+                size,
+                zd,
+                zn,
+                shift,
+            } => {
+                let esize = 8u32 << size.size_bits();
+                let v = if *left {
+                    check_signed_range("shift", *shift as i64, 0, (esize - 1) as i64)?;
+                    esize + (*shift as u32)
+                } else {
+                    check_signed_range("shift", *shift as i64, 1, esize as i64)?;
+                    2 * esize - (*shift as u32)
+                };
+                SVE2_SRI_BASE
+                    | sve2_tsz_field(v)
+                    | ((*left as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2AbsDiffAccLong {
+                unsigned,
+                top,
+                size,
+                zd,
+                zn,
+                zm,
+            } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::H | Arm64VectorElement::S | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE2 abs-diff-accumulate-long result is .h/.s/.d",
+                    });
+                }
+                SVE2_ABALB_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*unsigned as u32) << 11)
+                    | ((*top as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2PairwiseAddAccLong {
+                unsigned,
+                size,
+                pg,
+                zda,
+                zn,
+            } => {
+                check_governing_predicate(*pg)?;
+                if !matches!(
+                    size,
+                    Arm64VectorElement::H | Arm64VectorElement::S | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE2 pairwise-add-accumulate-long accumulator is .h/.s/.d",
+                    });
+                }
+                SVE2_ADALP_BASE
+                    | (size.size_bits() << 22)
+                    | ((*unsigned as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::Sve2HalvingAddSub {
+                op,
+                size,
+                pg,
+                zdn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE2_HALVING_BASE
+                    | (size.size_bits() << 22)
+                    | (op.code() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::Sve2PairwiseArith {
+                op,
+                size,
+                pg,
+                zdn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE2_PAIRWISE_BASE
+                    | (size.size_bits() << 22)
+                    | (op.code() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::Sve2NarrowingShiftRight {
+                op,
+                top,
+                result_size,
+                zd,
+                zn,
+                shift,
+            } => {
+                if !matches!(
+                    result_size,
+                    Arm64VectorElement::B | Arm64VectorElement::H | Arm64VectorElement::S
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE2 shift-right-narrow result is .b/.h/.s",
+                    });
+                }
+                let esize = 8u32 << result_size.size_bits();
+                check_signed_range("shift", *shift as i64, 1, esize as i64)?;
+                let v = 2 * esize - (*shift as u32); // tszh[22]:tszl[20:19]:imm3[18:16]
+                let tsz_field =
+                    (((v >> 5) & 0x1) << 22) | (((v >> 3) & 0x3) << 19) | ((v & 0x7) << 16);
+                SVE2_NARROW_SHIFT_BASE
+                    | tsz_field
+                    | (op.code() << 11)
+                    | ((*top as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2WideningShiftLeft {
+                unsigned,
+                top,
+                src_size,
+                zd,
+                zn,
+                shift,
+            } => {
+                if !matches!(
+                    src_size,
+                    Arm64VectorElement::B | Arm64VectorElement::H | Arm64VectorElement::S
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE2 shift-left-long source is .b/.h/.s",
+                    });
+                }
+                let esize = 8u32 << src_size.size_bits();
+                check_signed_range("shift", *shift as i64, 0, (esize - 1) as i64)?;
+                let v = esize + (*shift as u32); // tszh[22]:tszl[20:19]:imm3[18:16]
+                let tsz_field =
+                    (((v >> 5) & 0x1) << 22) | (((v >> 3) & 0x3) << 19) | ((v & 0x7) << 16);
+                SVE2_SHLL_BASE
+                    | tsz_field
+                    | ((*unsigned as u32) << 11)
+                    | ((*top as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2SaturatingExtractNarrow {
+                op,
+                top,
+                result_size,
+                zd,
+                zn,
+            } => {
+                // tsz = 1 << result_size_bits, placed at {bit22, bit20, bit19} (bit21 is the fixed framing bit).
+                let size_field = match result_size {
+                    Arm64VectorElement::B => 1 << 19,
+                    Arm64VectorElement::H => 1 << 20,
+                    Arm64VectorElement::S => 1 << 22,
+                    Arm64VectorElement::D => {
+                        return Err(EncodeError::InvalidOperandCombination {
+                            detail: "an SVE2 extract-narrow result is .b/.h/.s",
+                        });
+                    }
+                };
+                SVE2_EXTRACT_NARROW_BASE
+                    | size_field
+                    | (op.opcode() << 11)
+                    | ((*top as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2NarrowHigh {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+            } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::H | Arm64VectorElement::S | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE2 narrow-high source is .h/.s/.d",
+                    });
+                }
+                SVE2_NARROW_HIGH_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (op.opcode() << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::Sve2ComplexAdd {
+                saturating,
+                size,
+                rotation,
+                zdn,
+                zm,
+            } => {
+                if !matches!(
+                    rotation,
+                    Arm64ComplexRotation::R90 | Arm64ComplexRotation::R270
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "CADD/SQCADD accept only the #90 and #270 rotations",
+                    });
+                }
+                let rot = (matches!(rotation, Arm64ComplexRotation::R270)) as u32;
+                SVE2_CADD_BASE
+                    | (size.size_bits() << 22)
+                    | ((*saturating as u32) << 16)
+                    | (rot << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::Sve2ComplexMulAdd {
+                rounding,
+                size,
+                rotation,
+                zda,
+                zn,
+                zm,
+            } => {
+                SVE2_CMLA_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((*rounding as u32) << 12)
+                    | (rotation.code() << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::Sve2Xar {
+                size,
+                zdn,
+                zm,
+                rotate,
+            } => {
+                let esize = 8u32 << size.size_bits();
+                check_signed_range("rotate", *rotate as i64, 1, esize as i64)?;
+                let v = 2 * esize - (*rotate as u32); // same tszh:tszl:imm3 packing as the SVE shift-immediates
+                SVE2_XAR_BASE
+                    | (((v >> 5) & 0x3) << 22)
+                    | (((v >> 3) & 0x3) << 19)
+                    | ((v & 0x7) << 16)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::Sve2Widening {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+            } => {
+                if !matches!(
+                    size,
+                    Arm64VectorElement::H | Arm64VectorElement::S | Arm64VectorElement::D
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE2 widening op produces a .h/.s/.d result",
+                    });
+                }
+                let base = if op.accumulates() {
+                    SVE2_WIDEN_MLAL_BASE
+                } else {
+                    SVE2_WIDEN_ARITH_BASE
+                };
+                base | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (op.opcode() << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveIntMulAddIndexed {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+                index,
+            } => {
+                let size_index_zm = encode_sve_indexed_size(
+                    *size,
+                    *index as u32,
+                    zm.as_operand_bits() as u32,
+                    "an SVE2 indexed integer op needs .h/.s/.d with index 0..7/0..3/0..1 and Zm in Z0..Z7 (.h/.s) / Z0..Z15 (.d)",
+                )?;
+                SVE_INT_INDEXED_BASE
+                    | size_index_zm
+                    | (op.opcode() << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveFpMulAddIndexed {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+                index,
+            } => {
+                let size_index_zm = encode_sve_indexed_size(
+                    *size,
+                    *index as u32,
+                    zm.as_operand_bits() as u32,
+                    "an SVE indexed FP op needs .h/.s/.d with index 0..7/0..3/0..1 and Zm in Z0..Z7 (.h/.s) / Z0..Z15 (.d)",
+                )?;
+                SVE_FP_INDEXED_BASE
+                    | size_index_zm
+                    | (op.opc() << 13)
+                    | (op.sub_bit() << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveComplexMulAddIndexed {
+                fp,
+                size,
+                rotation,
+                zda,
+                zn,
+                zm,
+                index,
+            } => {
+                let zm_bits = zm.as_operand_bits() as u32;
+                let size_index_zm = match size {
+                    Arm64VectorElement::H => {
+                        if *index > 3 || zm_bits > 7 {
+                            return Err(EncodeError::InvalidOperandCombination {
+                                detail: "indexed complex .h needs index 0..3 and Zm in Z0..Z7",
+                            });
+                        }
+                        ((*index as u32) << 19) | (zm_bits << 16)
+                    }
+                    Arm64VectorElement::S => {
+                        if *index > 1 {
+                            return Err(EncodeError::InvalidOperandCombination {
+                                detail: "indexed complex .s needs index 0..1 and Zm in Z0..Z15",
+                            });
+                        }
+                        (1 << 22) | ((*index as u32) << 20) | (zm_bits << 16)
+                    }
+                    _ => {
+                        return Err(EncodeError::InvalidOperandCombination {
+                            detail: "indexed complex multiply is .h or .s only",
+                        });
+                    }
+                };
+                let base = if *fp {
+                    SVE_FCMLA_INDEXED_BASE
+                } else {
+                    SVE_CMLA_INDEXED_BASE
+                };
+                base | size_index_zm
+                    | (rotation.code() << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::SveFpComplexAdd {
+                size,
+                rotation,
+                pg,
+                zdn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                if !matches!(
+                    rotation,
+                    Arm64ComplexRotation::R90 | Arm64ComplexRotation::R270
+                ) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "FCADD accepts only the #90 and #270 rotations",
+                    });
+                }
+                let rot = (matches!(rotation, Arm64ComplexRotation::R270)) as u32;
+                SVE_FCADD_BASE
+                    | (size.size_bits() << 22)
+                    | (rot << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::SveFpComplexMulAdd {
+                size,
+                rotation,
+                pg,
+                zda,
+                zn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                SVE_FCMLA_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (rotation.code() << 13)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::SveBreak {
+                before,
+                set_flags,
+                merging,
+                pd,
+                pg,
+                pn,
+            } => {
+                SVE_BRK_UNARY_BASE
+                    | ((*before as u32) << 23)
+                    | ((*set_flags as u32) << 22)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((pn.as_operand_bits() as u32) << 5)
+                    | ((*merging as u32) << 4)
+                    | (pd.as_operand_bits() as u32)
+            }
+            Self::SveBreakPropagate {
+                set_flags,
+                pdm,
+                pg,
+                pn,
+            } => {
+                SVE_BRKN_BASE
+                    | ((*set_flags as u32) << 22)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((pn.as_operand_bits() as u32) << 5)
+                    | (pdm.as_operand_bits() as u32)
+            }
+            Self::SveBreakPair {
+                before,
+                set_flags,
+                pd,
+                pg,
+                pn,
+                pm,
+            } => {
+                SVE_BRK_PAIR_BASE
+                    | ((*set_flags as u32) << 22)
+                    | ((pm.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((pn.as_operand_bits() as u32) << 5)
+                    | ((*before as u32) << 4)
+                    | (pd.as_operand_bits() as u32)
+            }
+            Self::SveReadVectorLength { rd, imm6 } => {
+                check_signed_range("imm6", *imm6 as i64, -32, 31)?;
+                SVE_RDVL_BASE | (((*imm6 as u32) & 0x3F) << 5) | (rd.as_operand_bits() as u32)
+            }
+            Self::SveAddVectorLength { rd, rn, imm6 } => {
+                check_signed_range("imm6", *imm6 as i64, -32, 31)?;
+                SVE_ADDVL_BASE
+                    | ((rn.as_operand_bits() as u32) << 16)
+                    | (((*imm6 as u32) & 0x3F) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::SveAddPredicateLength { rd, rn, imm6 } => {
+                check_signed_range("imm6", *imm6 as i64, -32, 31)?;
+                SVE_ADDPL_BASE
+                    | ((rn.as_operand_bits() as u32) << 16)
+                    | (((*imm6 as u32) & 0x3F) << 5)
+                    | (rd.as_operand_bits() as u32)
+            }
+            Self::SveExt { zdn, zm, imm8 } => {
+                let imm = *imm8 as u32;
+                SVE_EXT_BASE
+                    | ((imm >> 3) << 16)
+                    | ((imm & 0x7) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::SveSplice { size, pg, zdn, zm } => {
+                check_governing_predicate(*pg)?;
+                SVE_SPLICE_BASE
+                    | (size.size_bits() << 22)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::SveCompact { size, pg, zd, zn } => {
+                check_governing_predicate(*pg)?;
+                SVE_COMPACT_BASE
+                    | (size.size_bits() << 22)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveRbit { size, pg, zd, zn } => {
+                check_governing_predicate(*pg)?;
+                SVE_RBIT_BASE
+                    | (size.size_bits() << 22)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveRbitZeroing { size, pg, zd, zn } => {
+                check_governing_predicate(*pg)?;
+                SVE_RBIT_ZEROING_BASE
+                    | (size.size_bits() << 22)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveSelect {
+                size,
+                pg,
+                zd,
+                zn,
+                zm,
+            } => {
+                SVE_SEL_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveUnpack {
+                signed,
+                high,
+                dest_size,
+                zd,
+                zn,
+            } => {
+                if dest_size.size_bits() == 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "SVE unpack destination must be .h/.s/.d (not .b)",
+                    });
+                }
+                SVE_UNPK_BASE
+                    | (dest_size.size_bits() << 22)
+                    | ((*signed as u32 ^ 1) << 17)
+                    | ((*high as u32) << 16)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveBitwiseImmediate { op, zdn, imm } => {
+                let (n, immr, imms) =
+                    encode_bitmask(*imm, 64).ok_or(EncodeError::InvalidOperandCombination {
+                        detail: "the value is not a valid SVE repeating-bitmask immediate",
+                    })?;
+                let imm13 = (n << 12) | (immr << 6) | imms;
+                SVE_BITWISE_IMM_BASE
+                    | (op.opc() << 22)
+                    | (imm13 << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::SveFpConvert {
+                kind,
+                dest_size,
+                src_size,
+                pg,
+                zd,
+                zn,
+            } => {
+                let disc = SVE_FP_CONVERTS
+                    .iter()
+                    .find(|(_, k, d, s)| k == kind && d == dest_size && s == src_size)
+                    .map(|(disc, _, _, _)| *disc)
+                    .ok_or(EncodeError::InvalidOperandCombination { detail: "this SVE floating-point convert element-size pair is not architecturally defined" })?;
+                check_governing_predicate(*pg)?;
+                SVE_FP_CONVERT_BASE
+                    | (disc << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveFpConvertZeroing {
+                kind,
+                dest_size,
+                src_size,
+                pg,
+                zd,
+                zn,
+            } => {
+                let base = SVE_FP_CONVERTS_ZEROING
+                    .iter()
+                    .find(|(_, k, d, s)| k == kind && d == dest_size && s == src_size)
+                    .map(|(base, _, _, _)| *base)
+                    .ok_or(EncodeError::InvalidOperandCombination { detail: "this SVE floating-point convert element-size pair is not architecturally defined" })?;
+                check_governing_predicate(*pg)?;
+                base | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+        };
+
+        Ok(word_le_bytes(word))
+    }
+}
+
+/* ---- field helpers shared by encode + decode ---- */
+
+// Encode a signed byte branch offset into a `bits`-wide imm field of (offset / 4). Validates 4-byte
+// alignment and the signed range of the *scaled* immediate.
+fn encode_branch_offset(
+    field: &'static str,
+    offset_bytes: i32,
+    bits: u32,
+) -> Result<u32, EncodeError> {
+    check_multiple_of(field, offset_bytes as i64, 4)?;
+    let scaled = (offset_bytes / 4) as i64;
+    let minimum = -(1i64 << (bits - 1));
+    let maximum = (1i64 << (bits - 1)) - 1;
+    check_signed_range(field, scaled, minimum, maximum)?;
+    Ok((scaled as u32) & ((1u32 << bits) - 1))
+}
+
+// Build a load/store register (unsigned-immediate offset) word: base | (size << 30) | (imm12 << 10) | (Rn << 5)
+// | Rt. The size=0 base supplies the family + L bit; `size` provides the 2-bit size field. The byte offset is
+// scaled by the access size (`imm12 = offset_bytes >> size`), so it must be a non-negative multiple of
+// `1 << size` and the resulting imm12 must be 0..=4095 -- both surfaced as EncodeError. `Rt` uses ZR at 31,
+// `Rn` uses SP at 31. Used by LoadRegister / StoreRegister.
+fn ldst_register_word(
+    base: u32,
+    size: Arm64LoadStoreSize,
+    xt: &Arm64GeneralPurposeRegister,
+    xn: &Arm64GeneralPurposeRegister,
+    offset_bytes: u32,
+) -> Result<u32, EncodeError> {
+    let scale = size.scale();
+    check_multiple_of("offset_bytes", offset_bytes as i64, scale)?;
+    let imm12 = offset_bytes / scale;
+    check_unsigned_maximum("offset_bytes", imm12, 0xFFF)?;
+    Ok(base
+        | (size.size_bits() << 30)
+        | (imm12 << 10)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (xt.as_operand_bits() as u32))
+}
+
+// Build a SIMD&FP single-register load/store word (LDR/STR of Bt/Ht/St/Dt/Qt, unsigned-immediate offset): the
+// fixed frame 0x3D00_0000 | (size_field<<30) | (opc_high<<23) | (L<<22) | (imm12<<10) | (Rn<<5) | Vt. `size`
+// supplies the access width (which scales the byte offset) and `opc_high` (set only for the 128-bit Qt form);
+// `load` sets the L bit (bit 22). `Rn` uses the SP encoding at field 31; `Vt` is the SIMD&FP transfer register.
+// The offset must be a non-negative multiple of the access size, scaled into `imm12` (0..=4095). GNU+LLVM
+// dual-oracle verified.
+fn vec_ldst_register_word(
+    load: bool,
+    size: Arm64VectorLoadStoreSize,
+    vt: &Arm64FloatRegister,
+    xn: &Arm64GeneralPurposeRegister,
+    offset_bytes: u32,
+) -> Result<u32, EncodeError> {
+    let scale = 1u32 << size.scale();
+    check_multiple_of("offset_bytes", offset_bytes as i64, scale)?;
+    let imm12 = offset_bytes / scale;
+    check_unsigned_maximum("offset_bytes", imm12, 0xFFF)?;
+    let base = 0x3D00_0000
+        | (size.size_field() << 30)
+        | (size.opc_high() << 23)
+        | (if load { 1 << 22 } else { 0 });
+    Ok(base | (imm12 << 10) | ((xn.as_operand_bits() as u32) << 5) | (vt.as_operand_bits() as u32))
+}
+
+// Build a load/store register-offset word: base | (size<<30) | (Rm<<16) | (option<<13) | (S<<12) | (Rn<<5) | Rt.
+// The size=0 base supplies the family + opc + bit21 + bits[11:10]=10; `size` provides the 2-bit size field,
+// `extend` the option, `scaled` the S bit. No immediate to range-check (the offset is a register), so this is
+// infallible. `Rt`/`Rm` use ZR at 31, `Rn` uses SP at 31.
+fn ldst_register_offset_word(
+    base: u32,
+    size: Arm64LoadStoreSize,
+    xt: &Arm64GeneralPurposeRegister,
+    xn: &Arm64GeneralPurposeRegister,
+    xm: &Arm64GeneralPurposeRegister,
+    extend: Arm64MemoryExtend,
+    scaled: bool,
+) -> u32 {
+    base | (size.size_bits() << 30)
+        | ((xm.as_operand_bits() as u32) << 16)
+        | (extend.as_bits() << 13)
+        | ((scaled as u32) << 12)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (xt.as_operand_bits() as u32)
+}
+
+// Decode the operands of a load/store register-offset word: (Rt, Rn, Rm, extend, scaled), or None if the option
+// field is a reserved memory-extend code (-> InvalidOpcode). `Rt`/`Rm` use the ZR view, `Rn` the SP view. `size`
+// is read separately by the caller (it selects the variant / dest width).
+fn decode_register_offset(
+    word: u32,
+) -> Option<(
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+    Arm64MemoryExtend,
+    bool,
+)> {
+    let extend = Arm64MemoryExtend::from_bits((word >> 13) & 0b111)?;
+    let xt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+    let xn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+    let xm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+    let scaled = (word >> 12) & 1 == 1;
+    Some((xt, xn, xm, extend, scaled))
+}
+
+// Decode the operands of a SIMD&FP register-offset word: (Vt, Xn, Xm, extend, scaled), or InvalidOpcode if the
+// option field is a reserved memory-extend code. `Vt` is a SIMD&FP register; `Xn` uses the SP view, `Xm` the ZR
+// view. The access `size` is read separately by the caller.
+fn decode_vec_register_offset(
+    word: u32,
+) -> Result<
+    (
+        Arm64FloatRegister,
+        Arm64GeneralPurposeRegister,
+        Arm64GeneralPurposeRegister,
+        Arm64MemoryExtend,
+        bool,
+    ),
+    DecodeError,
+> {
+    let extend =
+        Arm64MemoryExtend::from_bits((word >> 13) & 0b111).ok_or(DecodeError::InvalidOpcode)?;
+    let vt = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+    let xn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+    let xm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+    let scaled = (word >> 12) & 1 == 1;
+    Ok((vt, xn, xm, extend, scaled))
+}
+
+// Build a load/store 9-bit-unscaled-immediate word: base | (size<<30) | (imm9<<12) | (idx<<10) | (Rn<<5) | Rt.
+// `offset` is a RAW signed byte offset (the imm9 is not scaled), validated to -256..=255. `Rt` uses ZR at 31,
+// `Rn` uses SP at 31. Used by LDUR/STUR and the single-register pre/post-index forms.
+fn ldst_imm9_word(
+    base: u32,
+    size: Arm64LoadStoreSize,
+    mode: Arm64Imm9Mode,
+    xt: &Arm64GeneralPurposeRegister,
+    xn: &Arm64GeneralPurposeRegister,
+    offset: i32,
+) -> Result<u32, EncodeError> {
+    if !(-256..=255).contains(&offset) {
+        return Err(EncodeError::ImmediateOutOfRange {
+            field: "offset",
+            value: offset as i64,
+            minimum: -256,
+            maximum: 255,
+        });
+    }
+    let imm9 = (offset as u32) & 0x1FF;
+    Ok(base
+        | (size.size_bits() << 30)
+        | (imm9 << 12)
+        | (mode.index_bits() << 10)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (xt.as_operand_bits() as u32))
+}
+
+// Decode the operands of a 9-bit-unscaled word: (mode, Rt, Rn, offset), or None if idx[11:10] = 0b10
+// (unallocated -> InvalidOpcode). The 9-bit imm9 is sign-extended to the raw byte offset. `Rt` uses the ZR view,
+// `Rn` the SP view. `size`/`opc` are read by the caller (they select the variant / dest width).
+fn decode_imm9(
+    word: u32,
+) -> Option<(
+    Arm64Imm9Mode,
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+    i32,
+)> {
+    let mode = Arm64Imm9Mode::from_index_bits((word >> 10) & 0b11)?;
+    let raw = (word >> 12) & 0x1FF;
+    let offset = ((raw as i32) << 23) >> 23; // sign-extend the 9-bit imm9
+    let xt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+    let xn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+    Some((mode, xt, xn, offset))
+}
+
+// Decode the operands of a SIMD&FP 9-bit-unscaled word: (mode, Vt, Xn, offset), or InvalidOpcode if idx[11:10]
+// = 0b10 -- the GP unprivileged (LDTR/STTR) slot, which has no SIMD&FP form. The 9-bit imm9 is sign-extended to
+// the raw byte offset. `Vt` is a SIMD&FP register; `Xn` uses the SP view.
+fn decode_vec_imm9(
+    word: u32,
+) -> Result<
+    (
+        Arm64Imm9Mode,
+        Arm64FloatRegister,
+        Arm64GeneralPurposeRegister,
+        i32,
+    ),
+    DecodeError,
+> {
+    let mode = match (word >> 10) & 0b11 {
+        0b00 => Arm64Imm9Mode::Unscaled,
+        0b01 => Arm64Imm9Mode::PostIndex,
+        0b11 => Arm64Imm9Mode::PreIndex,
+        _ => return Err(DecodeError::InvalidOpcode), // 0b10 = unprivileged, unallocated for SIMD&FP
+    };
+    let raw = (word >> 12) & 0x1FF;
+    let offset = ((raw as i32) << 23) >> 23; // sign-extend the 9-bit imm9
+    let vt = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+    let xn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+    Ok((mode, vt, xn, offset))
+}
+
+// Build a load-literal word: base | ((imm19 & 0x7FFFF) << 5) | Rt, where `imm19 = offset / 4`. `offset` is the
+// signed PC-relative byte offset, a multiple of 4 in +/-1 MiB. `Rt` uses the ZR encoding at 31.
+fn ldst_literal_word(
+    base: u32,
+    xt: &Arm64GeneralPurposeRegister,
+    offset: i32,
+) -> Result<u32, EncodeError> {
+    if offset % 4 != 0 {
+        return Err(EncodeError::ImmediateNotAligned {
+            field: "offset",
+            value: offset as i64,
+            required_multiple: 4,
+        });
+    }
+    let imm19 = offset / 4;
+    if !(-(1 << 18)..=(1 << 18) - 1).contains(&imm19) {
+        return Err(EncodeError::ImmediateOutOfRange {
+            field: "offset",
+            value: offset as i64,
+            minimum: -(1 << 20),
+            maximum: (1 << 20) - 4,
+        });
+    }
+    Ok(base | (((imm19 as u32) & 0x7FFFF) << 5) | (xt.as_operand_bits() as u32))
+}
+
+// Decode the PC-relative byte offset of a load-literal word: sign-extend imm19[23:5] and scale by 4.
+fn decode_literal_offset(word: u32) -> i32 {
+    let raw = (word >> 5) & 0x7FFFF;
+    (((raw as i32) << 13) >> 13) * 4 // sign-extend the 19-bit imm19, then x4
+}
+
+// Build a test-and-branch word: base | (b5<<31) | (b40<<19) | (imm14<<5) | Rt. `bit` is the 0..=63 bit position
+// (split into b5 = bit[5] and b40 = bit[4:0]); `offset_bytes` is the signed PC-relative offset, a multiple of 4
+// in +/-32 KiB (the 14-bit imm14). `Rt` uses the ZR encoding at 31. Used by TBZ / TBNZ.
+fn test_branch_word(
+    base: u32,
+    xt: &Arm64GeneralPurposeRegister,
+    bit: u8,
+    offset_bytes: i32,
+) -> Result<u32, EncodeError> {
+    if bit > 63 {
+        return Err(EncodeError::ImmediateOutOfRange {
+            field: "bit",
+            value: bit as i64,
+            minimum: 0,
+            maximum: 63,
+        });
+    }
+    let imm14 = encode_branch_offset("offset_bytes", offset_bytes, 14)?;
+    let b5 = ((bit >> 5) & 1) as u32;
+    let b40 = (bit & 0x1F) as u32;
+    Ok(base | (b5 << 31) | (b40 << 19) | (imm14 << 5) | (xt.as_operand_bits() as u32))
+}
+
+// Decode the operands of a test-and-branch word: (Rt, bit, offset). The bit position reassembles b5[31] and
+// b40[23:19]; the 14-bit imm14 is sign-extended and scaled by 4. `Rt` uses the ZR view.
+fn decode_test_branch(word: u32) -> (Arm64GeneralPurposeRegister, u8, i32) {
+    let xt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+    let b5 = (word >> 31) & 1;
+    let b40 = (word >> 19) & 0x1F;
+    let bit = ((b5 << 5) | b40) as u8;
+    let offset = sign_extend((word >> 5) & 0x3FFF, 14) * 4;
+    (xt, bit, offset)
+}
+
+// Select the load/store pair base for a (load?, index) combination. Folds the L bit and idx[24:23] into one of
+// the six bases; `width` (opc[31:30]) is ORed in by `ldst_pair_word`.
+fn pair_base(is_load: bool, index: Arm64LoadStoreIndex) -> u32 {
+    match (is_load, index) {
+        (false, Arm64LoadStoreIndex::Offset) => STP_OFF_BASE,
+        (true, Arm64LoadStoreIndex::Offset) => LDP_OFF_BASE,
+        (false, Arm64LoadStoreIndex::PreIndex) => STP_PRE_BASE,
+        (true, Arm64LoadStoreIndex::PreIndex) => LDP_PRE_BASE,
+        (false, Arm64LoadStoreIndex::PostIndex) => STP_POST_BASE,
+        (true, Arm64LoadStoreIndex::PostIndex) => LDP_POST_BASE,
+    }
+}
+
+// Build a SIMD&FP non-temporal pair word (LDNP/STNP S/D/Q): 0x2C00_0000 | (opc<<30) | (L<<22) | (imm7<<15) |
+// (Vt2<<10) | (Xn<<5) | Vt. opc = S 0 / D 1 / Q 2; scale = 4/8/16. The offset is signed, scaled, offset-only.
+fn vec_ldst_pair_nt_word(
+    load: bool,
+    size: Arm64VectorLoadStoreSize,
+    vt: &Arm64FloatRegister,
+    vt2: &Arm64FloatRegister,
+    xn: &Arm64GeneralPurposeRegister,
+    offset_bytes: i32,
+) -> Result<u32, EncodeError> {
+    let (opc, scale): (u32, i32) = match size {
+        Arm64VectorLoadStoreSize::Single => (0, 4),
+        Arm64VectorLoadStoreSize::Double => (1, 8),
+        Arm64VectorLoadStoreSize::Quad => (2, 16),
+        _ => {
+            return Err(EncodeError::InvalidOperandCombination {
+                detail: "SIMD non-temporal pair is .s/.d/.q only",
+            });
+        }
+    };
+    check_multiple_of("offset_bytes", offset_bytes as i64, scale as u32)?;
+    let imm7 = offset_bytes / scale;
+    check_signed_range("offset_bytes", imm7 as i64, -64, 63)?;
+    Ok(0x2C00_0000
+        | (opc << 30)
+        | (u32::from(load) << 22)
+        | (((imm7 as u32) & 0x7F) << 15)
+        | ((vt2.as_operand_bits() as u32) << 10)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (vt.as_operand_bits() as u32))
+}
+
+// Build a SIMD&FP load/store PAIR word (LDP/STP S/D/Q), offset/pre/post-index: 0x2C00_0000 | (opc<<30) |
+// (idx<<23) | (L<<22) | (imm7<<15) | (Vt2<<10) | (Xn<<5) | Vt. opc = S 0 / D 1 / Q 2 (B/H invalid for a pair);
+// scale = 4/8/16; `index` supplies idx[24:23] via [`Arm64LoadStoreIndex`]. The offset is signed, scaled by the
+// access size (imm7 in -64..=63) -- both the not-a-multiple and out-of-range cases surface as EncodeError.
+fn vec_ldst_pair_word(
+    load: bool,
+    index: Arm64LoadStoreIndex,
+    size: Arm64VectorLoadStoreSize,
+    vt: &Arm64FloatRegister,
+    vt2: &Arm64FloatRegister,
+    xn: &Arm64GeneralPurposeRegister,
+    offset_bytes: i32,
+) -> Result<u32, EncodeError> {
+    let (opc, scale): (u32, i32) = match size {
+        Arm64VectorLoadStoreSize::Single => (0, 4),
+        Arm64VectorLoadStoreSize::Double => (1, 8),
+        Arm64VectorLoadStoreSize::Quad => (2, 16),
+        _ => {
+            return Err(EncodeError::InvalidOperandCombination {
+                detail: "SIMD load/store pair is .s/.d/.q only",
+            });
+        }
+    };
+    check_multiple_of("offset_bytes", offset_bytes as i64, scale as u32)?;
+    let imm7 = offset_bytes / scale;
+    check_signed_range("offset_bytes", imm7 as i64, -64, 63)?;
+    Ok(0x2C00_0000
+        | (opc << 30)
+        | (index.index_bits() << 23)
+        | (u32::from(load) << 22)
+        | (((imm7 as u32) & 0x7F) << 15)
+        | ((vt2.as_operand_bits() as u32) << 10)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (vt.as_operand_bits() as u32))
+}
+
+// Build a SIMD&FP load-literal word (LDR St/Dt/Qt, <label>): (opc<<30) | 0x1C00_0000 | (imm19<<5) | Vt, where
+// imm19 = offset / 4. opc = S 0 / D 1 / Q 2 (B/H have no literal form). `offset` is the signed PC-relative byte
+// displacement, a multiple of 4 in +/-1 MiB -- surfaced as EncodeError otherwise. Load-only.
+fn vec_ldst_literal_word(
+    size: Arm64VectorLoadStoreSize,
+    vt: &Arm64FloatRegister,
+    offset: i32,
+) -> Result<u32, EncodeError> {
+    let opc = match size {
+        Arm64VectorLoadStoreSize::Single => 0,
+        Arm64VectorLoadStoreSize::Double => 1,
+        Arm64VectorLoadStoreSize::Quad => 2,
+        _ => {
+            return Err(EncodeError::InvalidOperandCombination {
+                detail: "SIMD load-literal is .s/.d/.q only",
+            });
+        }
+    };
+    if offset % 4 != 0 {
+        return Err(EncodeError::ImmediateNotAligned {
+            field: "offset",
+            value: offset as i64,
+            required_multiple: 4,
+        });
+    }
+    let imm19 = offset / 4;
+    if !(-(1 << 18)..=(1 << 18) - 1).contains(&imm19) {
+        return Err(EncodeError::ImmediateOutOfRange {
+            field: "offset",
+            value: offset as i64,
+            minimum: -(1 << 20),
+            maximum: (1 << 20) - 4,
+        });
+    }
+    Ok((opc << 30)
+        | 0x1C00_0000
+        | (((imm19 as u32) & 0x7FFFF) << 5)
+        | (vt.as_operand_bits() as u32))
+}
+
+// Build a SIMD&FP load/store register-offset word: 0x3C00_0000 | (size_field<<30) | (opc_high<<23) | (L<<22) |
+// (1<<21) | (Rm<<16) | (option<<13) | (S<<12) | (0b10<<10) | (Xn<<5) | Vt. `size` is B/H/S/D/Q (its size_field +
+// opc_high select the access width); the index `Rm` is extended per `extend` and, when `scaled`, shifted left by
+// log2(access_size). No immediate to range-check (the offset is a register), so this is infallible.
+fn vec_ldst_register_offset_word(
+    load: bool,
+    size: Arm64VectorLoadStoreSize,
+    vt: &Arm64FloatRegister,
+    xn: &Arm64GeneralPurposeRegister,
+    xm: &Arm64GeneralPurposeRegister,
+    extend: Arm64MemoryExtend,
+    scaled: bool,
+) -> u32 {
+    0x3C00_0000
+        | (size.size_field() << 30)
+        | (size.opc_high() << 23)
+        | (u32::from(load) << 22)
+        | (1 << 21)
+        | ((xm.as_operand_bits() as u32) << 16)
+        | (extend.as_bits() << 13)
+        | ((scaled as u32) << 12)
+        | (0b10 << 10)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (vt.as_operand_bits() as u32)
+}
+
+// Build a SIMD&FP load/store 9-bit-unscaled-immediate word (LDUR/STUR + pre/post-index): 0x3C00_0000 |
+// (size_field<<30) | (opc_high<<23) | (L<<22) | (imm9<<12) | (mode<<10) | (Xn<<5) | Vt. `size` is B/H/S/D/Q;
+// `offset` is a RAW signed byte offset in -256..=255; `mode` is Unscaled / PostIndex / PreIndex -- the
+// Unprivileged (LDTR/STTR) mode has no SIMD&FP form and is rejected. Both invalid cases surface as EncodeError.
+fn vec_ldst_imm9_word(
+    load: bool,
+    size: Arm64VectorLoadStoreSize,
+    mode: Arm64Imm9Mode,
+    vt: &Arm64FloatRegister,
+    xn: &Arm64GeneralPurposeRegister,
+    offset: i32,
+) -> Result<u32, EncodeError> {
+    if matches!(mode, Arm64Imm9Mode::Unprivileged) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "SIMD&FP load/store has no unprivileged (LDTR/STTR) form",
+        });
+    }
+    if !(-256..=255).contains(&offset) {
+        return Err(EncodeError::ImmediateOutOfRange {
+            field: "offset",
+            value: offset as i64,
+            minimum: -256,
+            maximum: 255,
+        });
+    }
+    let imm9 = (offset as u32) & 0x1FF;
+    Ok(0x3C00_0000
+        | (size.size_field() << 30)
+        | (size.opc_high() << 23)
+        | (u32::from(load) << 22)
+        | (imm9 << 12)
+        | (mode.index_bits() << 10)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (vt.as_operand_bits() as u32))
+}
+
+// Build a load/store pair word: base | (sf << 31) | (imm7 << 15) | (Rt2 << 10) | (Rn << 5) | Rt. The opc=0 base
+// supplies the family + idx + L bits; `width` provides opc bit 31 (opc = sf << 1, so opc bit 30 stays 0). The
+// byte offset is SIGNED and scaled by the access size (4 for W, 8 for X): `imm7 = offset_bytes / scale`, a
+// signed 7-bit value in -64..=63, so `offset_bytes in [-64*scale, 63*scale]` and a multiple of scale -- both
+// surfaced as EncodeError. `Rt`/`Rt2` use ZR at 31, `Rn` uses SP at 31. Used by LoadPair / StorePair.
+fn ldst_pair_word(
+    base: u32,
+    width: Arm64RegisterWidth,
+    xt: &Arm64GeneralPurposeRegister,
+    xt2: &Arm64GeneralPurposeRegister,
+    xn: &Arm64GeneralPurposeRegister,
+    offset_bytes: i32,
+) -> Result<u32, EncodeError> {
+    let scale = pair_scale(width);
+    check_multiple_of("offset_bytes", offset_bytes as i64, scale)?;
+    let imm7 = offset_bytes / scale as i32;
+    check_signed_range("offset_bytes", imm7 as i64, -64, 63)?;
+    Ok(base
+        | (width.sf() << 31)
+        | (((imm7 as u32) & 0x7F) << 15)
+        | ((xt2.as_operand_bits() as u32) << 10)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (xt.as_operand_bits() as u32))
+}
+
+// The load/store pair offset scale: 8 bytes for the 64-bit (X) form, 4 bytes for the 32-bit (W) form.
+fn pair_scale(width: Arm64RegisterWidth) -> u32 {
+    match width {
+        Arm64RegisterWidth::X => 8,
+        Arm64RegisterWidth::W => 4,
+    }
+}
+
+// Build a shifted-register (LSL) data-processing word: base | (sf<<31) | (Rm<<16) | (amount<<10) | (Rn<<5) |
+// Rd. The sf=0 base supplies the family bits; `width` provides sf. The shift amount is the 6-bit imm6 field,
+// range-checked per width (0..=31 for W, 0..=63 for X). Used by ADD/SUB + the logical
+// AND/BIC/ORN/EOR/EON/ANDS/BICS family.
+fn shifted_register_word(
+    base: u32,
+    width: Arm64RegisterWidth,
+    xd: &Arm64GeneralPurposeRegister,
+    xn: &Arm64GeneralPurposeRegister,
+    xm: &Arm64GeneralPurposeRegister,
+    amount: u8,
+) -> Result<u32, EncodeError> {
+    check_shift_amount_for_width(width, amount)?;
+    Ok(base
+        | (width.sf() << 31)
+        | ((xm.as_operand_bits() as u32) << 16)
+        | ((amount as u32) << 10)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (xd.as_operand_bits() as u32))
+}
+
+// Build an add/subtract (extended register) word: base | (sf<<31) | (Rm<<16) | (option<<13) | (imm3<<10) |
+// (Rn<<5) | Rd. The left shift `amount` is the imm3 field, validated 0..=4 (this form encodes no larger shift).
+// All three registers use `as_operand_bits` (SP and ZR both map to field 31 -- the distinction is positional and
+// affects only rendering/decoding). Used by ADD/SUB/ADDS/SUBS extended.
+fn extended_register_word(
+    base: u32,
+    width: Arm64RegisterWidth,
+    rd: &Arm64GeneralPurposeRegister,
+    rn: &Arm64GeneralPurposeRegister,
+    rm: &Arm64GeneralPurposeRegister,
+    option: Arm64ExtendOption,
+    amount: u8,
+) -> Result<u32, EncodeError> {
+    check_unsigned_maximum("extend shift amount", amount as u32, 4)?;
+    Ok(base
+        | (width.sf() << 31)
+        | ((rm.as_operand_bits() as u32) << 16)
+        | (option.as_bits() << 13)
+        | ((amount as u32) << 10)
+        | ((rn.as_operand_bits() as u32) << 5)
+        | (rd.as_operand_bits() as u32))
+}
+
+// Decode the operands of an add/subtract (extended register) word: (Rd, Rn, Rm, option, amount). `rd_is_sp`
+// picks the SP view for Rd (ADD/SUB -- field 31 is SP) vs the ZR view (ADDS/SUBS -- field 31 is the CMN/CMP
+// alias). Rn always decodes in the SP view, Rm always in the ZR view, mirroring the encode positions.
+fn decode_extended_register(
+    word: u32,
+    rd_is_sp: bool,
+) -> (
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+    Arm64ExtendOption,
+    u8,
+) {
+    let rd_bits = reg_field(word, 0);
+    let rd = if rd_is_sp {
+        Arm64GeneralPurposeRegister::from_operand_bits_sp(rd_bits)
+    } else {
+        Arm64GeneralPurposeRegister::from_operand_bits(rd_bits)
+    };
+    let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+    let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+    let option = Arm64ExtendOption::from_bits((word >> 13) & 0b111);
+    let amount = ((word >> 10) & 0b111) as u8;
+    (rd, rn, rm, option, amount)
+}
+
+// Build a logical (immediate) word: base | (sf<<31) | (N<<22) | (immr<<16) | (imms<<10) | (Rn<<5) | Rd. The
+// `value` is converted to the `(N, immr, imms)` bitmask fields by `encode_bitmask`; a value that is not a
+// representable bitmask (0, all-ones, or not a rotated run) is surfaced as an error rather than silently
+// truncated. Used by AND/ORR/EOR/ANDS immediate.
+fn logical_immediate_word(
+    base: u32,
+    field: &'static str,
+    width: Arm64RegisterWidth,
+    rd: &Arm64GeneralPurposeRegister,
+    rn: &Arm64GeneralPurposeRegister,
+    value: u64,
+) -> Result<u32, EncodeError> {
+    let reg_size = if matches!(width, Arm64RegisterWidth::W) {
+        32
+    } else {
+        64
+    };
+    let (n, immr, imms) =
+        encode_bitmask(value, reg_size).ok_or(EncodeError::UnrepresentableBitmaskImmediate {
+            field,
+            value,
+            reg_size_bits: reg_size,
+        })?;
+    Ok(base
+        | (width.sf() << 31)
+        | (n << 22)
+        | (immr << 16)
+        | (imms << 10)
+        | ((rn.as_operand_bits() as u32) << 5)
+        | (rd.as_operand_bits() as u32))
+}
+
+// Decode a logical (immediate) word to (Rd, Rn, value), or None if the `(N, immr, imms)` fields are a reserved
+// combination (e.g. N=1 in a W-form word) -- the caller treats None as InvalidOpcode. `rd_is_sp` selects the SP
+// view for Rd (AND/ORR/EOR) vs the ZR view (ANDS); Rn is always the ZR view.
+fn decode_logical_immediate(
+    word: u32,
+    rd_is_sp: bool,
+) -> Option<(
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+    u64,
+)> {
+    let reg_size = if matches!(width_from_word(word), Arm64RegisterWidth::W) {
+        32
+    } else {
+        64
+    };
+    let n = (word >> 22) & 1;
+    let immr = (word >> 16) & 0x3f;
+    let imms = (word >> 10) & 0x3f;
+    let value = decode_bitmask(n, immr, imms, reg_size)?;
+    let rd_bits = reg_field(word, 0);
+    let rd = if rd_is_sp {
+        Arm64GeneralPurposeRegister::from_operand_bits_sp(rd_bits)
+    } else {
+        Arm64GeneralPurposeRegister::from_operand_bits(rd_bits)
+    };
+    let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+    Some((rd, rn, value))
+}
+
+// Build a scalar FP data-processing (2 source) word: base | (ftype<<22) | (Rm<<16) | (Rn<<5) | Rd. The S-form
+// base carries the opcode[15:12] field and `precision` supplies ftype (S=0/D=1 at bit 22); all three operands
+// are 5-bit V registers, so this is infallible. Used by FADD/FSUB/FMUL/FDIV.
+fn float_data2_word(
+    base: u32,
+    precision: Arm64FloatPrecision,
+    fd: &Arm64FloatRegister,
+    fn_: &Arm64FloatRegister,
+    fm: &Arm64FloatRegister,
+) -> u32 {
+    base | (precision.ftype() << 22)
+        | ((fm.as_operand_bits() as u32) << 16)
+        | ((fn_.as_operand_bits() as u32) << 5)
+        | (fd.as_operand_bits() as u32)
+}
+
+// Decode the precision of a half-capable scalar FP data-processing word from its 2-bit `ftype<23:22>`, REJECTING
+// the reserved `ftype=10`: single (00), double (01), half (11, FEAT_FP16). Used by the families whose decode mask
+// opens bit 23 so the `.h` forms decode (FADD/.../FNMUL, FNEG/FABS/FSQRT/FMOV/FRINT*, FMADD/..., FCMP, FCSEL, FMOV-imm).
+fn scalar_fp_precision(word: u32) -> Result<Arm64FloatPrecision, DecodeError> {
+    Arm64FloatPrecision::from_ftype_bits((word >> 22) & 0b11).ok_or(DecodeError::InvalidOpcode)
+}
+
+// Decode the (Fd, Fn, Fm) V-register operands of a scalar FP data-processing (2 source) word.
+fn decode_float_data2(word: u32) -> (Arm64FloatRegister, Arm64FloatRegister, Arm64FloatRegister) {
+    let fd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+    let fn_ = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+    let fm = Arm64FloatRegister::from_operand_bits(reg_field(word, 16));
+    (fd, fn_, fm)
+}
+
+// Build a scalar FP data-processing (1 source) word: base | (ftype<<22) | (Rn<<5) | Rd. The S-form base
+// carries opcode[20:15] + the fixed [14:10]=10000; `precision` supplies ftype. Used by FNEG/FABS/FSQRT/FMOV.
+fn float_data1_word(
+    base: u32,
+    precision: Arm64FloatPrecision,
+    fd: &Arm64FloatRegister,
+    fn_: &Arm64FloatRegister,
+) -> u32 {
+    base | (precision.ftype() << 22)
+        | ((fn_.as_operand_bits() as u32) << 5)
+        | (fd.as_operand_bits() as u32)
+}
+
+// Decode the (Fd, Fn) V-register operands of a scalar FP data-processing (1 source) word.
+fn decode_float_data1(word: u32) -> (Arm64FloatRegister, Arm64FloatRegister) {
+    let fd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+    let fn_ = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+    (fd, fn_)
+}
+
+// Build a scalar FP data-processing (3 source) word: base | (ftype<<22) | (Rm<<16) | (Ra<<10) | (Rn<<5) | Rd.
+// Used by FMADD/FMSUB/FNMADD/FNMSUB.
+fn float_data3_word(
+    base: u32,
+    precision: Arm64FloatPrecision,
+    fd: &Arm64FloatRegister,
+    fn_: &Arm64FloatRegister,
+    fm: &Arm64FloatRegister,
+    fa: &Arm64FloatRegister,
+) -> u32 {
+    base | (precision.ftype() << 22)
+        | ((fm.as_operand_bits() as u32) << 16)
+        | ((fa.as_operand_bits() as u32) << 10)
+        | ((fn_.as_operand_bits() as u32) << 5)
+        | (fd.as_operand_bits() as u32)
+}
+
+// Decode the (Fd, Fn, Fm, Fa) V-register operands of a scalar FP data-processing (3 source) word.
+fn decode_float_data3(
+    word: u32,
+) -> (
+    Arm64FloatRegister,
+    Arm64FloatRegister,
+    Arm64FloatRegister,
+    Arm64FloatRegister,
+) {
+    let fd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+    let fn_ = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+    let fm = Arm64FloatRegister::from_operand_bits(reg_field(word, 16));
+    let fa = Arm64FloatRegister::from_operand_bits(reg_field(word, 10));
+    (fd, fn_, fm, fa)
+}
+
+// Build a convert-INT-to-FP word (SCVTF/UCVTF): base | (sf<<31) | (ftype<<22) | (Rn<<5) | Rd, with the FP
+// register at Rd[4:0] (the dest) and the GP register at Rn[9:5] (the source). GP width -> sf, FP precision -> ftype.
+fn int_to_fp_word(
+    base: u32,
+    fp_precision: Arm64FloatPrecision,
+    gp_width: Arm64RegisterWidth,
+    fd: &Arm64FloatRegister,
+    rn: &Arm64GeneralPurposeRegister,
+) -> u32 {
+    base | (gp_width.sf() << 31)
+        | (fp_precision.ftype() << 22)
+        | ((rn.as_operand_bits() as u32) << 5)
+        | (fd.as_operand_bits() as u32)
+}
+
+// Build a convert-FP-to-INT word (FCVTZS/FCVTZU): like `int_to_fp_word` but the GP register is the dest at
+// Rd[4:0] and the FP register is the source at Rn[9:5].
+fn fp_to_int_word(
+    base: u32,
+    gp_width: Arm64RegisterWidth,
+    fp_precision: Arm64FloatPrecision,
+    rd: &Arm64GeneralPurposeRegister,
+    fn_: &Arm64FloatRegister,
+) -> u32 {
+    base | (gp_width.sf() << 31)
+        | (fp_precision.ftype() << 22)
+        | ((fn_.as_operand_bits() as u32) << 5)
+        | (rd.as_operand_bits() as u32)
+}
+
+// Build a convert-FP<->FIXED-POINT word: base | (sf<<31) | (ftype<<22) | (scale<<10) | (Rn<<5) | Rd, where
+// `scale = 64 - fbits`. `rd_bits`/`rn_bits` are the already-positioned register operands (FP-dest for
+// SCVTF/UCVTF, GP-dest for FCVTZS/FCVTZU). `fbits` is validated 1..=32 for `W`, 1..=64 for `X`.
+fn fp_fixed_word(
+    base: u32,
+    precision: Arm64FloatPrecision,
+    gp_width: Arm64RegisterWidth,
+    rd_bits: u32,
+    rn_bits: u32,
+    fbits: u8,
+) -> Result<u32, EncodeError> {
+    let max: u8 = if matches!(gp_width, Arm64RegisterWidth::W) {
+        32
+    } else {
+        64
+    };
+    if fbits < 1 || fbits > max {
+        return Err(EncodeError::ImmediateOutOfRange {
+            field: "fbits",
+            value: fbits as i64,
+            minimum: 1,
+            maximum: max as i64,
+        });
+    }
+    let scale = 64 - fbits as u32;
+    Ok(base
+        | (gp_width.sf() << 31)
+        | (precision.ftype() << 22)
+        | (scale << 10)
+        | (rn_bits << 5)
+        | rd_bits)
+}
+
+// Decode the shared operands of a convert-FP<->FIXED-POINT word: (FP precision, GP width, fbits). Returns None
+// for a reserved `ftype` (0b10). `fbits = 64 - scale[15:10]`; the caller reads the two registers by role.
+fn decode_fp_fixed(word: u32) -> Option<(Arm64FloatPrecision, Arm64RegisterWidth, u8)> {
+    let precision = Arm64FloatPrecision::from_ftype_bits((word >> 22) & 0b11)?;
+    let scale = (word >> 10) & 0x3F;
+    Some((precision, width_from_word(word), (64 - scale) as u8))
+}
+
+// The Vm<<16 | Vn<<5 | Vd register triple shared by the NEON "three same" forms.
+fn vec_three_regs(
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    rm: &Arm64FloatRegister,
+) -> u32 {
+    ((rm.as_operand_bits() as u32) << 16)
+        | ((rn.as_operand_bits() as u32) << 5)
+        | (rd.as_operand_bits() as u32)
+}
+
+// Pack a 4-bit SVE FP8 indexed-FMLAL index into its scattered bit positions: bit10 (LSB), bit11, bit19, bit20 (MSB).
+fn sve_fp8_idx_pack(index: u32) -> u32 {
+    ((index & 1) << 10)
+        | (((index >> 1) & 1) << 11)
+        | (((index >> 2) & 1) << 19)
+        | (((index >> 3) & 1) << 20)
+}
+
+// Inverse of `sve_fp8_idx_pack`: recover the 4-bit index from a decoded SVE FP8 indexed-FMLAL word.
+fn sve_fp8_idx_unpack(word: u32) -> u8 {
+    (((word >> 10) & 1)
+        | (((word >> 11) & 1) << 1)
+        | (((word >> 19) & 1) << 2)
+        | (((word >> 20) & 1) << 3)) as u8
+}
+
+// Build a NEON integer three-same word: op.base() | (Q<<30) | (size<<22) | Vm<<16 | Vn<<5 | Vd. The ops without
+// a 64-bit element form (MUL, min/max, URHADD) reject the `.1d`/`.2d` arrangements (`size = 11` is reserved there).
+fn vec_int_three_same_word(
+    op: Arm64VectorIntThreeSameOp,
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    rm: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if !op.allows_size(arrangement.size_bits()) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "this NEON three-same integer op has no encoding for that element size (MUL/min-max/halving lack .1d/.2d; PMUL is byte-only; SQDMULH/SQRDMULH are half/word-only)",
+        });
+    }
+    Ok(op.base()
+        | (arrangement.q_bit() << 30)
+        | (arrangement.size_bits() << 22)
+        | vec_three_regs(rd, rn, rm))
+}
+
+// Build a NEON permute word (ZIP/UZP/TRN): op.base() | (Q<<30) | (size<<22) | Vm<<16 | Vn<<5 | Vd. The element
+// size comes from the arrangement; every arrangement except the single-lane `.1d` is valid.
+fn vec_permute_word(
+    op: Arm64VectorPermuteOp,
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    rm: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if matches!(arrangement, Arm64VectorArrangement::D1) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "NEON permute (ZIP/UZP/TRN) has no single-lane .1d form",
+        });
+    }
+    Ok(op.base()
+        | (arrangement.q_bit() << 30)
+        | (arrangement.size_bits() << 22)
+        | vec_three_regs(rd, rn, rm))
+}
+
+// Build a NEON "three different" word: op.base() | (Q(high)<<30) | (size<<22) | Vm<<16 | Vn<<5 | Vd. `wide` is
+// the 128-bit side (.8h/.4s/.2d); the encoded source `size` = wide.size_bits() - 1 (.8h->0, .4s->1, .2d->2).
+// `high` is the upper-half (Q=1, "2"-suffix) form. The op fixes which operands are wide vs narrow (its shape).
+fn vec_three_different_word(
+    op: Arm64VectorThreeDifferentOp,
+    wide: Arm64VectorArrangement,
+    high: bool,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    rm: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if !op.allows_wide(wide) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "three-different wide arrangement must be .8h/.4s/.2d (the SQDMULL/SQDMLAL/SQDMLSL ops have no .8h-wide form)",
+        });
+    }
+    let size = wide.size_bits() - 1; // .8h (01) -> 0, .4s (10) -> 1, .2d (11) -> 2
+    let q = if high { 1 } else { 0 };
+    Ok(op.base() | (q << 30) | (size << 22) | vec_three_regs(rd, rn, rm))
+}
+
+// Build a NEON FP three-same word: op.base() | (Q<<30) | (sz<<22) | Vm<<16 | Vn<<5 | Vd. FP lane arithmetic is
+// valid only for `.2s`/`.4s`/`.2d`.
+fn vec_fp_three_same_word(
+    op: Arm64VectorFpThreeSameOp,
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    rm: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if !matches!(
+        arrangement,
+        Arm64VectorArrangement::S2 | Arm64VectorArrangement::S4 | Arm64VectorArrangement::D2
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "NEON FP arithmetic is only valid for .2s/.4s/.2d",
+        });
+    }
+    Ok(op.base()
+        | (arrangement.q_bit() << 30)
+        | (arrangement.fp_sz_bit() << 22)
+        | vec_three_regs(rd, rn, rm))
+}
+
+// Build a NEON bitwise/logical three-same word: op.base() | (Q<<30) | Vm<<16 | Vn<<5 | Vd. These ops are
+// size-agnostic -- valid only for the `.8b`/`.16b` arrangements (register width via Q; no element size).
+fn vec_bitwise_word(
+    op: Arm64VectorBitwiseOp,
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    rm: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if !matches!(
+        arrangement,
+        Arm64VectorArrangement::B8 | Arm64VectorArrangement::B16
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "NEON bitwise/logical ops are only valid for the .8b/.16b arrangements",
+        });
+    }
+    Ok(op.base() | (arrangement.q_bit() << 30) | vec_three_regs(rd, rn, rm))
+}
+
+// The Vn<<5 | Vd register pair shared by the NEON two-register-misc (unary) forms.
+fn vec_two_regs(rd: &Arm64FloatRegister, rn: &Arm64FloatRegister) -> u32 {
+    ((rn.as_operand_bits() as u32) << 5) | (rd.as_operand_bits() as u32)
+}
+
+// Decode the (Vd, Vn) register pair of a NEON two-register-misc word.
+fn decode_vec_two(word: u32) -> (Arm64FloatRegister, Arm64FloatRegister) {
+    (
+        Arm64FloatRegister::from_operand_bits(reg_field(word, 0)),
+        Arm64FloatRegister::from_operand_bits(reg_field(word, 5)),
+    )
+}
+
+// Build a NEON integer two-register-misc unary word: op.base() | (Q<<30) | (size<<22) | Vn<<5 | Vd. The
+// arrangement supplies the element size; the valid set is per-op (reversals/CNT are size-restricted, CLS/CLZ
+// exclude doubleword, ABS/NEG/SQABS/SQNEG accept all but the single-lane `.1d`).
+fn vec_int_unary_word(
+    op: Arm64VectorIntUnaryOp,
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if !op.allows_arrangement(arrangement) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "this NEON two-register-misc op does not support that arrangement (size-restricted; e.g. REV16/CNT are byte-only, CLS/CLZ have no doubleword, ABS/NEG have no .1d)",
+        });
+    }
+    Ok(op.base()
+        | (arrangement.q_bit() << 30)
+        | (arrangement.size_bits() << 22)
+        | vec_two_regs(rd, rn))
+}
+
+// Build a NEON vector narrowing-extract two-register-misc word (XTN/SQXTN/SQXTUN/UQXTN): base | (Q<<30) |
+// (size<<22) | Rn<<5 | Rd. `dst` is the narrower destination element (`.8b`..`.4s`, size 00/01/10); a doubleword
+// (size 11) destination has no narrower result and is rejected. `Q` selects the XTN/XTN2 (lower / upper half) form.
+fn vec_narrow_word(
+    op: Arm64VectorNarrowOp,
+    dst: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if dst.size_bits() == 0b11 {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "vector narrowing extract needs a .8b/.16b/.4h/.8h/.2s/.4s destination (no doubleword narrow)",
+        });
+    }
+    Ok(op.base() | (dst.q_bit() << 30) | (dst.size_bits() << 22) | vec_two_regs(rd, rn))
+}
+
+// Build a NEON FP two-register-misc unary word (FABS/FNEG/FSQRT): valid only for `.2s`/`.4s`/`.2d` (the base
+// fixes the `size` high bit; the arrangement supplies `sz`).
+fn vec_fp_unary_word(
+    op: Arm64VectorFpUnaryOp,
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if !matches!(
+        arrangement,
+        Arm64VectorArrangement::S2 | Arm64VectorArrangement::S4 | Arm64VectorArrangement::D2
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "NEON FP unary ops are only valid for .2s/.4s/.2d",
+        });
+    }
+    Ok(op.base()
+        | (arrangement.q_bit() << 30)
+        | (arrangement.fp_sz_bit() << 22)
+        | vec_two_regs(rd, rn))
+}
+
+// Build a NEON NOT (bitwise-not) two-register-misc word: 0x2E205800 | (Q<<30) | Vn<<5 | Vd. Byte-wise -- only
+// the `.8b`/`.16b` arrangements (the size field is fixed 00).
+fn vec_not_word(
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if !matches!(
+        arrangement,
+        Arm64VectorArrangement::B8 | Arm64VectorArrangement::B16
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "NEON NOT is only valid for the .8b/.16b arrangements",
+        });
+    }
+    Ok(0x2E20_5800 | (arrangement.q_bit() << 30) | vec_two_regs(rd, rn))
+}
+
+// Build a NEON shift-by-immediate word (SHL/SSHR/USHR). `immh:immb` folds element size + shift: left
+// `immh:immb = element_bits + shift` (shift 0..element_bits-1); right `immh:immb = 2*element_bits - shift`
+// (shift 1..element_bits). The `.1d` arrangement is invalid (that is the scalar form).
+// Build a scalar shift-by-immediate word: op.base() | (immh:immb << 16) | Vn<<5 | Vd. `element` supplies the
+// element bits (only some are allowed per op); the shift folds via immh:immb = element_bits + shift (left) or
+// 2*element_bits - shift (right). Mirrors `vec_shift_imm_word` without the Q/arrangement dimension.
+fn scalar_shift_imm_word(
+    op: Arm64ScalarShiftImmOp,
+    element: Arm64VectorElement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    shift: u8,
+) -> Result<u32, EncodeError> {
+    if !op.allows_size(element.size_bits()) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "scalar shift op does not allow this element size",
+        });
+    }
+    let element_bits = 8u32 << element.size_bits();
+    let shift = shift as u32;
+    let immh_immb = if op.is_left() {
+        if shift >= element_bits {
+            return Err(EncodeError::InvalidOperandCombination {
+                detail: "scalar left shift amount must be 0..element_bits-1",
+            });
+        }
+        element_bits + shift
+    } else {
+        if shift == 0 || shift > element_bits {
+            return Err(EncodeError::InvalidOperandCombination {
+                detail: "scalar right shift amount must be 1..element_bits",
+            });
+        }
+        2 * element_bits - shift
+    };
+    Ok(op.base() | (immh_immb << 16) | vec_two_regs(rd, rn))
+}
+
+fn vec_shift_imm_word(
+    op: Arm64VectorShiftImmOp,
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    shift: u8,
+) -> Result<u32, EncodeError> {
+    if matches!(arrangement, Arm64VectorArrangement::D1) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "NEON shift-by-immediate has no single-lane .1d form",
+        });
+    }
+    let element_bits = 8u32 << arrangement.size_bits(); // 8 / 16 / 32 / 64
+    let shift = shift as u32;
+    let immh_immb = if op.is_left() {
+        if shift >= element_bits {
+            return Err(EncodeError::InvalidOperandCombination {
+                detail: "NEON left shift amount must be 0..element_bits-1",
+            });
+        }
+        element_bits + shift
+    } else {
+        if shift == 0 || shift > element_bits {
+            return Err(EncodeError::InvalidOperandCombination {
+                detail: "NEON right shift amount must be 1..element_bits",
+            });
+        }
+        2 * element_bits - shift
+    };
+    Ok(op.base() | (arrangement.q_bit() << 30) | (immh_immb << 16) | vec_two_regs(rd, rn))
+}
+
+// Build a NEON shift-by-immediate-with-size-change word (SSHLL long / SHRN narrow). `narrow` is the narrow side
+// (.8b/.16b/.4h/.8h/.2s/.4s) -- its element bits are what immh:immb folds with the shift, and its Q is the
+// upper-half (2-suffix) bit. Long (widen): immh:immb = narrow_bits + shift (shift 0..narrow_bits-1). Narrow:
+// immh:immb = 2*narrow_bits - shift (shift 1..narrow_bits). The narrow side must be 8/16/32-bit.
+fn vec_shift_long_narrow_word(
+    op: Arm64VectorShiftLongNarrowOp,
+    narrow: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    shift: u8,
+) -> Result<u32, EncodeError> {
+    if matches!(
+        narrow,
+        Arm64VectorArrangement::D1 | Arm64VectorArrangement::D2
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "the narrow side of a long/narrowing shift must be 8/16/32-bit (.8b..4s), not 64-bit",
+        });
+    }
+    let narrow_bits = 8u32 << narrow.size_bits(); // 8 / 16 / 32
+    let shift = shift as u32;
+    let immh_immb = if op.is_long() {
+        if shift >= narrow_bits {
+            return Err(EncodeError::InvalidOperandCombination {
+                detail: "a long (widening) shift amount must be 0..narrow_bits-1",
+            });
+        }
+        narrow_bits + shift
+    } else {
+        if shift == 0 || shift > narrow_bits {
+            return Err(EncodeError::InvalidOperandCombination {
+                detail: "a narrowing shift amount must be 1..narrow_bits",
+            });
+        }
+        2 * narrow_bits - shift
+    };
+    Ok(op.base() | (narrow.q_bit() << 30) | (immh_immb << 16) | vec_two_regs(rd, rn))
+}
+
+// Build a NEON across-lanes reduction word: op.base() | (Q<<30) | (size_field<<22) | Vn<<5 | Vd. The arrangement
+// supplies Q + the size contribution (the full 2-bit lane size for the integer ops; the 1-bit FP `sz` for the FP
+// ops, whose `size` high bit is already in the base). Invalid source arrangements are rejected per op.
+fn vec_across_lanes_word(
+    op: Arm64VectorAcrossLanesOp,
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if !op.allows_arrangement(arrangement) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "this NEON across-lanes reduction does not support that source arrangement (integer: .8b/.16b/.4h/.8h/.4s; FP: .4s)",
+        });
+    }
+    Ok(op.base()
+        | (arrangement.q_bit() << 30)
+        | (op.size_field(arrangement) << 22)
+        | vec_two_regs(rd, rn))
+}
+
+// Build a NEON EXT word: 0x2E00_0000 | (Q<<30) | (Vm<<16) | (index<<11) | Vn<<5 | Vd. Valid only for .8b (index
+// 0..7) and .16b (index 0..15) -- the byte-extract window over the Vn:Vm concatenation.
+fn vec_ext_word(
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    rm: &Arm64FloatRegister,
+    index: u8,
+) -> Result<u32, EncodeError> {
+    let max = match arrangement {
+        Arm64VectorArrangement::B16 => 15,
+        Arm64VectorArrangement::B8 => 7,
+        _ => {
+            return Err(EncodeError::InvalidOperandCombination {
+                detail: "EXT is only valid for the .8b/.16b arrangements",
+            });
+        }
+    };
+    if index > max {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "EXT byte index out of range (0..=7 for .8b, 0..=15 for .16b)",
+        });
+    }
+    Ok(0x2E00_0000
+        | (arrangement.q_bit() << 30)
+        | ((index as u32) << 11)
+        | vec_three_regs(rd, rn, rm))
+}
+
+// Map a NEON modified-immediate (op, arrangement, shift) to its (cmode, op_bit), or None if not allocated. The
+// element width is `8 << size_bits`; the `.1d` scalar 64-bit MOVI is not modeled (only the `.2d` vector form).
+fn modimm_cmode_op(
+    op: Arm64VectorModifiedImmediateOp,
+    arrangement: Arm64VectorArrangement,
+    shift: Arm64VectorImmediateShift,
+) -> Option<(u32, u32)> {
+    use Arm64VectorImmediateShift as S;
+    use Arm64VectorModifiedImmediateOp as Op;
+    let ebits = 8u32 << arrangement.size_bits();
+    if ebits == 64 && arrangement.q_bit() == 0 {
+        return None; // `.1d` is the unmodeled scalar 64-bit form
+    }
+    let r = match (op, ebits, shift) {
+        (Op::Movi, 8, S::None) => (0b1110, 0),
+        (Op::Movi, 64, S::None) => (0b1110, 1),
+        (Op::Movi, 16, S::None) => (0b1000, 0),
+        (Op::Movi, 16, S::Lsl8) => (0b1010, 0),
+        (Op::Movi, 32, S::None) => (0b0000, 0),
+        (Op::Movi, 32, S::Lsl8) => (0b0010, 0),
+        (Op::Movi, 32, S::Lsl16) => (0b0100, 0),
+        (Op::Movi, 32, S::Lsl24) => (0b0110, 0),
+        (Op::Movi, 32, S::Msl8) => (0b1100, 0),
+        (Op::Movi, 32, S::Msl16) => (0b1101, 0),
+        (Op::Mvni, 16, S::None) => (0b1000, 1),
+        (Op::Mvni, 16, S::Lsl8) => (0b1010, 1),
+        (Op::Mvni, 32, S::None) => (0b0000, 1),
+        (Op::Mvni, 32, S::Lsl8) => (0b0010, 1),
+        (Op::Mvni, 32, S::Lsl16) => (0b0100, 1),
+        (Op::Mvni, 32, S::Lsl24) => (0b0110, 1),
+        (Op::Mvni, 32, S::Msl8) => (0b1100, 1),
+        (Op::Mvni, 32, S::Msl16) => (0b1101, 1),
+        (Op::Orr, 16, S::None) => (0b1001, 0),
+        (Op::Orr, 16, S::Lsl8) => (0b1011, 0),
+        (Op::Orr, 32, S::None) => (0b0001, 0),
+        (Op::Orr, 32, S::Lsl8) => (0b0011, 0),
+        (Op::Orr, 32, S::Lsl16) => (0b0101, 0),
+        (Op::Orr, 32, S::Lsl24) => (0b0111, 0),
+        (Op::Bic, 16, S::None) => (0b1001, 1),
+        (Op::Bic, 16, S::Lsl8) => (0b1011, 1),
+        (Op::Bic, 32, S::None) => (0b0001, 1),
+        (Op::Bic, 32, S::Lsl8) => (0b0011, 1),
+        (Op::Bic, 32, S::Lsl16) => (0b0101, 1),
+        (Op::Bic, 32, S::Lsl24) => (0b0111, 1),
+        _ => return None,
+    };
+    Some(r)
+}
+
+// The inverse: map a (cmode, op_bit) to its (op, element_bits, shift). None for FMOV (cmode 1111), which is handled by the dedicated VecFmovImmediate path.
+fn modimm_decode(
+    cmode: u32,
+    op_bit: u32,
+) -> Option<(
+    Arm64VectorModifiedImmediateOp,
+    u32,
+    Arm64VectorImmediateShift,
+)> {
+    use Arm64VectorImmediateShift as S;
+    use Arm64VectorModifiedImmediateOp as Op;
+    let r = match (cmode, op_bit) {
+        (0b1110, 0) => (Op::Movi, 8, S::None),
+        (0b1110, 1) => (Op::Movi, 64, S::None),
+        (0b1000, 0) => (Op::Movi, 16, S::None),
+        (0b1010, 0) => (Op::Movi, 16, S::Lsl8),
+        (0b0000, 0) => (Op::Movi, 32, S::None),
+        (0b0010, 0) => (Op::Movi, 32, S::Lsl8),
+        (0b0100, 0) => (Op::Movi, 32, S::Lsl16),
+        (0b0110, 0) => (Op::Movi, 32, S::Lsl24),
+        (0b1100, 0) => (Op::Movi, 32, S::Msl8),
+        (0b1101, 0) => (Op::Movi, 32, S::Msl16),
+        (0b1000, 1) => (Op::Mvni, 16, S::None),
+        (0b1010, 1) => (Op::Mvni, 16, S::Lsl8),
+        (0b0000, 1) => (Op::Mvni, 32, S::None),
+        (0b0010, 1) => (Op::Mvni, 32, S::Lsl8),
+        (0b0100, 1) => (Op::Mvni, 32, S::Lsl16),
+        (0b0110, 1) => (Op::Mvni, 32, S::Lsl24),
+        (0b1100, 1) => (Op::Mvni, 32, S::Msl8),
+        (0b1101, 1) => (Op::Mvni, 32, S::Msl16),
+        (0b1001, 0) => (Op::Orr, 16, S::None),
+        (0b1011, 0) => (Op::Orr, 16, S::Lsl8),
+        (0b0001, 0) => (Op::Orr, 32, S::None),
+        (0b0011, 0) => (Op::Orr, 32, S::Lsl8),
+        (0b0101, 0) => (Op::Orr, 32, S::Lsl16),
+        (0b0111, 0) => (Op::Orr, 32, S::Lsl24),
+        (0b1001, 1) => (Op::Bic, 16, S::None),
+        (0b1011, 1) => (Op::Bic, 16, S::Lsl8),
+        (0b0001, 1) => (Op::Bic, 32, S::None),
+        (0b0011, 1) => (Op::Bic, 32, S::Lsl8),
+        (0b0101, 1) => (Op::Bic, 32, S::Lsl16),
+        (0b0111, 1) => (Op::Bic, 32, S::Lsl24),
+        _ => return None, // cmode 1111 is FMOV vector-immediate (handled separately as VecFmovImmediate)
+    };
+    Some(r)
+}
+
+// Encode a NEON by-element (Vm, index) into its (Rm[19:16], M[20], L[21], H[11]) fields for an element size:
+// `.h` (size 01) spreads index 0..7 across H:L:M with Vm restricted to v0-v15; `.s` (10) uses index 0..3 (H:L)
+// with M = Vm bit 4; `.d` (11) uses index 0..1 (H), M = Vm bit 4. Returns (Rm, M, L, H), or None if out of range.
+fn byelem_fields(size: u32, vm: u8, index: u8) -> Option<(u32, u32, u32, u32)> {
+    match size {
+        0b01 => {
+            if vm > 15 || index > 7 {
+                return None;
+            }
+            Some((
+                vm as u32,
+                (index & 1) as u32,
+                ((index >> 1) & 1) as u32,
+                ((index >> 2) & 1) as u32,
+            ))
+        }
+        0b10 => {
+            if index > 3 {
+                return None;
+            }
+            Some((
+                (vm & 0xF) as u32,
+                (vm >> 4) as u32,
+                (index & 1) as u32,
+                ((index >> 1) & 1) as u32,
+            ))
+        }
+        0b11 => {
+            if index > 1 {
+                return None;
+            }
+            Some(((vm & 0xF) as u32, (vm >> 4) as u32, 0, index as u32))
+        }
+        _ => None,
+    }
+}
+
+// Recover the (Vm, index) of a NEON by-element word given the element size (the inverse of `byelem_fields`).
+fn byelem_decode(size: u32, word: u32) -> (u8, u8) {
+    let l = (word >> 21) & 1;
+    let m = (word >> 20) & 1;
+    let rm = (word >> 16) & 0xF;
+    let h = (word >> 11) & 1;
+    match size {
+        0b01 => (rm as u8, ((h << 2) | (l << 1) | m) as u8),
+        0b10 => (((m << 4) | rm) as u8, ((h << 1) | l) as u8),
+        _ => (((m << 4) | rm) as u8, h as u8),
+    }
+}
+
+// Recover the shared (widen, op, Wv, slice) of an SME2 integer MLAL/MLALL word, or `None` when the op/widen combination
+// is not canonical (the `.b` 2-way combo, SUMLALL outside the indexed form, or a mixed op for a non-`.b`->`.s` widening).
+fn mlal_decode_common(
+    word: u32,
+    indexed: bool,
+) -> Option<(Arm64Sme2ZaMlalWiden, Arm64Sme2ZaMlalOp, u8, u8)> {
+    let widen = mlal_widen((word >> 22) & 1 == 1, (word >> 11) & 1 == 1)?;
+    let op = Arm64Sme2ZaMlalOp::from_op_bits((word >> 2) & 0b111)?;
+    if op.is_mixed() && !matches!(widen, Arm64Sme2ZaMlalWiden::BtoS) {
+        return None;
+    }
+    if matches!(op, Arm64Sme2ZaMlalOp::Sumlall) && !indexed {
+        return None;
+    }
+    // The slice-offset field is [1:0] for the 2-way pair but only [0] for the 4-way quad (whose [2] is the op's mixed
+    // bit and whose [1] must be 0). Requiring the 4-way [1]=0 also excludes the FP8 FMLALL_S multi marker ([1]=1).
+    let off_field = if widen.two_way() {
+        word & 0x3
+    } else {
+        if word & 0x2 != 0 {
+            return None;
+        }
+        word & 0x1
+    };
+    let wv = ((word >> 13) & 0x3) as u8;
+    let slice = (off_field * widen.step() as u32) as u8;
+    Some((widen, op, wv, slice))
+}
+
+// Decode the SVE PMOV `[23:17]` tsz field into (element size, element index), or `None` for a non-PMOV pattern. The
+// element marker and the index interleave: `.b` is the bare 0x15; `.h`/`.s` carry the index in the low bit(s); `.d`
+// spreads its 3-bit index across field bits 0, 1 and 5.
+fn pmov_size_index(t: u32) -> Option<(Arm64VectorElement, u8)> {
+    Some(if t == 0x15 {
+        (Arm64VectorElement::B, 0)
+    } else if t & 0x7E == 0x16 {
+        (Arm64VectorElement::H, (t & 1) as u8)
+    } else if t & 0x7C == 0x34 {
+        (Arm64VectorElement::S, (t & 3) as u8)
+    } else if t & 0x5C == 0x54 {
+        (
+            Arm64VectorElement::D,
+            ((t & 1) | (((t >> 1) & 1) << 1) | (((t >> 5) & 1) << 2)) as u8,
+        )
+    } else {
+        return None;
+    })
+}
+
+// Validate an SME2 ZA single-vector-group slice register / offset (`Wv` is `W8..W11`, `off` is `0..=7`).
+fn check_za_group_off(wv: u8, off: u8) -> Result<(), EncodeError> {
+    if wv > 3 || off > 7 {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "the ZA slice register is W8..W11 and the offset is 0..=7",
+        });
+    }
+    Ok(())
+}
+
+// Validate an SME2 ZA-group `Zn` source list base and return its packed field (`Zn>>1`[9:6] vgx2 / `Zn>>2`[9:7] vgx4).
+fn check_za_group_zn(four: bool, zn_base: Arm64ScalableVectorRegister) -> Result<u32, EncodeError> {
+    let align = if four { 0b11 } else { 0b1 };
+    if zn_base.as_operand_bits() & align != 0 {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "the SME2 ZA-group source list base must be a multiple of 2 (vgx2) or 4 (vgx4)",
+        });
+    }
+    let zn = zn_base.as_operand_bits() as u32;
+    Ok(if four { (zn >> 2) << 7 } else { (zn >> 1) << 6 })
+}
+
+// Validate an SME2 FMLAL/FMLSL ZA-slice pair (`.h`->`.s`, step 2), returning the `slice/2` offset for the `[1:0]` field.
+fn fmlal_slice_off(wv: u8, slice: u8) -> Result<u32, EncodeError> {
+    if wv > 3 {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "the ZA slice register is W8..W11",
+        });
+    }
+    if !slice.is_multiple_of(2) || slice / 2 > 3 {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "the SME2 FMLAL ZA slice must be a pair {0,2,4,6}:+1",
+        });
+    }
+    Ok((slice / 2) as u32)
+}
+
+// Recover the SME2 MLAL widening from the h-source and two-way bits; `None` for the unallocated `.b` 2-way combo.
+fn mlal_widen(h_src: bool, two_way: bool) -> Option<Arm64Sme2ZaMlalWiden> {
+    Some(match (h_src, two_way) {
+        (true, true) => Arm64Sme2ZaMlalWiden::HtoS,
+        (true, false) => Arm64Sme2ZaMlalWiden::HtoD,
+        (false, false) => Arm64Sme2ZaMlalWiden::BtoS,
+        (false, true) => return None,
+    })
+}
+
+// Validate an SME2 integer MLAL/MLALL ZA-slice and op/widen combination, returning the encoded slice offset
+// (`first_slice / step`) for the `[2:0]` field. `indexed` permits the SUMLALL op (which exists only there).
+fn mlal_slice_off(
+    op: Arm64Sme2ZaMlalOp,
+    widen: Arm64Sme2ZaMlalWiden,
+    wv: u8,
+    slice: u8,
+    indexed: bool,
+) -> Result<u32, EncodeError> {
+    if wv > 3 {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "the ZA slice register is W8..W11",
+        });
+    }
+    if op.is_mixed() && !matches!(widen, Arm64Sme2ZaMlalWiden::BtoS) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "USMLALL/SUMLALL exist only for the SME2 .b->.s widening",
+        });
+    }
+    if matches!(op, Arm64Sme2ZaMlalOp::Sumlall) && !indexed {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "SUMLALL exists only in the SME2 indexed MLALL form",
+        });
+    }
+    let step = widen.step();
+    let max = if widen.two_way() { 3 } else { 1 };
+    if !slice.is_multiple_of(step) || (slice / step) > max {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "the SME2 MLAL ZA slice must be a pair {0,2,4,6}:+1 (.h->.s) or a quad {0,4}:+3 (4-way)",
+        });
+    }
+    Ok((slice / step) as u32)
+}
+
+// Build a NEON vector-by-element word: op.base() | (Q<<30) | (size<<22) | (L<<21) | (M<<20) | (Rm<<16) | (H<<11)
+// | Vn<<5 | Vd. The index + Vm fold into L/M/Rm/H per element size (see `byelem_fields`).
+fn vec_by_element_word(
+    op: Arm64VectorByElementOp,
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    vm: &Arm64FloatRegister,
+    index: u8,
+) -> Result<u32, EncodeError> {
+    if !op.allows_arrangement(arrangement) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "this NEON by-element op does not support that arrangement (integer: .4h/.8h/.2s/.4s; FP: .2s/.4s/.2d)",
+        });
+    }
+    let size = arrangement.size_bits();
+    let (rm, m, l, h) = byelem_fields(size, vm.as_operand_bits(), index).ok_or(EncodeError::InvalidOperandCombination {
+        detail: "NEON by-element Vm/index out of range (.h: Vm v0-v15 + index 0..=7; .s: index 0..=3; .d: index 0..=1)",
+    })?;
+    Ok(op.base()
+        | (arrangement.q_bit() << 30)
+        | (size << 22)
+        | (l << 21)
+        | (m << 20)
+        | (rm << 16)
+        | (h << 11)
+        | vec_two_regs(rd, rn))
+}
+
+// Build a NEON long vector-by-element word: op.base() | (Q(high)<<30) | (size<<22) | (L<<21) | (M<<20) |
+// (Rm<<16) | (H<<11) | Vn<<5 | Vd. `wide` is the .4s/.2d destination; the encoded `size` is the NARROW element
+// size (wide.size_bits()-1, .h or .s), which also drives the index/Vm fold.
+fn vec_by_element_long_word(
+    op: Arm64VectorByElementLongOp,
+    wide: Arm64VectorArrangement,
+    high: bool,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    vm: &Arm64FloatRegister,
+    index: u8,
+) -> Result<u32, EncodeError> {
+    if !matches!(
+        wide,
+        Arm64VectorArrangement::S4 | Arm64VectorArrangement::D2
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "long by-element destination must be .4s or .2d",
+        });
+    }
+    let size = wide.size_bits() - 1; // .4s (10) -> 01 (.h narrow); .2d (11) -> 10 (.s narrow)
+    let (rm, m, l, h) = byelem_fields(size, vm.as_operand_bits(), index).ok_or(EncodeError::InvalidOperandCombination {
+        detail: "NEON by-element Vm/index out of range (.h: Vm v0-v15 + index 0..=7; .s: index 0..=3)",
+    })?;
+    let q = if high { 1 } else { 0 };
+    Ok(op.base()
+        | (q << 30)
+        | (size << 22)
+        | (l << 21)
+        | (m << 20)
+        | (rm << 16)
+        | (h << 11)
+        | vec_two_regs(rd, rn))
+}
+
+// Build a NEON modified-immediate word: 0x0F00_0400 | (Q<<30) | (op_bit<<29) | (abc<<16) | (cmode<<12) |
+// (defgh<<5) | Rd. imm8 splits abc=[18:16] (imm8>>5) : defgh=[9:5] (imm8 & 0x1F).
+fn vec_modified_immediate_word(
+    op: Arm64VectorModifiedImmediateOp,
+    arrangement: Arm64VectorArrangement,
+    imm8: u8,
+    shift: Arm64VectorImmediateShift,
+    rd: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    let (cmode, op_bit) =
+        modimm_cmode_op(op, arrangement, shift).ok_or(EncodeError::InvalidOperandCombination {
+            detail: "unsupported NEON modified-immediate (op, arrangement, shift) combination",
+        })?;
+    let imm8 = imm8 as u32;
+    let abc = imm8 >> 5;
+    let defgh = imm8 & 0x1F;
+    Ok(0x0F00_0400
+        | (arrangement.q_bit() << 30)
+        | (op_bit << 29)
+        | (abc << 16)
+        | (cmode << 12)
+        | (defgh << 5)
+        | (rd.as_operand_bits() as u32))
+}
+
+// Build a NEON compare-against-zero word: op.base() | (Q<<30) | (size_field<<22) | Vn<<5 | Vd. The arrangement
+// supplies Q + the size contribution (the full 2-bit lane size for integer; the 1-bit FP `sz` for FP). Invalid
+// arrangements are rejected per op (integer: all but .1d; FP: .2s/.4s/.2d).
+fn vec_compare_zero_word(
+    op: Arm64VectorCompareZeroOp,
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if !op.allows_arrangement(arrangement) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "this NEON compare-against-zero does not support that arrangement (integer: all but .1d; FP: .2s/.4s/.2d)",
+        });
+    }
+    Ok(op.base()
+        | (arrangement.q_bit() << 30)
+        | (op.size_field(arrangement) << 22)
+        | vec_two_regs(rd, rn))
+}
+
+// Pack a lane element size + index into the AdvSIMD-copy `imm5` field: imm5 = (index << (size+1)) | (1 << size).
+fn lane_imm5(element: Arm64VectorElement, index: u8) -> u32 {
+    let size = element.size_bits();
+    ((index as u32) << (size + 1)) | (1 << size)
+}
+
+// Unpack the AdvSIMD-copy `imm5` field into (element, lane index); None when imm5 is 0 (not a lane specifier).
+fn decode_lane_imm5(imm5: u32) -> Option<(Arm64VectorElement, u8)> {
+    let element = Arm64VectorElement::from_imm5(imm5)?;
+    let index = (imm5 >> (element.size_bits() + 1)) as u8;
+    Some((element, index))
+}
+
+// Build a NEON FCMLA word: 0x2E00_C400 | (Q<<30) | (size<<22) | Vm<<16 | (rot.code()<<11) | Vn<<5 | Vd. The
+// arrangement (.2s/.4s/.2d) supplies Q + size; all four rotations are valid.
+fn vec_fcmla_word(
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    rm: &Arm64FloatRegister,
+    rotation: Arm64ComplexRotation,
+) -> Result<u32, EncodeError> {
+    if !matches!(
+        arrangement,
+        Arm64VectorArrangement::H4
+            | Arm64VectorArrangement::H8
+            | Arm64VectorArrangement::S2
+            | Arm64VectorArrangement::S4
+            | Arm64VectorArrangement::D2
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "FCMLA is valid for .4h/.8h/.2s/.4s/.2d",
+        });
+    }
+    Ok(0x2E00_C400
+        | (arrangement.q_bit() << 30)
+        | (arrangement.size_bits() << 22)
+        | (rotation.code() << 11)
+        | vec_three_regs(rd, rn, rm))
+}
+
+// Build a NEON FCADD word: 0x2E00_E400 | (Q<<30) | (size<<22) | Vm<<16 | (rot_bit<<12) | Vn<<5 | Vd. Only the
+// #90 / #270 rotations are valid (encoded as bit 12 = 0 / 1).
+fn vec_fcadd_word(
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    rm: &Arm64FloatRegister,
+    rotation: Arm64ComplexRotation,
+) -> Result<u32, EncodeError> {
+    if !matches!(
+        arrangement,
+        Arm64VectorArrangement::H4
+            | Arm64VectorArrangement::H8
+            | Arm64VectorArrangement::S2
+            | Arm64VectorArrangement::S4
+            | Arm64VectorArrangement::D2
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "FCADD is valid for .4h/.8h/.2s/.4s/.2d",
+        });
+    }
+    let rot_bit = match rotation {
+        Arm64ComplexRotation::R90 => 0,
+        Arm64ComplexRotation::R270 => 1,
+        _ => {
+            return Err(EncodeError::InvalidOperandCombination {
+                detail: "FCADD rotation must be #90 or #270",
+            });
+        }
+    };
+    Ok(0x2E00_E400
+        | (arrangement.q_bit() << 30)
+        | (arrangement.size_bits() << 22)
+        | (rot_bit << 12)
+        | vec_three_regs(rd, rn, rm))
+}
+
+// Build a NEON FCMLA (by indexed element) word: VEC_FCMLA_IDX_BASE | (Q<<30) | (size<<22) | (L<<21) | (M<<20) |
+// (Rm<<16) | (rot<<13) | (H<<11) | Vn<<5 | Vd. Valid for .4h/.8h (index 0..=3 via L:H) and .4s (index 0..=1 via
+// H); `vm` is v0..v31 (M:Rm). All four rotations are allowed.
+fn vec_fcmla_by_element_word(
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    vm: &Arm64FloatRegister,
+    index: u8,
+    rotation: Arm64ComplexRotation,
+) -> Result<u32, EncodeError> {
+    use Arm64VectorArrangement::{H4, H8, S4};
+    // the 64-bit .4h and .4s hold two complex pairs (index 0..=1); the 128-bit .8h holds four (index 0..=3).
+    let max_index = match arrangement {
+        H8 => 3,
+        H4 | S4 => 1,
+        _ => {
+            return Err(EncodeError::InvalidOperandCombination {
+                detail: "FCMLA by-element is valid for .4h/.8h/.4s",
+            });
+        }
+    };
+    if index > max_index {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "FCMLA by-element index out of range (.8h 0..=3, .4h/.4s 0..=1)",
+        });
+    }
+    let vm_bits = vm.as_operand_bits() as u32; // v0..v31
+    let m = (vm_bits >> 4) & 1;
+    let rm = vm_bits & 0xF;
+    // .h forms encode the index as 2*H+L (H[11] high bit, L[21] low bit); .4s uses only H[11] (L=0). The 64-bit
+    // .4h has one index bit -- it lands in L (its high bit H is 0, so 2*H+L reduces to L).
+    let idx = index as u32;
+    let (l, h) = if matches!(arrangement, S4) {
+        (0, idx & 1)
+    } else {
+        (idx & 1, (idx >> 1) & 1)
+    };
+    Ok(VEC_FCMLA_IDX_BASE
+        | (arrangement.q_bit() << 30)
+        | (arrangement.size_bits() << 22)
+        | (l << 21)
+        | (m << 20)
+        | (rm << 16)
+        | (rotation.code() << 13)
+        | (h << 11)
+        | vec_two_regs(rd, rn))
+}
+
+// Build a NEON SHLL/SHLL2 word: VEC_SHLL_BASE | (Q(high)<<30) | (size<<22) | Vn<<5 | Vd. The source element `size`
+// is B/H/S (the shift is fixed at 8/16/32 = the source element bits); the .d (64-bit) source has no long form.
+fn vec_shll_word(
+    high: bool,
+    size: Arm64VectorElement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if matches!(size, Arm64VectorElement::D) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "SHLL source element is .b/.h/.s (no .d long form)",
+        });
+    }
+    Ok(VEC_SHLL_BASE | (u32::from(high) << 30) | (size.size_bits() << 22) | vec_two_regs(rd, rn))
+}
+
+// Build a NEON RDM (vector) word: op.vector_base() | (Q<<30) | (size<<22) | Vm<<16 | Vn<<5 | Vd. Valid for the
+// .4h/.8h/.2s/.4s arrangements (three-same-extra, [21]=0).
+fn vec_rdm_word(
+    op: Arm64VectorRdmOp,
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    rm: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if !matches!(
+        arrangement,
+        Arm64VectorArrangement::H4
+            | Arm64VectorArrangement::H8
+            | Arm64VectorArrangement::S2
+            | Arm64VectorArrangement::S4
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "SQRDMLAH/SQRDMLSH are valid for .4h/.8h/.2s/.4s",
+        });
+    }
+    Ok(op.vector_base()
+        | (arrangement.q_bit() << 30)
+        | (arrangement.size_bits() << 22)
+        | vec_three_regs(rd, rn, rm))
+}
+
+// Build a NEON RDM (by element) word: op.by_element_base() | (Q<<30) | (size<<22) | (L<<21) | (M<<20) | (Rm<<16)
+// | (H<<11) | Vn<<5 | Vd. Same arrangements; the index folds via byelem_fields per element size.
+fn vec_rdm_by_element_word(
+    op: Arm64VectorRdmOp,
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    vm: &Arm64FloatRegister,
+    index: u8,
+) -> Result<u32, EncodeError> {
+    if !matches!(
+        arrangement,
+        Arm64VectorArrangement::H4
+            | Arm64VectorArrangement::H8
+            | Arm64VectorArrangement::S2
+            | Arm64VectorArrangement::S4
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "SQRDMLAH/SQRDMLSH are valid for .4h/.8h/.2s/.4s",
+        });
+    }
+    let size = arrangement.size_bits();
+    let (rm, m, l, h) = byelem_fields(size, vm.as_operand_bits(), index).ok_or(
+        EncodeError::InvalidOperandCombination {
+            detail: "SQRDMLAH/SQRDMLSH by-element index/Vm out of range",
+        },
+    )?;
+    Ok(op.by_element_base()
+        | (arrangement.q_bit() << 30)
+        | (size << 22)
+        | (l << 21)
+        | (m << 20)
+        | (rm << 16)
+        | (h << 11)
+        | vec_two_regs(rd, rn))
+}
+
+// Build a NEON SDOT/UDOT (vector) word: base | (Q<<30) | (size<<22) | Vm<<16 | Vn<<5 | Vd. base 0x0E00_9400
+// (SDOT) / 0x2E00_9400 (UDOT); the arrangement (.2s/.4s) supplies Q + size (10). [21]=0 keeps it distinct from
+// the three-same group under the shared mask value.
+fn vec_dot_product_word(
+    unsigned: bool,
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    rm: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if !matches!(
+        arrangement,
+        Arm64VectorArrangement::S2 | Arm64VectorArrangement::S4
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "SDOT/UDOT accumulator must be .2s or .4s",
+        });
+    }
+    let base = if unsigned { 0x2E00_9400 } else { 0x0E00_9400 };
+    Ok(base
+        | (arrangement.q_bit() << 30)
+        | (arrangement.size_bits() << 22)
+        | vec_three_regs(rd, rn, rm))
+}
+
+// Build a NEON SDOT/UDOT (by element) word: base | (Q<<30) | (size<<22) | (L<<21) | (M<<20) | (Rm<<16) | (H<<11)
+// | Vn<<5 | Vd. base 0x0F00_E000 (SDOT) / 0x2F00_E000 (UDOT); the index selects the 32-bit (4-byte) group of Vm
+// via the .s-style H:L:M fold (`byelem_fields` with size 10).
+fn vec_dot_product_by_element_word(
+    unsigned: bool,
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    vm: &Arm64FloatRegister,
+    index: u8,
+) -> Result<u32, EncodeError> {
+    if !matches!(
+        arrangement,
+        Arm64VectorArrangement::S2 | Arm64VectorArrangement::S4
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "SDOT/UDOT accumulator must be .2s or .4s",
+        });
+    }
+    let (rm, m, l, h) = byelem_fields(0b10, vm.as_operand_bits(), index).ok_or(
+        EncodeError::InvalidOperandCombination {
+            detail: "SDOT/UDOT by-element index out of range (0..=3)",
+        },
+    )?;
+    let base = if unsigned { 0x2F00_E000 } else { 0x0F00_E000 };
+    Ok(base
+        | (arrangement.q_bit() << 30)
+        | (arrangement.size_bits() << 22)
+        | (l << 21)
+        | (m << 20)
+        | (rm << 16)
+        | (h << 11)
+        | vec_two_regs(rd, rn))
+}
+
+// Map a SHA512/SHA3/SM3/SM4 op's family to its per-extension instruction requirement.
+fn crypto_family_requirement(family: Arm64CryptoFamily) -> Arm64InstructionRequirement {
+    match family {
+        Arm64CryptoFamily::Sha512 => Arm64InstructionRequirement::sha512(),
+        Arm64CryptoFamily::Sha3 => Arm64InstructionRequirement::sha3(),
+        Arm64CryptoFamily::Sm3 => Arm64InstructionRequirement::sm3(),
+        Arm64CryptoFamily::Sm4 => Arm64InstructionRequirement::sm4(),
+    }
+}
+
+// Build a NEON USDOT (vector) word: 0x0E00_9C00 | (Q<<30) | (size<<22) | Vm<<16 | Vn<<5 | Vd. The accumulator is
+// .2s/.4s (size 10), mirroring SDOT/UDOT; only the unsigned-x-signed (USDOT) vector form exists.
+fn vec_usdot_word(
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    rm: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if !matches!(
+        arrangement,
+        Arm64VectorArrangement::S2 | Arm64VectorArrangement::S4
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "USDOT accumulator must be .2s or .4s",
+        });
+    }
+    Ok(0x0E00_9C00
+        | (arrangement.q_bit() << 30)
+        | (arrangement.size_bits() << 22)
+        | vec_three_regs(rd, rn, rm))
+}
+
+// Build a NEON USDOT/SUDOT (by element) word: op.by_element_base() | (Q<<30) | (L<<21) | (M<<20) | (Rm<<16) |
+// (H<<11) | Vn<<5 | Vd. The op's `size` discriminator (USDOT=10/SUDOT=00) is baked into the base; the index
+// selects the 32-bit (4-byte) group of Vm via the .s-style H:L:M fold (`byelem_fields` with size 10).
+fn vec_mixed_dot_by_element_word(
+    op: Arm64VectorMixedDotOp,
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    vm: &Arm64FloatRegister,
+    index: u8,
+) -> Result<u32, EncodeError> {
+    if !matches!(
+        arrangement,
+        Arm64VectorArrangement::S2 | Arm64VectorArrangement::S4
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "USDOT/SUDOT accumulator must be .2s or .4s",
+        });
+    }
+    let (rm, m, l, h) = byelem_fields(0b10, vm.as_operand_bits(), index).ok_or(
+        EncodeError::InvalidOperandCombination {
+            detail: "USDOT/SUDOT by-element index out of range (0..=3)",
+        },
+    )?;
+    Ok(op.by_element_base()
+        | (arrangement.q_bit() << 30)
+        | (l << 21)
+        | (m << 20)
+        | (rm << 16)
+        | (h << 11)
+        | vec_two_regs(rd, rn))
+}
+
+// Build a NEON BFDOT (vector) word: 0x2E40_FC00 | (Q<<30) | Vm<<16 | Vn<<5 | Vd. The accumulator is .2s/.4s (f32);
+// the bf16 size (01) is baked into the base.
+fn vec_bfdot_word(
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    rm: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if !matches!(
+        arrangement,
+        Arm64VectorArrangement::S2 | Arm64VectorArrangement::S4
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "BFDOT accumulator must be .2s or .4s",
+        });
+    }
+    Ok(0x2E40_FC00 | (arrangement.q_bit() << 30) | vec_three_regs(rd, rn, rm))
+}
+
+// Build a NEON BFDOT (by element) word: 0x0F40_F000 | (Q<<30) | (L<<21) | (M<<20) | (Rm<<16) | (H<<11) | Vn<<5 |
+// Vd. The index selects the 32-bit (2-halfword) group of Vm via the .s-style H:L:M fold (`byelem_fields` size 10).
+fn vec_bfdot_by_element_word(
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    vm: &Arm64FloatRegister,
+    index: u8,
+) -> Result<u32, EncodeError> {
+    if !matches!(
+        arrangement,
+        Arm64VectorArrangement::S2 | Arm64VectorArrangement::S4
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "BFDOT accumulator must be .2s or .4s",
+        });
+    }
+    let (rm, m, l, h) = byelem_fields(0b10, vm.as_operand_bits(), index).ok_or(
+        EncodeError::InvalidOperandCombination {
+            detail: "BFDOT by-element index out of range (0..=3)",
+        },
+    )?;
+    Ok(0x0F40_F000
+        | (arrangement.q_bit() << 30)
+        | (l << 21)
+        | (m << 20)
+        | (rm << 16)
+        | (h << 11)
+        | vec_two_regs(rd, rn))
+}
+
+// Build a NEON BFMLALB/BFMLALT (by element) word: base | (L<<21) | (M<<20) | (Rm<<16) | (H<<11) | Vn<<5 | Vd. base
+// 0x0FC0_F000 (bottom) / 0x4FC0_F000 (top, bit30=1); the index selects a halfword lane of Vm via the .h-style
+// H:L:M fold (`byelem_fields` size 01, Vm limited to v0-15).
+fn vec_bfmlal_by_element_word(
+    top: bool,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    vm: &Arm64FloatRegister,
+    index: u8,
+) -> Result<u32, EncodeError> {
+    let (rm, m, l, h) = byelem_fields(0b01, vm.as_operand_bits(), index).ok_or(
+        EncodeError::InvalidOperandCombination {
+            detail: "BFMLAL by-element index out of range (0..=7)",
+        },
+    )?;
+    let base = if top { 0x4FC0_F000 } else { 0x0FC0_F000 };
+    Ok(base | (l << 21) | (m << 20) | (rm << 16) | (h << 11) | vec_two_regs(rd, rn))
+}
+
+// Build a NEON FP length-convert word: op.base() | (Q(high)<<30) | (sz<<22) | Vn<<5 | Vd. `wide` is the 128-bit
+// FP side (.4s -> sz 0 / .2d -> sz 1, so sz = wide.size_bits()-2); `high` is the upper-half (2-suffix). FCVTL has
+// Vd wide; FCVTN/FCVTXN have Vd narrow (the operand order is handled by the emitter).
+fn vec_fp_convert_length_word(
+    op: Arm64VectorFpConvertLengthOp,
+    wide: Arm64VectorArrangement,
+    high: bool,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if !op.allows_wide(wide) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "FCVTL/FCVTN wide side must be .4s or .2d (FCVTXN is .2d only)",
+        });
+    }
+    let sz = wide.size_bits() - 2; // .4s (10) -> 0, .2d (11) -> 1
+    let q = if high { 1 } else { 0 };
+    Ok(op.base() | (q << 30) | (sz << 22) | vec_two_regs(rd, rn))
+}
+
+// Build a NEON add-long-pairwise word: op.base() | (Q<<30) | (size<<22) | Vn<<5 | Vd. The arrangement is the
+// NARROW source (`.8b`..`.4s`); the destination is twice as wide with half the lanes. Source `.1d`/`.2d` (size 11)
+// has no wider pairwise destination, so it is rejected.
+fn vec_add_pairwise_long_word(
+    op: Arm64VectorAddPairwiseLongOp,
+    narrow: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if narrow.size_bits() == 0b11 {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "add-long-pairwise source must be .8b/.16b/.4h/.8h/.2s/.4s (not 64-bit)",
+        });
+    }
+    Ok(op.base() | (narrow.q_bit() << 30) | (narrow.size_bits() << 22) | vec_two_regs(rd, rn))
+}
+
+// Build a NEON load/store multiple structures word (no-offset): 0x0C00_0000 | (L<<22) | (opcode<<12) | (Q<<30) |
+// (size<<10) | (Rn<<5) | Rt. `kind` supplies the opcode (structure + count); the arrangement supplies Q + the
+// element size; `Rt` is the first register of the list, `Rn` (SP at 31) the base address. Infallible.
+fn vec_ldst_multiple_word(
+    kind: Arm64VectorStructureKind,
+    load: bool,
+    arrangement: Arm64VectorArrangement,
+    rt_first: &Arm64FloatRegister,
+    xn: &Arm64GeneralPurposeRegister,
+) -> u32 {
+    let l = if load { 1 } else { 0 };
+    0x0C00_0000
+        | (l << 22)
+        | (kind.opcode() << 12)
+        | (arrangement.q_bit() << 30)
+        | (arrangement.size_bits() << 10)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (rt_first.as_operand_bits() as u32)
+}
+
+// Recover the post-index Xm of a structure load/store: Rm = 11111 is the immediate form (None), else the offset
+// register.
+fn decode_post_index_xm(word: u32) -> Option<Arm64GeneralPurposeRegister> {
+    let rm = ((word >> 16) & 0x1F) as u8;
+    if rm == 0b11111 {
+        None
+    } else {
+        Some(Arm64GeneralPurposeRegister::from_operand_bits(rm))
+    }
+}
+
+// The post-index addressing bits for a structure load/store: bit23 (post-index) + Rm<<16. `xm = None` is the
+// immediate form (Rm = 11111, implicit increment); `Some(Xm)` is the register form. Xm = X31 is rejected (it would
+// encode as the immediate form).
+fn post_index_bits(xm: Option<Arm64GeneralPurposeRegister>) -> Result<u32, EncodeError> {
+    let rm = match xm {
+        None => 0b11111,
+        Some(reg) => {
+            let n = reg.as_operand_bits() as u32;
+            if n == 0b11111 {
+                return Err(EncodeError::InvalidOperandCombination {
+                    detail: "post-index Xm cannot be X31 -- use the immediate post-index (xm = None)",
+                });
+            }
+            n
+        }
+    };
+    Ok(0x0080_0000 | (rm << 16))
+}
+
+// Build a NEON load/store SINGLE-lane word: 0x0D00_0000 | (Q<<30) | (L<<22) | (R<<21) | (opcode<<13) | (S<<12) |
+// (size<<10) | Xn<<5 | Rt. The lane index packs into Q:S:size per element size; opcode[15:14] is the size class,
+// opcode[13]:R is (count - 1). GNU+LLVM dual-oracle verified.
+fn vec_ldst_single_lane_word(
+    load: bool,
+    count: u8,
+    element: Arm64VectorElement,
+    index: u8,
+    rt_first: &Arm64FloatRegister,
+    xn: &Arm64GeneralPurposeRegister,
+) -> Result<u32, EncodeError> {
+    if !(1..=4).contains(&count) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "LD/ST single-lane structure count must be 1..=4",
+        });
+    }
+    let lanes = element.lane_count(); // .b 16 / .h 8 / .s 4 / .d 2
+    if index >= lanes {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "LD/ST single-lane index out of range for the element size",
+        });
+    }
+    let index = index as u32;
+    let (size_class, q, s, size): (u32, u32, u32, u32) = match element {
+        Arm64VectorElement::B => (0b00, index >> 3, (index >> 2) & 1, index & 0b11),
+        Arm64VectorElement::H => (0b01, index >> 2, (index >> 1) & 1, (index & 1) << 1),
+        Arm64VectorElement::S => (0b10, index >> 1, index & 1, 0b00),
+        Arm64VectorElement::D => (0b10, index, 0, 0b01),
+    };
+    let count = (count - 1) as u32;
+    let opcode = (size_class << 1) | (count >> 1); // opcode[15:14] = size class, opcode[13] = (count-1)>>1
+    let r = count & 1;
+    let l = u32::from(load);
+    Ok(0x0D00_0000
+        | (q << 30)
+        | (l << 22)
+        | (r << 21)
+        | (opcode << 13)
+        | (s << 12)
+        | (size << 10)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (rt_first.as_operand_bits() as u32))
+}
+
+// Build a NEON load-and-replicate word (LD1R/LD2R/LD3R/LD4R): 0x0D40_0000 | (Q<<30) | (R<<21) | (opcode<<13) |
+// (size<<10) | Xn<<5 | Rt. opcode = 110|((count-1)>>1); R = (count-1)&1; arrangement supplies Q + element size.
+// Load-only. GNU+LLVM dual-oracle verified.
+fn vec_ldst_replicate_word(
+    count: u8,
+    arrangement: Arm64VectorArrangement,
+    rt_first: &Arm64FloatRegister,
+    xn: &Arm64GeneralPurposeRegister,
+) -> Result<u32, EncodeError> {
+    if !(1..=4).contains(&count) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "LDnR structure count must be 1..=4",
+        });
+    }
+    let count = (count - 1) as u32;
+    let opcode = 0b110 | (count >> 1);
+    let r = count & 1;
+    Ok(0x0D00_0000
+        | (arrangement.q_bit() << 30)
+        | (1 << 22) // L = load
+        | (r << 21)
+        | (opcode << 13)
+        | (arrangement.size_bits() << 10)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (rt_first.as_operand_bits() as u32))
+}
+
+// Build a NEON TBL/TBX word: base | (Q<<30) | (Rm<<16) | (len<<13) | Rn<<5 | Vd. base = 0x0E00_0000 (TBL) or
+// 0x0E00_1000 (TBX, op bit 12); len = num_tables - 1. The table registers (Rn, Rn+1, ... mod 32) are always .16b;
+// the result/index follow the .8b/.16b arrangement (Q).
+fn vec_table_lookup_word(
+    tbx: bool,
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn_first: &Arm64FloatRegister,
+    num_tables: u8,
+    rm: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if !matches!(
+        arrangement,
+        Arm64VectorArrangement::B8 | Arm64VectorArrangement::B16
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "TBL/TBX is only valid for the .8b/.16b arrangements",
+        });
+    }
+    if !(1..=4).contains(&num_tables) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "TBL/TBX table must have 1 to 4 registers",
+        });
+    }
+    let base = if tbx { 0x0E00_1000 } else { VEC_TBL_BASE };
+    let len = (num_tables - 1) as u32;
+    Ok(base
+        | (arrangement.q_bit() << 30)
+        | ((rm.as_operand_bits() as u32) << 16)
+        | (len << 13)
+        | ((rn_first.as_operand_bits() as u32) << 5)
+        | (rd.as_operand_bits() as u32))
+}
+
+// Map a 2-bit element-size value to its lane element (B/H/S/D).
+fn element_for_size_bits(size: u32) -> Arm64VectorElement {
+    match size & 0b11 {
+        0 => Arm64VectorElement::B,
+        1 => Arm64VectorElement::H,
+        2 => Arm64VectorElement::S,
+        _ => Arm64VectorElement::D,
+    }
+}
+
+// Build a NEON DUP (element) word -- broadcast Vn.<ts>[index] across Vd.<arr>: 0x0E00_0400 (op=0, imm4=0000) |
+// (Q<<30) | (imm5<<16) | Vn<<5 | Vd. imm5 packs the element size + source lane index; `.1d` is invalid.
+fn vec_dup_element_word(
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    index: u8,
+) -> Result<u32, EncodeError> {
+    if matches!(arrangement, Arm64VectorArrangement::D1) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "NEON DUP (element) has no single-lane .1d destination",
+        });
+    }
+    let element = element_for_size_bits(arrangement.size_bits());
+    if index >= element.lane_count() {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "NEON DUP (element) source lane index out of range",
+        });
+    }
+    Ok(VEC_DUP_ELEMENT_BASE
+        | (arrangement.q_bit() << 30)
+        | (lane_imm5(element, index) << 16)
+        | vec_two_regs(rd, rn))
+}
+
+// Build a NEON INS (element) word -- copy Vn.<ts>[src] into Vd.<ts>[dst]: 0x2E00_0400 (op=1, Q=1) | (imm5<<16) |
+// (imm4<<11) | Vn<<5 | Vd. imm5 packs the destination lane; imm4 = src_index << size (the source lane).
+fn vec_ins_element_word(
+    element: Arm64VectorElement,
+    rd: &Arm64FloatRegister,
+    dst_index: u8,
+    rn: &Arm64FloatRegister,
+    src_index: u8,
+) -> Result<u32, EncodeError> {
+    if dst_index >= element.lane_count() || src_index >= element.lane_count() {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "NEON INS (element) lane index out of range",
+        });
+    }
+    let imm4 = (src_index as u32) << element.size_bits();
+    Ok(VEC_INS_ELEMENT_BASE
+        | (1 << 30)
+        | (lane_imm5(element, dst_index) << 16)
+        | (imm4 << 11)
+        | vec_two_regs(rd, rn))
+}
+
+// Build a NEON DUP (general) word -- splat a GP register across all lanes of `Vd.<arr>`. imm5 marks the element
+// size (index 0); the `.1d` arrangement is invalid.
+fn vec_dup_general_word(
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64GeneralPurposeRegister,
+) -> Result<u32, EncodeError> {
+    if matches!(arrangement, Arm64VectorArrangement::D1) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "NEON DUP (general) has no single-lane .1d form",
+        });
+    }
+    let imm5 = 1u32 << arrangement.size_bits();
+    Ok(VEC_DUP_GENERAL_BASE
+        | (arrangement.q_bit() << 30)
+        | (imm5 << 16)
+        | ((rn.as_operand_bits() as u32) << 5)
+        | (rd.as_operand_bits() as u32))
+}
+
+// Build a NEON UMOV word -- extract one lane of `Vn` into a GP register (zero-extended). The destination width
+// follows the element: `.b`/`.h`/`.s` -> Wd (Q=0), `.d` -> Xd (Q=1).
+fn vec_umov_word(
+    element: Arm64VectorElement,
+    index: u8,
+    rd: &Arm64GeneralPurposeRegister,
+    vn: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if index >= element.lane_count() {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "NEON UMOV lane index out of range",
+        });
+    }
+    let q = if matches!(element, Arm64VectorElement::D) {
+        1
+    } else {
+        0
+    };
+    Ok(VEC_UMOV_BASE
+        | (q << 30)
+        | (lane_imm5(element, index) << 16)
+        | ((vn.as_operand_bits() as u32) << 5)
+        | (rd.as_operand_bits() as u32))
+}
+
+// Build a NEON SMOV word -- extract one lane of `Vn` into a GP register (sign-extended) to the explicit width.
+// `W` takes `.b`/`.h`; `X` takes `.b`/`.h`/`.s`; `.d` is never valid (sign-extending a 64-bit element is a no-op).
+fn vec_smov_word(
+    width: Arm64RegisterWidth,
+    element: Arm64VectorElement,
+    index: u8,
+    rd: &Arm64GeneralPurposeRegister,
+    vn: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if index >= element.lane_count() {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "NEON SMOV lane index out of range",
+        });
+    }
+    let is_x = matches!(width, Arm64RegisterWidth::X);
+    let valid = match element {
+        Arm64VectorElement::B | Arm64VectorElement::H => true,
+        Arm64VectorElement::S => is_x, // SMOV of a 32-bit element only sign-extends into an X register
+        Arm64VectorElement::D => false,
+    };
+    if !valid {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "NEON SMOV: W takes .b/.h, X takes .b/.h/.s; .d is invalid",
+        });
+    }
+    let q = if is_x { 1 } else { 0 };
+    Ok(VEC_SMOV_BASE
+        | (q << 30)
+        | (lane_imm5(element, index) << 16)
+        | ((vn.as_operand_bits() as u32) << 5)
+        | (rd.as_operand_bits() as u32))
+}
+
+// Build a NEON INS (general) word -- insert a GP register into lane `index` of `Vd`. Always a 128-bit op (Q=1).
+fn vec_ins_general_word(
+    element: Arm64VectorElement,
+    index: u8,
+    vd: &Arm64FloatRegister,
+    rn: &Arm64GeneralPurposeRegister,
+) -> Result<u32, EncodeError> {
+    if index >= element.lane_count() {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "NEON INS (general) lane index out of range",
+        });
+    }
+    Ok(VEC_INS_GENERAL_BASE
+        | (1 << 30)
+        | (lane_imm5(element, index) << 16)
+        | ((rn.as_operand_bits() as u32) << 5)
+        | (vd.as_operand_bits() as u32))
+}
+
+// Decode the (Vd, Vn, Vm) register triple of a NEON three-same word.
+fn decode_vec_three(word: u32) -> (Arm64FloatRegister, Arm64FloatRegister, Arm64FloatRegister) {
+    (
+        Arm64FloatRegister::from_operand_bits(reg_field(word, 0)),
+        Arm64FloatRegister::from_operand_bits(reg_field(word, 5)),
+        Arm64FloatRegister::from_operand_bits(reg_field(word, 16)),
+    )
+}
+
+// Decode an int->FP convert word into (FP precision, GP width, Fd, Rn): FP dest at [4:0], GP source at [9:5]. The FP
+// precision is the full `ftype<23:22>` (S/D/H, FEAT_FP16 for half) -- `None` for the reserved ftype=10.
+fn decode_int_to_fp(
+    word: u32,
+) -> Option<(
+    Arm64FloatPrecision,
+    Arm64RegisterWidth,
+    Arm64FloatRegister,
+    Arm64GeneralPurposeRegister,
+)> {
+    let fd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+    let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+    Some((
+        Arm64FloatPrecision::from_ftype_bits((word >> 22) & 0b11)?,
+        width_from_word(word),
+        fd,
+        rn,
+    ))
+}
+
+// Decode an FP->int convert word into (GP width, FP precision, Rd, Fn): GP dest at [4:0], FP source at [9:5]. The FP
+// precision is the full `ftype<23:22>` (S/D/H) -- `None` for the reserved ftype=10.
+fn decode_fp_to_int(
+    word: u32,
+) -> Option<(
+    Arm64RegisterWidth,
+    Arm64FloatPrecision,
+    Arm64GeneralPurposeRegister,
+    Arm64FloatRegister,
+)> {
+    let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+    let fn_ = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+    Some((
+        width_from_word(word),
+        Arm64FloatPrecision::from_ftype_bits((word >> 22) & 0b11)?,
+        rd,
+        fn_,
+    ))
+}
+
+// Build a data-processing (1 source) word: base | (sf<<31) | (Rn<<5) | Rd. The base carries opcode[15:10] and
+// `width` provides sf. Used by RBIT/REV16/CLZ/CLS (REV/REV32 are width-specialized and built inline).
+fn dp_one_source_word(
+    base: u32,
+    width: Arm64RegisterWidth,
+    xd: &Arm64GeneralPurposeRegister,
+    xn: &Arm64GeneralPurposeRegister,
+) -> u32 {
+    base | (width.sf() << 31) | ((xn.as_operand_bits() as u32) << 5) | (xd.as_operand_bits() as u32)
+}
+
+// Decode the (Rd, Rn) general-purpose operands of a data-processing (1 source) word.
+fn decode_dp1(word: u32) -> (Arm64GeneralPurposeRegister, Arm64GeneralPurposeRegister) {
+    let xd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+    let xn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+    (xd, xn)
+}
+
+// Build a data-processing (2 source) word: base | (sf<<31) | (Rm<<16) | (Rn<<5) | Rd. The sf=0 base carries the
+// opcode[15:10] field and `width` provides sf; these forms have no immediate to range-check (all three
+// operands are 5-bit registers), so this is infallible. Used by UDIV/SDIV/LSLV/LSRV/ASRV/RORV.
+fn two_source_word(
+    base: u32,
+    width: Arm64RegisterWidth,
+    xd: &Arm64GeneralPurposeRegister,
+    xn: &Arm64GeneralPurposeRegister,
+    xm: &Arm64GeneralPurposeRegister,
+) -> u32 {
+    base | (width.sf() << 31)
+        | ((xm.as_operand_bits() as u32) << 16)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (xd.as_operand_bits() as u32)
+}
+
+// Build a conditional-select word: base | (sf<<31) | (Rm<<16) | (cond<<12) | (Rn<<5) | Rd. The sf=0 base
+// carries op[30]+o2[10] and `width` provides sf; all three registers are 5-bit and `cond` is a 4-bit
+// Arm64Condition, so this is infallible. Used by CSEL/CSINC/CSINV/CSNEG.
+fn conditional_select_word(
+    base: u32,
+    width: Arm64RegisterWidth,
+    xd: &Arm64GeneralPurposeRegister,
+    xn: &Arm64GeneralPurposeRegister,
+    xm: &Arm64GeneralPurposeRegister,
+    cond: &Arm64Condition,
+) -> u32 {
+    base | (width.sf() << 31)
+        | ((xm.as_operand_bits() as u32) << 16)
+        | ((cond.as_operand_bits() as u32) << 12)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (xd.as_operand_bits() as u32)
+}
+
+// Build a conditional-compare word: base | (sf<<31) | (field5<<16) | (cond<<12) | (Rn<<5) | nzcv, where `field5`
+// is the Rm register bits (register form) or the imm5 (immediate form), both 0..=31. `nzcv` is validated 0..=15.
+fn cond_compare_word(
+    base: u32,
+    width: Arm64RegisterWidth,
+    xn: &Arm64GeneralPurposeRegister,
+    field5: u32,
+    nzcv: u8,
+    cond: &Arm64Condition,
+) -> Result<u32, EncodeError> {
+    check_unsigned_maximum("nzcv", nzcv as u32, 15)?;
+    Ok(base
+        | (width.sf() << 31)
+        | ((field5 & 0x1F) << 16)
+        | ((cond.as_operand_bits() as u32) << 12)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (nzcv as u32))
+}
+
+// Build a bitfield word: base | (sf<<31) | (N=sf<<22) | (immr<<16) | (imms<<10) | (Rn<<5) | Rd. `immr`/`imms` are
+// validated against the width (<=31 for W, <=63 for X). Used by SBFM/BFM/UBFM.
+fn bitfield_word(
+    base: u32,
+    width: Arm64RegisterWidth,
+    xd: &Arm64GeneralPurposeRegister,
+    xn: &Arm64GeneralPurposeRegister,
+    immr: u8,
+    imms: u8,
+) -> Result<u32, EncodeError> {
+    let max = if matches!(width, Arm64RegisterWidth::W) {
+        31
+    } else {
+        63
+    };
+    check_unsigned_maximum("immr", immr as u32, max)?;
+    check_unsigned_maximum("imms", imms as u32, max)?;
+    let sf = width.sf();
+    Ok(base
+        | (sf << 31)
+        | (sf << 22) // N = sf
+        | ((immr as u32) << 16)
+        | ((imms as u32) << 10)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (xd.as_operand_bits() as u32))
+}
+
+fn decode_conditional_select(
+    word: u32,
+) -> (
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+    Arm64Condition,
+) {
+    let xd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+    let xn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+    let xm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+    let cond = Arm64Condition::from_operand_bits(((word >> 12) & 0b1111) as u8);
+    (xd, xn, xm, cond)
+}
+
+// Extract the 5-bit register field whose low bit is at `lsb`.
+fn reg_field(word: u32, lsb: u32) -> u8 {
+    ((word >> lsb) & 0b1_1111) as u8
+}
+
+// Split a signed 21-bit PC-relative immediate into the ADR/ADRP encoding fields: immlo[1:0]@[30:29] and
+// immhi[20:2]@[23:5]. `imm21` must fit in 21 signed bits (-2^20 ..= 2^20-1) -- for ADRP this is the page count,
+// so the caller has already divided the byte offset by 4096.
+fn encode_pcrel_imm21(field: &'static str, imm21: i64) -> Result<u32, EncodeError> {
+    check_signed_range(field, imm21, -(1 << 20), (1 << 20) - 1)?;
+    let imm = (imm21 as u32) & 0x1F_FFFF; // low 21 bits
+    let immlo = imm & 0b11; // [1:0]
+    let immhi = (imm >> 2) & 0x7_FFFF; // [20:2] (19 bits)
+    Ok((immlo << 29) | (immhi << 5))
+}
+
+// Reassemble the signed 21-bit PC-relative immediate from an ADR/ADRP word (the inverse of the split above).
+fn decode_pcrel_imm21(word: u32) -> i32 {
+    let immlo = (word >> 29) & 0b11;
+    let immhi = (word >> 5) & 0x7_FFFF;
+    sign_extend((immhi << 2) | immlo, 21)
+}
+
+fn decode_addsub_immediate(
+    word: u32,
+) -> (
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+    u16,
+    bool,
+) {
+    let xd = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 0));
+    let xn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+    let imm12 = ((word >> 10) & 0xFFF) as u16;
+    let shift12 = (word >> 22) & 0b1 != 0;
+    (xd, xn, imm12, shift12)
+}
+
+// ADDS/SUBS (immediate): like `decode_addsub_immediate`, but `Rd` uses the ZR encoding at 31 (the dest is a
+// real result, or XZR for the CMN/CMP aliases) while `Rn` keeps SP at 31.
+fn decode_addsub_immediate_flagset(
+    word: u32,
+) -> (
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+    u16,
+    bool,
+) {
+    let xd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+    let xn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+    let imm12 = ((word >> 10) & 0xFFF) as u16;
+    let shift12 = (word >> 22) & 0b1 != 0;
+    (xd, xn, imm12, shift12)
+}
+
+fn decode_move_wide(word: u32) -> (Arm64GeneralPurposeRegister, u16, u8) {
+    let xd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+    let imm16 = ((word >> 5) & 0xFFFF) as u16;
+    let hw = ((word >> 21) & 0b11) as u8;
+    (xd, imm16, hw)
+}
+
+fn decode_shifted_register(
+    word: u32,
+) -> (
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+    u8,
+) {
+    let xd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+    let xn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+    let xm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+    let amount = ((word >> 10) & 0b11_1111) as u8;
+    (xd, xn, xm, amount)
+}
+
+fn decode_two_source(
+    word: u32,
+) -> (
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+) {
+    let xd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+    let xn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+    let xm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+    (xd, xn, xm)
+}
+
+// Build a data-processing (3 source) word: base | (sf<<31) | (Rm<<16) | (Ra<<10) | (Rn<<5) | Rd. The sf=0 base
+// carries the op31[23:21] + o0[15] discriminant and `width` provides sf; all four operands are 5-bit
+// registers, so this is infallible. Used by MADD/MSUB, which take Ra as the addend operand. (SMULH/UMULH are
+// 64-bit only and use `three_source_word_no_addend`, which keeps sf=1 fixed in the base.)
+fn three_source_word(
+    base: u32,
+    width: Arm64RegisterWidth,
+    xd: &Arm64GeneralPurposeRegister,
+    xn: &Arm64GeneralPurposeRegister,
+    xm: &Arm64GeneralPurposeRegister,
+    xa: &Arm64GeneralPurposeRegister,
+) -> u32 {
+    base | (width.sf() << 31)
+        | ((xm.as_operand_bits() as u32) << 16)
+        | ((xa.as_operand_bits() as u32) << 10)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (xd.as_operand_bits() as u32)
+}
+
+// Build a 3-source word for the no-addend, 64-bit-only members (SMULH/UMULH): base | (Rm<<16) | (Rn<<5) | Rd.
+// The base already pins sf=1 and Ra=11111, so neither is taken from an operand here.
+fn three_source_word_no_addend(
+    base: u32,
+    xd: &Arm64GeneralPurposeRegister,
+    xn: &Arm64GeneralPurposeRegister,
+    xm: &Arm64GeneralPurposeRegister,
+) -> u32 {
+    base | ((xm.as_operand_bits() as u32) << 16)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (xd.as_operand_bits() as u32)
+}
+
+// Build a 3-source long-multiply word: base | (Rm<<16) | (Ra<<10) | (Rn<<5) | Rd. The base pins sf=1 + op31 + o0;
+// Rd/Ra are X and Rn/Rm are W, but the model stores plain register NUMBERS (width is fixed by the instruction, so
+// there is no width field). Used by SMADDL/UMADDL/SMSUBL/UMSUBL.
+fn long_multiply_word(
+    base: u32,
+    xd: &Arm64GeneralPurposeRegister,
+    xn: &Arm64GeneralPurposeRegister,
+    xm: &Arm64GeneralPurposeRegister,
+    xa: &Arm64GeneralPurposeRegister,
+) -> u32 {
+    base | ((xm.as_operand_bits() as u32) << 16)
+        | ((xa.as_operand_bits() as u32) << 10)
+        | ((xn.as_operand_bits() as u32) << 5)
+        | (xd.as_operand_bits() as u32)
+}
+
+fn decode_three_source(
+    word: u32,
+) -> (
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+) {
+    let xd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+    let xn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+    let xm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+    let xa = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 10));
+    (xd, xn, xm, xa)
+}
+
+// Decode a load/store register (unsigned-immediate offset) word into (size, Rt, Rn, byte offset). The size
+// comes from bits [31:30]; the byte offset is the imm12 field scaled up by the access size. `Rt` is the zero
+// register at 31, `Rn` the stack pointer at 31. The inverse of `ldst_register_word`.
+fn decode_ldst_register(
+    word: u32,
+) -> (
+    Arm64LoadStoreSize,
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+    u32,
+) {
+    let size = Arm64LoadStoreSize::from_size_bits(word >> 30);
+    let xt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+    let xn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+    let imm12 = (word >> 10) & 0xFFF;
+    let offset_bytes = imm12 * size.scale();
+    (size, xt, xn, offset_bytes)
+}
+
+// Decode a load/store pair word into (Rt, Rt2, Rn, signed byte offset) for the given width. The imm7 field is
+// a signed 7-bit value scaled by the access size (4 for W, 8 for X). `Rt`/`Rt2` are zero registers at 31, `Rn`
+// the stack pointer at 31. The inverse of `ldst_pair_word`.
+fn decode_ldst_pair(
+    word: u32,
+    width: Arm64RegisterWidth,
+) -> (
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+    Arm64GeneralPurposeRegister,
+    i32,
+) {
+    let xt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+    let xt2 = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 10));
+    let xn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+    let imm7 = sign_extend((word >> 15) & 0x7F, 7);
+    let offset_bytes = imm7 * pair_scale(width) as i32;
+    (xt, xt2, xn, offset_bytes)
+}
+
+// Read four little-endian bytes from the iterator as a u32, advancing `iter_offset` by the number actually
+// consumed. `Ok(None)` if zero bytes remain (clean EOF); `Err(IncompleteInstruction)` if one to three
+// remain (a truncated word). Never panics.
+fn next_u32le_from_iter<'a, I>(
+    iter: &mut I,
+    iter_offset: &mut usize,
+) -> Result<Option<u32>, DecodeError>
+where
+    I: Iterator<Item = &'a u8>,
+{
+    let mut bytes = [0u8; 4];
+    let mut count = 0usize;
+    for slot in bytes.iter_mut() {
+        match iter.next() {
+            Some(&byte) => {
+                *slot = byte;
+                count += 1;
+                *iter_offset += 1;
+            }
+            None => break,
+        }
+    }
+    match count {
+        0 => Ok(None),
+        4 => Ok(Some(u32::from_le_bytes(bytes))),
+        _ => Err(DecodeError::IncompleteInstruction),
+    }
+}
