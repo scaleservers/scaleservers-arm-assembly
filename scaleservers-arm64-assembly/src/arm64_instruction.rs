@@ -6476,3 +6476,2124 @@ pub enum Arm64Instruction {
         zn: Arm64ScalableVectorRegister,
     },
 }
+
+/* ---- encoding helpers (private) ----
+ *
+ * A64 instruction words are 32-bit. We assemble each from its named fields, then emit little-endian. The
+ * base constants below are the fixed bits of each encoding with all operand fields zeroed; ORing the
+ * shifted operands in completes the word. Every base is a canonical, well-known A64 value (e.g. NOP =
+ * 0xD503201F, RET X30 = 0xD65F03C0), cross-checked against DDI0487 and validated by the exact-byte tests.
+ */
+
+const NOP_WORD: u32 = 0xD503_201F;
+
+// RET/BR/BLR are the unconditional-branch-(register) group: base | (Rn << 5).
+const RET_BASE: u32 = 0xD65F_0000;
+const BR_BASE: u32 = 0xD61F_0000;
+const BLR_BASE: u32 = 0xD63F_0000;
+
+// add/subtract (immediate), W/X: base | (sf << 31) | (sh << 22) | (imm12 << 10) | (Rn << 5) | Rd. The bases
+// carry sf=0 (the W-form); the encoder ORs in (width.sf() << 31). The 64-bit X bases are these | 0x8000_0000
+// (ADD=0x9100_0000, SUB=0xD100_0000), preserving the original X exact bytes.
+const ADD_IMM_BASE: u32 = 0x1100_0000;
+const SUB_IMM_BASE: u32 = 0x5100_0000;
+const ADDS_IMM_BASE: u32 = 0x3100_0000; // ADD_IMM with S=1 (sf cleared)
+const SUBS_IMM_BASE: u32 = 0x7100_0000; // SUB_IMM with S=1 (sf cleared)
+
+// move wide (immediate), W/X: base | (sf << 31) | (hw << 21) | (imm16 << 5) | Rd. sf=0 bases (the X bases are
+// these | 0x8000_0000: MOVZ=0xD280_0000, MOVK=0xF280_0000).
+const MOVZ_BASE: u32 = 0x5280_0000;
+const MOVN_BASE: u32 = 0x1280_0000; // move-wide negated (opc=00 vs MOVZ's 10)
+const MOVK_BASE: u32 = 0x7280_0000;
+
+// PC-relative addressing: base | (immlo[1:0] << 29) | (immhi[20:2] << 5) | Rd. op(bit31) selects ADR vs ADRP;
+// the 21-bit signed immediate is split immhi[23:5] : immlo[30:29] -- a byte offset for ADR, a page count
+// (byte/4096) for ADRP. Verified vs DDI0487 C6.2 + GNU/llvm-mc (ADR exact; ADRP shares the split with op=1).
+const ADR_BASE: u32 = 0x1000_0000; // op 0
+const ADRP_BASE: u32 = 0x9000_0000; // op 1
+
+// add/subtract/logical (shifted register), W/X, LSL: base | (sf << 31) | (Rm << 16) | (amount << 10) |
+// (Rn << 5) | Rd. The bases carry sf=0 (the W-form); the encoder ORs in (width.sf() << 31). The 64-bit X bases
+// are these | 0x8000_0000 (e.g. ADD=0x8B00_0000), preserving the original X exact bytes.
+const ADD_REG_BASE: u32 = 0x0B00_0000;
+const SUB_REG_BASE: u32 = 0x4B00_0000;
+const ADDS_REG_BASE: u32 = 0x2B00_0000; // ADD_REG with S=1 (sf cleared)
+const SUBS_REG_BASE: u32 = 0x6B00_0000; // SUB_REG with S=1 (sf cleared)
+
+// add/subtract (extended register): sf|op|S|01011|00|1|Rm|option(3)|imm3(3)|Rn|Rd. Same op/S layout as the
+// shifted-register forms but bits[23:22]=00 (opt) and bit[21]=1 (vs 0 for shifted) -- so these share the mask
+// with the shifted forms yet never collide. SP-capable: Rd/Rn name SP at 31, Rm names ZR.
+const ADD_EXT_BASE: u32 = 0x0B20_0000;
+const SUB_EXT_BASE: u32 = 0x4B20_0000;
+const ADDS_EXT_BASE: u32 = 0x2B20_0000;
+const SUBS_EXT_BASE: u32 = 0x6B20_0000;
+
+// logical (immediate): sf|opc(2)|100100|N|immr(6)|imms(6)|Rn|Rd. The mask pins opc[30:29] + the fixed
+// 100100[28:23]; N/immr/imms (the bitmask fields) and the registers all sit below it. AND/ORR/EOR's Rd is
+// SP-capable; ANDS's Rd is the ZR view (the TST alias). For the W form N must be 0 (decode rejects N=1).
+const AND_IMM_BASE: u32 = 0x1200_0000;
+const ORR_IMM_BASE: u32 = 0x3200_0000;
+const EOR_IMM_BASE: u32 = 0x5200_0000;
+const ANDS_IMM_BASE: u32 = 0x7200_0000;
+const LOGICAL_IMM_MASK: u32 = 0x7F80_0000; // bits[30:23]: opc + the fixed 100100
+const ORR_REG_BASE: u32 = 0x2A00_0000;
+// the rest of the logical (shifted register) family, W/X, LSL: same layout, opc[30:29] + N[21] select the
+// operation (X bases all verified vs GNU binutils 2.42; the sf=0 W bases below verified vs GNU + LLVM).
+const AND_REG_BASE: u32 = 0x0A00_0000;
+const BIC_REG_BASE: u32 = 0x0A20_0000; // AND with N=1
+const ORN_REG_BASE: u32 = 0x2A20_0000; // ORR with N=1
+const EOR_REG_BASE: u32 = 0x4A00_0000;
+const EON_REG_BASE: u32 = 0x4A20_0000; // EOR with N=1
+const ANDS_REG_BASE: u32 = 0x6A00_0000;
+const BICS_REG_BASE: u32 = 0x6A20_0000; // ANDS with N=1
+
+// data-processing (2 source), W/X (S=0): base | (sf << 31) | (Rm << 16) | (Rn << 5) | Rd. The fixed top with
+// sf=0 is `0 0 S 11010110` = 0x1AC0_0000; the 6-bit opcode[15:10] (folded into each base below) selects the
+// op, and the encoder ORs in (width.sf() << 31). The X bases are these | 0x8000_0000 (e.g. UDIV=0x9AC0_0800);
+// all bases verified vs DDI0487 C6.2 + both GNU binutils 2.42 and llvm-mc (which agreed exactly).
+const CSSC_MINMAX_IMM_BASE: u32 = 0x11C0_0000; // FEAT_CSSC integer min/max immediate (W form; X sets bit 31)
+const CSSC_MINMAX_IMM_MASK: u32 = 0x7FF0_0000; // drops sf[31]; pins [30:20]; frees opcode[19:18], imm8[17:10], Rn, Rd
+const UDIV_REG_BASE: u32 = 0x1AC0_0800; // opcode 000010
+const SDIV_REG_BASE: u32 = 0x1AC0_0C00; // opcode 000011
+const LSLV_REG_BASE: u32 = 0x1AC0_2000; // opcode 001000
+const LSRV_REG_BASE: u32 = 0x1AC0_2400; // opcode 001001
+const ASRV_REG_BASE: u32 = 0x1AC0_2800; // opcode 001010
+const RORV_REG_BASE: u32 = 0x1AC0_2C00; // opcode 001011
+
+// data-processing (3 source), op54=00: base | (Rm << 16) | (Ra << 10) | (Rn << 5) | Rd. op31[23:21] + o0[15]
+// (folded into each base below) select the op. MADD/MSUB are W-capable: their sf=0 bases carry Ra=0 (Ra is an
+// operand), and the encoder ORs in (width.sf() << 31) -- the X bases are these | 0x8000_0000 (MADD=0x9B00_0000,
+// MSUB=0x9B00_8000). SMULH/UMULH are 64-bit ONLY: their bases keep sf=1 (op31 makes sf fixed) and Ra=11111
+// (the encoding fixes it). All bases verified vs DDI0487 C6.2 + both GNU binutils 2.42 and llvm-mc.
+const MADD_REG_BASE: u32 = 0x1B00_0000; // sf 0, op31 000, o0 0, Ra 00000
+const MSUB_REG_BASE: u32 = 0x1B00_8000; // sf 0, op31 000, o0 1, Ra 00000
+const SMULH_REG_BASE: u32 = 0x9B40_7C00; // op31 010, o0 0, Ra 11111 (fixed); 64-bit only (sf fixed 1)
+const UMULH_REG_BASE: u32 = 0x9BC0_7C00; // op31 110, o0 0, Ra 11111 (fixed); 64-bit only (sf fixed 1)
+
+// 3-source long multiply (SMADDL/UMADDL/SMSUBL/UMSUBL): base | (Rm<<16) | (Ra<<10) | (Rn<<5) | Rd. sf=1 is FIXED
+// in the base (X result, W multiplicands); op31[23:21] + o0[15] select the op; Ra is the accumulator OPERAND (so
+// these use the sf-kept X-mask but NO Ra==11111 guard). All verified vs DDI0487 C6.2 + GNU binutils 2.42 + llvm-mc.
+const SMADDL_REG_BASE: u32 = 0x9B20_0000; // op31 001, o0 0
+const UMADDL_REG_BASE: u32 = 0x9BA0_0000; // op31 101, o0 0
+const SMSUBL_REG_BASE: u32 = 0x9B20_8000; // op31 001, o0 1
+const UMSUBL_REG_BASE: u32 = 0x9BA0_8000; // op31 101, o0 1
+// FEAT_CPA checked pointer arithmetic. ADDPT/SUBPT: 2-source-style ([28:21]=11010000, distinct from UDIV/LSLV's
+// 11010110), 64-bit, sub=bit30. MADDPT/MSUBPT: 3-source op31=011 (the slot the 3-source decode leaves unmodeled).
+const ADDPT_BASE: u32 = 0x9A00_2000; // ADDPT Xd, Xn, Xm
+const ADDPT_MASK: u32 = 0xBFE0_FC00; // pins [31]+[29:24]+[23:21]+[15:10]; sub[30]/Rm/Rn/Rd vary
+const MADDPT_BASE: u32 = 0x9B60_0000; // MADDPT (op31=011, o0=0); MSUBPT sets o0[15]
+const SVE_ADDPT_PRED_BASE: u32 = 0x04C4_0000; // SVE ADDPT (pred); SUBPT sets [16]
+const SVE_ADDPT_PRED_MASK: u32 = 0xFFFE_E000; // pins [31:17]+[15:13]; sub[16]/Pg[12:10]/Zm[9:5]/Zdn[4:0] vary
+const SVE_ADDPT_BASE: u32 = 0x04E0_0800; // SVE ADDPT (unpred); SUBPT sets [10]
+const SVE_ADDPT_MASK: u32 = 0xFFE0_F800; // pins [31:21]+[15:11]; Zm[20:16]/sub[10]/Zn[9:5]/Zd[4:0] vary
+const SVE_MADPT_BASE: u32 = 0x44C0_D000; // SVE MADPT/MLAPT (mul-add); madpt sets [11]
+const SVE_MADPT_MASK: u32 = 0xFFE0_F400; // pins all but op[20:16]/madpt[11]/op[9:5]/Zda[4:0]
+
+// conditional select, W/X (S=0): base | (sf << 31) | (Rm << 16) | (cond << 12) | (Rn << 5) | Rd. The fixed top
+// with sf=0 is `0 op S 11010100`; op(bit30) + o2(bit10) -- folded into each base below -- select the op, and the
+// encoder ORs in (width.sf() << 31). cond[15:12] is the Arm64Condition operand. The X bases are these |
+// 0x8000_0000 (CSEL=0x9A80_0000, ...); all bases verified vs DDI0487 C6.2 + both GNU binutils 2.42 and llvm-mc.
+const CSEL_BASE: u32 = 0x1A80_0000; // op 0, o2 0
+const CSINC_BASE: u32 = 0x1A80_0400; // op 0, o2 1
+const CSINV_BASE: u32 = 0x5A80_0000; // op 1, o2 0
+const CSNEG_BASE: u32 = 0x5A80_0400; // op 1, o2 1
+
+// conditional compare (register + immediate), W/X: base | (sf<<31) | ((Rm|imm5)<<16) | (cond<<12) | (Rn<<5) |
+// nzcv. Fixed top with sf=0 is `0 op 1 11010010`; op(bit30) = CCMN 0 / CCMP 1, S(bit29)=1; bit 11 = 0 register
+// / 1 immediate. The X bases are these | 0x8000_0000. All verified vs DDI0487 C6.2 + GNU binutils 2.42 + llvm-mc.
+const CCMN_REG_BASE: u32 = 0x3A40_0000; // op 0, bit11 0
+const CCMP_REG_BASE: u32 = 0x7A40_0000; // op 1, bit11 0
+const CCMN_IMM_BASE: u32 = 0x3A40_0800; // op 0, bit11 1
+const CCMP_IMM_BASE: u32 = 0x7A40_0800; // op 1, bit11 1
+
+// bitfield (SBFM/BFM/UBFM), W/X: base | (sf<<31) | (sf<<22 [N=sf]) | (immr<<16) | (imms<<10) | (Rn<<5) | Rd. The W
+// bases carry sf=0/N=0; opc[30:29] selects the op. The X bases are these | 0x8000_0000 (sf) | 0x0040_0000 (N=1).
+// All verified vs DDI0487 C6.2 + GNU binutils 2.42 + llvm-mc.
+const SBFM_BASE: u32 = 0x1300_0000; // opc 00
+const BFM_BASE: u32 = 0x3300_0000; // opc 01
+const UBFM_BASE: u32 = 0x5300_0000; // opc 10
+
+// unconditional branch (immediate): base | imm26.
+const B_BASE: u32 = 0x1400_0000;
+const BL_BASE: u32 = 0x9400_0000;
+
+// conditional branch (immediate): base | (imm19 << 5) | cond.  (bit 4 is 0.)
+const BCOND_BASE: u32 = 0x5400_0000;
+const BCCOND_BASE: u32 = 0x5400_0010; // FEAT_HBC BC.cond: B.cond with the [4]=1 hint (shares COND_BRANCH_MASK, which pins [4])
+const LSE128_BASE: u32 = 0x1920_0000; // FEAT_LSE128 SWPP/LDCLRP/LDSETP: A[23], L[22], Rt2[20:16], op[15:12], Rn[9:5], Rt[4:0]
+const LSE128_MASK: u32 = 0xFF20_0C00; // pins [31:24]=0x19 + [21]=1 + [11:10]=00; frees A/L, Rt2, op[15:12], Rn, Rt
+const RCPC3_PAIR_BASE: u32 = 0x9900_0800; // FEAT_LRCPC3 LDIAPP/STILP: size[30], load[22], !writeback[12], Rt2[20:16], Rn[9:5], Rt[4:0]
+const RCPC3_PAIR_MASK: u32 = 0xBFA0_EC00; // pins [31]=1+[29:24]+[23]+[21]+[15:13]=000+[11:10]=10; frees size[30], load[22], Rt2, !wb[12], Rn, Rt
+const RPRFM_BASE: u32 = 0xF8A0_4818; // FEAT_RPRFM: Xm[20:16], Xn[9:5], prfop split [15]/[13:12]/[2:0]. Decoded inline in the PRFM-register arm (Rt[4:3]=11)
+const RCPC3_SIMD_BASE: u32 = 0x1D00_0800; // FEAT_LRCPC3 LDAPUR/STLUR (SIMD&FP unscaled): size[31:30], opc1[23], L[22], imm9[20:12], Xn[9:5], Vt[4:0]
+const RCPC3_SIMD_MASK: u32 = 0x3F20_0C00; // pins [29:24]=011101 + [21]=0 + [11:10]=10; frees size, opc1[23], L[22], imm9, Xn, Vt
+const GCS_STORE_BASE: u32 = 0xD91F_0C00; // FEAT_GCS GCSSTR/GCSSTTR: unpriv[12], Xn[9:5], Xt[4:0]
+const GCS_STORE_MASK: u32 = 0xFFFF_EC00; // pins everything but unpriv[12], Xn[9:5], Xt[4:0]
+// FEAT_LS64 atomic 64-byte access. LD64B/ST64B fix Rs=11111 (baked into the base); ST64BV/ST64BV0 carry Rs.
+const LS64_LD_BASE: u32 = 0xF83F_D000; // LD64B Xt, [Xn]
+const LS64_ST_BASE: u32 = 0xF83F_9000; // ST64B Xt, [Xn]
+const LS64_FIXED_MASK: u32 = 0xFFFF_FC00; // pins [31:16] (incl Rs=11111) + [15:10]; Rn/Rt vary
+const LS64_STV_BASE: u32 = 0xF820_B000; // ST64BV Xs, Xt, [Xn]
+const LS64_STV0_BASE: u32 = 0xF820_A000; // ST64BV0 Xs, Xt, [Xn]
+const LS64_STV_MASK: u32 = 0xFFE0_FC00; // pins [31:21] + [15:10]; Rs/Rn/Rt vary
+// FEAT_THE read-check-write atomics (RCW/RCWS). All four sub-forms share one mask; S[30]/A[23]/L[22] are excluded
+// (read as fields). CAS forms in the 0x19 CAS group; atomic-op singles in the 0x38 group, pairs in the 0x19 group.
+const RCW_MASK: u32 = 0xBF20_FC00; // pins [31]+[29:24]+[21]+[15:10]; S/A/L/Rs(or Rt2)/Rn/Rt vary
+const RCW_CAS_BASE: u32 = 0x1920_0800; // RCWCAS Xs, Xt, [Xn]
+const RCW_CASP_BASE: u32 = 0x1920_0C00; // RCWCASP Xs, Xs+1, Xt, Xt+1, [Xn] ([11:10]=11)
+const RCPC3_VEC_ELEM_BASE: u32 = 0x0D01_8400; // FEAT_LRCPC3 LDAP1/STL1 .d single element: index(Q)[30], L[22], Xn[9:5], Vt[4:0]
+const RCPC3_VEC_ELEM_MASK: u32 = 0xBFBF_FC00; // pins [31]=0+[29:23]+[21:16]+[15:10]=100001; frees index[30], L[22], Xn, Vt
+
+// compare and branch (immediate): base | (imm19 << 5) | Rt.  op[24] selects CBZ(0)/CBNZ(1); sf is bit 31.
+const CBZ_BASE: u32 = 0x3400_0000; // sf cleared, op 0
+const CBNZ_BASE: u32 = 0x3500_0000; // sf cleared, op 1
+
+// FEAT_CMPBR compare and branch: sf[31] 111010 op[24] cc[23:21] (Rm|imm6) size[15:14] imm9[13:5] Rn[4:0]. op[24]=0
+// register form (size[15:14]: 00=CB W/X via sf, 10=CBB byte, 11=CBH half); op[24]=1 immediate form (imm6 split
+// [20:16]:[15]). The group mask drops sf (recovered as width) so a W and X word share the masked key.
+const CMPBR_REG_BASE: u32 = 0x7400_0000; // op[24]=0
+const CMPBR_IMM_BASE: u32 = 0x7500_0000; // op[24]=1
+const CMPBR_GROUP_MASK: u32 = 0x7F00_0000; // pins [30:25]=111010 + op[24]; sf/cc/Rm-or-imm6/size/imm9/Rn vary
+// FEAT_PAuth_LR label forms (experimental): imm16 label offset at [20:5] (x4), Rn=LR ([4:0]=11111). The mask pins
+// everything but the imm16 so the op (autiasppc/autibsppc/retaasppc/retabsppc) resolves by its base word.
+#[cfg(feature = "experimental")]
+const PAUTH_LR_LABEL_MASK: u32 = 0xFFE0_001F;
+// FEAT_PCDPHINT STSHH cache-stash hint (experimental): a fixed word in the hint space; [5] selects strm vs keep.
+#[cfg(feature = "experimental")]
+const STSHH_KEEP_WORD: u32 = 0xD501_961F;
+#[cfg(feature = "experimental")]
+const STSHH_STRM_WORD: u32 = 0xD501_963F;
+// FEAT_LSFE atomic float (experimental): size[31:30], A[23], R[22], [21]=1, Rs[20:16], store[15], op[14:12], Rn[9:5], Rt[4:0].
+#[cfg(feature = "experimental")]
+const LSFE_ATOMIC_BASE: u32 = 0x3C20_0000;
+#[cfg(feature = "experimental")]
+const LSFE_ATOMIC_MASK: u32 = 0x3F20_0C00; // pins [29:24]=111100 + [21]=1 + [11:10]=00; frees size[31:30]/AR[23:22]/Rs/store[15]/op[14:12]/Rn/Rt
+
+// test and branch (immediate): b5[31] 011011 op[24] b40[23:19] imm14[18:5] Rt. b5 (the bit-position high bit) is
+// an operand and sits OUTSIDE the mask; [30:25]=011011 (bit 25 = 1) distinguishes these from CBZ/CBNZ (011010).
+const TBZ_BASE: u32 = 0x3600_0000; // op 0 (branch if bit zero), b5 cleared
+const TBNZ_BASE: u32 = 0x3700_0000; // op 1 (branch if bit non-zero)
+
+// load/store register (unsigned immediate), all four sizes: base | (size << 30) | (imm12 << 10) | (Rn << 5) |
+// Rt. The bases below carry size = 0 (Byte); the encoder ORs in (size.size_bits() << 30). opc bit 22 (L)
+// selects store (0) / load (1); opc bit 23 = 0 for these plain integer forms. The 64-bit (Double) bases are
+// these | (3 << 30) -- STR(X) 0xF900_0000, LDR(X) 0xF940_0000 -- preserving the former 64-bit-only exact bytes.
+// All four sizes (both STR and LDR) verified vs DDI0487 C6.2 + both GNU binutils 2.42 and llvm-mc (identical).
+const STR_UIMM_BASE: u32 = 0x3900_0000; // STRB; STRH/STR(W)/STR(X) = | (size << 30)
+const LDR_UIMM_BASE: u32 = 0x3940_0000; // LDRB; = STR | (1 << 22) (L bit)
+const LDRS_X_BASE: u32 = 0x3980_0000; // LDRSB/H/W signed, sign-extend to 64-bit (opc=10); | (size << 30)
+const LDRS_W_BASE: u32 = 0x39C0_0000; // LDRSB/H signed, sign-extend to 32-bit (opc=11); | (size << 30)
+
+// load/store register-offset `[Xn, Rm{, <ext> #amount}]`: size[31:30] 111 0 00 opc[23:22] 1[21] Rm option[15:13]
+// S[12] 10[11:10] Rn Rt. Same opc lattice as the unsigned-immediate group (STR=00/LDR=01/LDRS->64=10/LDRS->32=11)
+// but bit24=0 (vs 1 for uimm) and bits[11:10]=10 select this addressing mode. The size=0 bases below carry
+// bit21=1 and bits[11:10]=10; `size`, `Rm`, `option`, `S`, `Rn`, `Rt` are ORed in by `ldst_register_offset_word`.
+const STR_REG_OFF_BASE: u32 = 0x3820_0800; // opc=00 (store)
+const LDR_REG_OFF_BASE: u32 = 0x3860_0800; // opc=01 (load)
+const LDRS_X_REG_OFF_BASE: u32 = 0x38A0_0800; // opc=10 (sign-extend to 64)
+const LDRS_W_REG_OFF_BASE: u32 = 0x38E0_0800; // opc=11 (sign-extend to 32)
+// Mask pins [29:24]=111000 + opc[23:22] + bit21=1 + bits[11:10]=10; drops size[31:30] (operand) + Rm/option/S/
+// Rn/Rt. Distinct from the uimm group by bit24 (0 here, 1 there), so the two clusters never alias.
+const LDST_REG_OFF_MASK: u32 = 0x3FE0_0C00;
+
+// SIMD&FP load/store register-offset: size[31:30] 111 1[26]=V 00 opc<1>[23] L[22] 1[21] Rm option S 10 Rn Vt. The
+// bases carry V=1, bit21=1, bits[11:10]=10; L selects load/store. The mask EXCLUDES opc<1>[23] (folded with
+// size[31:30] into the access width, recovered by `from_size_and_opc_high`). V=1 keeps these disjoint from the GP
+// register-offset group above (V=0); bits[11:10]=10 keeps them disjoint from the experimental LSFE atomic-float
+// group (bits[11:10]=00) that shares the 0x3C.. frame.
+const VEC_LDR_REG_OFF_BASE: u32 = 0x3C60_0800; // V=1, L=1 (load)
+const VEC_STR_REG_OFF_BASE: u32 = 0x3C20_0800; // V=1, L=0 (store)
+const VEC_LDST_REG_OFF_MASK: u32 = 0x3F60_0C00; // pins [29:24]=111100 + L[22] + bit21=1 + [11:10]=10; frees size/opc<1>/Rm/option/S/Rn/Vt
+
+// load/store single register, 9-bit unscaled immediate (LDUR/STUR + single-reg pre/post-index): size[31:30] 111
+// 0 00 opc[23:22] 0[21] imm9[20:12] idx[11:10] Rn Rt. Same opc lattice as the uimm/register-offset groups, but
+// bit24=0 AND bit21=0 (vs bit21=1 for register-offset). idx[11:10] (the [`Arm64Imm9Mode`]) is an operand, NOT
+// part of the mask; idx=10 is unallocated and decodes to InvalidOpcode. The size=0 bases carry only the opc bit.
+const STUR_BASE: u32 = 0x3800_0000; // opc=00 (store)
+const LDUR_BASE: u32 = 0x3840_0000; // opc=01 (load)
+const LDURS_X_BASE: u32 = 0x3880_0000; // opc=10 (sign-extend to 64)
+const LDURS_W_BASE: u32 = 0x38C0_0000; // opc=11 (sign-extend to 32)
+// Mask pins [29:24]=111000 + opc[23:22] + bit21=0; drops size + imm9 + idx[11:10] + Rn + Rt. bit21=0 separates
+// this from the register-offset group (bit21=1); bit24=0 separates both from the uimm group (bit24=1).
+const LDST_IMM9_MASK: u32 = 0x3FE0_0000;
+
+// SIMD&FP load/store, 9-bit unscaled immediate (LDUR/STUR + pre/post-index): size[31:30] 111 1[26]=V 00 opc<1>[23]
+// L[22] 0[21] imm9 idx[11:10] Rn Vt. The bases carry V=1, bit21=0; L selects load/store; idx[11:10] (the
+// [`Arm64Imm9Mode`]) is an operand -- idx=10 (the GP unprivileged slot) is unallocated for SIMD&FP. The mask
+// EXCLUDES opc<1>[23] (folded into the access width). V=1 / bit21=0 keep these disjoint from GP imm9 and from the
+// SIMD register-offset group (bit21=1).
+const VEC_LDUR_BASE: u32 = 0x3C40_0000; // V=1, L=1 (load)
+const VEC_STUR_BASE: u32 = 0x3C00_0000; // V=1, L=0 (store)
+const VEC_LDST_IMM9_MASK: u32 = 0x3F60_0000; // pins [29:24]=111100 + L[22] + bit21=0; frees size/opc<1>/imm9/idx/Rn/Vt
+
+// load register (PC-relative literal): opc[31:30] 011 V=0 00 imm19[23:5] Rt. The size=W base below; opc selects
+// the variant (00=LDR W, 01=LDR X, 10=LDRSW; 11=PRFM-literal, modeled via `PrefetchLiteral`). Mask pins [31:24] (opc + 011000).
+const LDR_LIT_W_BASE: u32 = 0x1800_0000; // opc=00, 32-bit
+const LDR_LIT_X_BASE: u32 = 0x5800_0000; // opc=01, 64-bit
+const LDRSW_LIT_BASE: u32 = 0x9800_0000; // opc=10, sign-extend word to 64-bit
+// SIMD&FP load-literal (LDR St/Dt/Qt, <label>): opc[31:30] 011 1[26]=V 00 imm19 Vt. Same LDST_LITERAL_MASK
+// ([31:24]) as the GP group, but V=1 (opc=11 unallocated) keeps them disjoint. Load-only.
+const VEC_LDR_LIT_S_BASE: u32 = 0x1C00_0000; // opc=00, S (32-bit)
+const VEC_LDR_LIT_D_BASE: u32 = 0x5C00_0000; // opc=01, D (64-bit)
+const VEC_LDR_LIT_Q_BASE: u32 = 0x9C00_0000; // opc=10, Q (128-bit)
+const LDST_LITERAL_MASK: u32 = 0xFF00_0000;
+const PRFM_LIT_BASE: u32 = 0xD800_0000; // PRFM <prfop>, <label> (opc=11, the literal-group PRFM)
+const PRFM_UIMM_BASE: u32 = 0xF980_0000; // PRFM <prfop>, [Xn,#imm] (size=11, opc=10; imm12 scaled by 8)
+const PRFUM_BASE: u32 = 0xF880_0000; // PRFUM <prfop>, [Xn,#imm] (imm9 unscaled, idx=00)
+const PRFM_REG_BASE: u32 = 0xF8A0_0800; // PRFM <prfop>, [Xn,Rm,...] (size=11, opc=10, bits[11:10]=10; option=000)
+
+// load/store exclusive group (ARMv8.0): size[31:30] 001000 o2 L o1 Rs[20:16] o0[15] Rt2[14:10] Rn Rt. The
+// size=0 bases below bake the fixed 11111 fields (Rs and/or Rt2). `acquire`/`release` set o0[15]; CAS sets
+// release at L[22] and acquire at o0[15]. The whole group is identified by [29:24]=001000 in decode.
+const EXCLUSIVE_GROUP_MASK: u32 = 0x3F00_0000; // [29:24] = 001000 selects the load/store-exclusive group
+const EXCLUSIVE_GROUP_BASE: u32 = 0x0800_0000;
+const LDXR_BASE: u32 = 0x085F_7C00; // L=1, o0=0, Rs=11111, Rt2=11111 (LDXR; LDAXR sets o0)
+const STXR_BASE: u32 = 0x0800_7C00; // L=0, o0=0, Rt2=11111, Rs operand (STXR; STLXR sets o0)
+const LDAR_BASE: u32 = 0x08DF_FC00; // o2=1, L=1, o0=1, Rs=11111, Rt2=11111
+const STLR_BASE: u32 = 0x089F_FC00; // o2=1, L=0, o0=1
+const CAS_BASE: u32 = 0x08A0_7C00; // o2=1, o1=1, Rt2=11111 (CAS; ordering at L[22] + o0[15])
+const CASP_BASE: u32 = 0x0820_7C00; // o2=0, o1=1, Rt2=11111 (CASP; sz=bit30, ordering at L[22] + o0[15])
+// FEAT_LSUI unprivileged CAS (CAST/CASPT): the [24]=1 `T` variant with o2=1, o1=0 (note o1=0, UNLIKE privileged CAS).
+// 64-bit only -- single CAST has [31:30]=11, pair CASPT [31:30]=01; ordering at L[22] + o0[15]; Rt2[14:10]=11111.
+const CAST_BASE: u32 = 0xC980_7C00; // unprivileged CAS single (X)
+const CASPT_BASE: u32 = 0x4980_7C00; // unprivileged CAS pair (X element)
+const LDAPR_BASE: u32 = 0x38BF_C000; // LDAPR{B,H} Wt|Xt, [Xn] (FEAT_LRCPC); | (size << 30)
+const LDAPR_MASK: u32 = 0x3FFF_FC00; // pins [29:10]; size[31:30]/Rn/Rt vary
+const RCPC_UNSCALED_BASE: u32 = 0x1900_0000; // STLUR/LDAPUR (FEAT_LRCPC2); | size<<30 | opc<<22 | imm9<<12
+const RCPC_UNSCALED_MASK: u32 = 0x3F20_0C00; // pins [29:24]=011001 + bit21=0 + [11:10]=00; size/opc/imm9/Rn/Rt vary
+// SVE: PTRUE Pd.<T>{,pattern} (FEAT_SVE); | size<<22 | S<<16 | pattern<<5 | Pd. PTRUES sets bit16.
+const SVE_PTRUE_BASE: u32 = 0x2518_E000;
+const SVE_PTRUE_MASK: u32 = 0xFF3E_FC10; // pins [31:24] + [21:17]=01100 + [15:10]=111000 + bit4; size/S(bit16)/pattern/Pd vary
+// SVE unpredicated integer add/subtract: | size<<22 | Zm<<16 | opcode<<10 | Zn<<5 | Zd.
+const SVE_INT_BIN_UNPRED_BASE: u32 = 0x0420_0000;
+const SVE_INT_BIN_UNPRED_MASK: u32 = 0xFF20_E000; // pins [31:24] + bit21 + [15:13]=000; size/Zm/opcode/Zn/Zd vary
+// SVE while predicate: | size<<22 | Rm<<16 | sf<<12 | U<<11 | Rn<<5 | eq<<4 | Pd.
+const SVE_WHILE_BASE: u32 = 0x2520_0400;
+const SVE_WHILE_MASK: u32 = 0xFF20_E400; // pins [31:24] + bit21 + [15:13]=000 + bit10; size/Rm/sf/U/Rn/eq/Pd vary
+// SVE2 WHILEGE/GT/HS/HI (the > / >= loop predicates): same WHILE frame but [10]=0. | size<<22 | Rm<<16 | sf<<12 |
+// U<<11 | Rn<<5 | strict<<4 | Pd.
+const SVE2_WHILE_GE_BASE: u32 = 0x2520_0000;
+const SVE2_WHILE_GE_MASK: u32 = 0xFF20_E400; // pins [31:24] + bit21 + [15:13]=000 + [10]=0; size/Rm/sf/U/Rn/strict/Pd vary
+// SVE2 WHILERW/WHILEWR (pointer-hazard predicates): | size<<22 | Rm<<16 | Rn<<5 | rw<<4 | Pd. [15:12]=0011 (always
+// 64-bit pointers), rw[4] = 1 for WHILERW.
+const SVE2_WHILE_HAZARD_BASE: u32 = 0x2520_3000;
+const SVE2_WHILE_HAZARD_MASK: u32 = 0xFF20_F000; // pins [31:24] + bit21 + [15:12]=0011; size/Rm/Rn/rw/Pd vary
+// SVE predicated integer binary (destructive): | size<<22 | opcode<<16 | Pg<<10 | Zm<<5 | Zdn. bit21=0 distinguishes
+// it from the unpredicated group (bit21=1) under the SAME mask value.
+const SVE_PRED_INT_BIN_BASE: u32 = 0x0400_0000;
+// SVE contiguous load/store (scalar + immediate): | dtype<<21 | imm4<<16 | Pg<<10 | Rn<<5 | Zt. Loads have
+// [15:13]=101 (`/z`), stores [15:13]=111. The dtype 4-bit field (loads: see Arm64SveContiguousLoadType; stores:
+// msize<<2 | esize) sits at [24:21].
+const SVE_LD1_BASE: u32 = 0xA400_A000;
+const SVE_ST1_BASE: u32 = 0xE400_E000;
+const SVE_LDST1_MASK: u32 = 0xFE10_E000; // pins [31:25] + bit20=0 + [15:13]; dtype[24:21]/imm4/Pg/Rn/Zt vary
+// SVE contiguous load/store, scalar base + scalar index ([Xn, Xm, LSL #log2(access)]): | dtype<<21 | Rm<<16 | Pg<<10 |
+// Rn<<5 | Zt. [15:13]=010 separates from scalar+imm ([15:13]=101), LD1RQ ([15:13]=000), LDNT1 ([15:13]=110).
+const SVE_LD1_SS_BASE: u32 = 0xA400_4000;
+const SVE_ST1_SS_BASE: u32 = 0xE400_4000;
+const SVE_LDST1_SS_MASK: u32 = 0xFE00_E000; // pins [31:25] + [15:13]=010; dtype[24:21]/Rm/Pg/Rn/Zt vary
+// SVE structured (de)interleaving LD2/3/4 + ST2/3/4 (FEAT_SVE). Bases coincide with LDNT1's ([15:13]=111 imm-load,
+// 110 ss-load, 011 ss-store; store-imm bit20=1) -- the ONLY distinguisher is count[22:21]: LDNT1 has 00, structured
+// 01/10/11. `Arm64SveStructureCount::from_bits` returns None for 00, so the structured decode (placed AFTER LDNT1)
+// never claims an LDNT1 word. | msz<<23 | count<<21 | (imm4<<16 OR Rm<<16) | Pg<<10 | Rn<<5 | Zt.
+const SVE_STRUCT_LD_IMM_BASE: u32 = 0xA400_E000; // [15:13]=111, bit20=0
+const SVE_STRUCT_LD_SS_BASE: u32 = 0xA400_C000; // [15:13]=110
+const SVE_STRUCT_ST_IMM_BASE: u32 = 0xE410_E000; // [15:13]=111, bit20=1
+const SVE_STRUCT_ST_SS_BASE: u32 = 0xE400_6000; // [15:13]=011
+const SVE_STRUCT_IMM_MASK: u32 = 0xFE10_E000; // pins [31:25]+bit20+[15:13]; msz/count/imm4/Pg/Rn/Zt vary
+const SVE_STRUCT_SS_MASK: u32 = 0xFE00_E000; // pins [31:25]+[15:13]; msz/count/Rm/Pg/Rn/Zt vary
+// SVE load-and-replicate quadword (LD1RQB/H/W/D): | msz<<23 | (Rm<<16 OR imm4<<16) | Pg<<10 | Rn<<5 | Zt. [22:21]=00.
+// scalar+scalar [15:13]=000 (base 0xA400_0000); scalar+imm [15:13]=001 (base 0xA400_2000, imm4 signed -8..7 scaled x16).
+const SVE_LD1RQ_SS_BASE: u32 = 0xA400_0000;
+const SVE_LD1RQ_IMM_BASE: u32 = 0xA400_2000;
+const SVE_LD1RQ_MASK: u32 = 0xFE60_E000; // pins [31:25] + [22:21]=00 + [15:13]; msz/Rm-or-imm4/Pg/Rn/Zt vary
+// SVE contiguous non-temporal (LDNT1/STNT1): | msz<<23 | (Rm<<16 OR imm4<<16) | Pg<<10 | Rn<<5 | Zt. [22:21]=00.
+// load-ss 0xA400_C000 ([15:13]=110); store-ss 0xE400_6000 ([15:13]=011); load-imm 0xA400_E000 ([20]=0, [15:13]=111);
+// store-imm 0xE410_E000 ([20]=1, [15:13]=111). (Asymmetry confirmed by DDI0487 + GNU/LLVM.)
+const SVE_NT_LOAD_SS_BASE: u32 = 0xA400_C000;
+const SVE_NT_STORE_SS_BASE: u32 = 0xE400_6000;
+const SVE_NT_SS_MASK: u32 = 0xFE60_E000; // pins [31:25] + [22:21]=00 + [15:13]; msz/Rm/Pg/Rn/Zt vary
+const SVE_NT_LOAD_IMM_BASE: u32 = 0xA400_E000;
+const SVE_NT_STORE_IMM_BASE: u32 = 0xE410_E000;
+const SVE_NT_IMM_MASK: u32 = 0xFE70_E000; // pins [31:25] + [22:20] + [15:13]=111; msz/imm4/Pg/Rn/Zt vary
+// SVE contiguous first-fault (LDFF1, scalar+scalar) and non-fault (LDNF1, scalar+imm). dtype as Arm64SveContiguousLoadType.
+// LDFF1 base 0xA400_6000 ([15:13]=011; Rm MAY be XZR=no offset; mask 0xFE00_E000). LDNF1 base 0xA410_A000 ([20]=1,
+// [15:13]=101; shares the 0xFE10_E000 mask with contiguous LD1 but [20]=1 keeps them disjoint).
+const SVE_LDFF1_SS_BASE: u32 = 0xA400_6000;
+const SVE_LDNF1_IMM_BASE: u32 = 0xA410_A000;
+// SVE load-and-replicate octword (LD1ROB/H/W/D, FEAT_F64MM): like LD1RQ but [21]=1 and imm4 scaled x32. scalar+scalar
+// base 0xA420_0000 ([15:13]=000), scalar+imm base 0xA420_2000 ([15:13]=001). Reuses the LD1RQ mask 0xFE60_E000.
+const SVE_LD1RO_SS_BASE: u32 = 0xA420_0000;
+const SVE_LD1RO_IMM_BASE: u32 = 0xA420_2000;
+// SVE contiguous prefetch (PRFB/H/W/D). prfop at [3:0]. scalar+imm: base 0x85C0_0000 ([24:22]=111, [15]=0), msz at
+// [14:13], imm6[21:16] signed -32..31. scalar+scalar: base 0x8400_C000 ([22:21]=00, [15:13]=110), msz at [24:23],
+// Rm[20:16]. (The msz field POSITION differs between the two forms -- spec-confirmed.)
+const SVE_PRF_IMM_BASE: u32 = 0x85C0_0000;
+const SVE_PRF_IMM_MASK: u32 = 0xFFC0_8010; // pins [31:25] + [24:22]=111 + [15]=0 + [4]=0; msz/imm6/prfop/Pg/Rn vary
+const SVE_PRF_SS_BASE: u32 = 0x8400_C000;
+const SVE_PRF_SS_MASK: u32 = 0xFE60_E010; // pins [31:25] + [22:21]=00 + [15:13]=110 + [4]=0; msz/Rm/prfop/Pg/Rn vary
+// SVE gather prefetch. vector+imm: base 0x8400_E000 (esz[30], msz[24:23], [15:13]=111, [21]=0), imm5[20:16] unsigned,
+// Zn[9:5], prfop[3:0]. scalar+vector: base 0x8420_0000 (esz[30], xs22[22], [21]=1, lsl15[15], msz[14:13]), Zm[20:16],
+// Rn[9:5], prfop[3:0]; the granule shift is always implied (no scaled bit). Both [4]=0.
+const SVE_GATHER_PRF_IMM_BASE: u32 = 0x8400_E000;
+const SVE_GATHER_PRF_IMM_MASK: u32 = 0xBE60_E010; // pins [31] + [29:25]=00010 + [22]=0 + [21]=0 + [15:13]=111 + [4]=0; esz/msz/imm5/Pg/Zn/prfop vary (the [22]=0 separates it from the first-fault unsigned LSL gather load)
+const SVE_GATHER_PRF_SV_BASE: u32 = 0x8420_0000;
+const SVE_GATHER_PRF_SV_MASK: u32 = 0xBFA0_0010; // pins [31] + [29:25]=00010 + [24:23]=00 + [21]=1 + [4]=0; esz/xs22/Zm/lsl15/msz/Pg/Rn/prfop vary
+// SVE load-and-replicate (LD1R{S}{B,H,W,D}): | dtypeh<<23 | imm6<<16 | dtypel<<13 | Pg<<10 | Rn<<5 | Zt, where
+// dtype = dtypeh:dtypel matches Arm64SveContiguousLoadType. Distinguished from the 0x85 fill/spill by bit22=1 and
+// from the 0xA4 contiguous/quadword-replicate loads by the 0x84 prefix.
+const SVE_LD1R_BASE: u32 = 0x8440_8000;
+const SVE_LD1R_MASK: u32 = 0xFE40_8000; // pins [31:25]=1000010 + bit22=1 + bit15=1; dtype/imm6/Pg/Rn/Zt vary
+// SVE gather load, vector base + immediate: | esz<<30 | msz<<23 | imm5<<16 | U<<14 | Pg<<10 | Zn<<5 | Zt. esz[30]
+// = .d (else .s), msz[24:23] = access size, U[14] = unsigned/zero-extend. bit22=0 separates from LD1R (bit22=1).
+const SVE_GATHER_VEC_IMM_BASE: u32 = 0x8420_8000;
+const SVE_GATHER_VEC_IMM_MASK: u32 = 0xBE60_A000; // pins bit31 + [29:25]=00010 + bit22=0 + bit21=1 + bit15=1 + bit13=0
+// SVE scatter store, vector base + immediate (ST1B/H/W/D): | msz<<23 | element_s<<21 | imm5<<16 | Pg<<10 | Zn<<5 | Zt.
+// base 0xE440_A000 ([31:25]=1110010, [22]=1, [15:13]=101). element .s sets [21]=1 (.d=0). [15:13]=101 separates it from
+// the contiguous ST1 ([15:13]=111).
+const SVE_SCATTER_VEC_IMM_BASE: u32 = 0xE440_A000;
+const SVE_SCATTER_VEC_IMM_MASK: u32 = 0xFE40_E000; // pins [31:25]=1110010 + [22]=1 + [15:13]=101; msz/element/imm5/Pg/Zn/Zt vary
+// SVE scatter store, scalar base + vector offset (ST1B/H/W/D): | msz<<23 | element_s<<22 | scaled<<21 | Zm<<16 | 1<<15 |
+// signed<<14 | lsl64<<13 | Pg<<10 | Rn<<5 | Zt. base 0xE400_8000 ([31:25]=1110010, [15]=1). mode [14:13]: uxtw=00/
+// sxtw=10/lsl=01 (11 unallocated). Checked AFTER vec+imm (which is the [22]=1 & [15:13]=101 case) and contiguous ([14:13]=11).
+const SVE_SCATTER_SV_BASE: u32 = 0xE400_8000;
+const SVE_SCATTER_SV_MASK: u32 = 0xFE00_8000; // pins [31:25]=1110010 + [15]=1; msz/element/scaled/Zm/mode/Pg/Rn/Zt vary
+// SVE gather load, scalar base + vector offset (LD1/LDFF1): base 0x8400_0000 | esz_d[30] | msz[24:23] | xs22[22] |
+// scaled[21] | Zm[20:16] | lsl15[15] | U[14] | ff[13] | Pg<<10 | Rn<<5 | Zt. mode xs[22]:lsl[15] (LSL=1,1; 0,1 is the
+// SVE2 NT-gather slot, rejected). Decoded LAST in the SVE-memory block, after fill/spill + vec+imm + prefetch + NT all
+// claim their words; validated strictly (legal element/msz/sign, mode, NOT msz==B&&scaled) so non-loads fall through.
+const SVE_GATHER_LOAD_SV_BASE: u32 = 0x8400_0000;
+const SVE_GATHER_LOAD_SV_MASK: u32 = 0xBE00_0000; // pins [31] + [29:25]=00010 (the SVE gather class); validation does the rest
+// SVE2 NT-gather load (vector base + scalar offset). [22:21]=00. .s (top 0x84): base 0x8400_8000, U at [13], [15:14]=10.
+// .d (top 0xC4): base 0xC400_8000, U at [14], [15]=1,[13]=0. NT-scatter store (top 0xE4): base 0xE400_2000, element_s[22],
+// [21]=0, [15:13]=001. (U-position differs by element -- spec-confirmed, two encoding classes.)
+const SVE2_NT_GATHER_S_BASE: u32 = 0x8400_8000;
+const SVE2_NT_GATHER_S_MASK: u32 = 0xFE60_C000; // pins [31:25]=1000010 + [22:21]=00 + [15:14]=10; msz/Rm/U[13]/Pg/Zn/Zt vary
+const SVE2_NT_GATHER_D_BASE: u32 = 0xC400_8000;
+const SVE2_NT_GATHER_D_MASK: u32 = 0xFE60_A000; // pins [31:25]=1100010 + [22:21]=00 + [15]=1 + [13]=0; msz/Rm/U[14]/Pg/Zn/Zt vary
+const SVE2_NT_SCATTER_BASE: u32 = 0xE400_2000;
+const SVE2_NT_SCATTER_MASK: u32 = 0xFE20_E000; // pins [31:25]=1110010 + [21]=0 + [15:13]=001; msz/element[22]/Rm/Pg/Zn/Zt vary
+// SME control. SMSTART/SMSTOP: MSR SVCR, base 0xD503_407F | CRm<<8 where CRm=(target<<1)|start. RDSVL: 0x04BF_5800 |
+// imm6<<5 | Rd (like RDVL but bit11=1). ADDSVL 0x0420_5800 / ADDSPL 0x0460_5800 | Rn<<16 | imm6<<5 | Rd (bit11=1).
+const SME_SMSTART_BASE: u32 = 0xD503_407F;
+const SME_SMSTART_MASK: u32 = 0xFFFF_F0FF; // pins everything except CRm[11:8]
+const SME_RDSVL_BASE: u32 = 0x04BF_5800;
+const SME_RDSVL_MASK: u32 = 0xFFFF_F800; // pins [31:11] (incl. bit11=1; RDVL has bit11=0); imm6[10:5]/Rd vary
+const SME_ADDSVL_BASE: u32 = 0x0420_5800;
+const SME_ADDSPL_BASE: u32 = 0x0460_5800;
+const SME_ADDSVPL_MASK: u32 = 0xFFE0_F800; // pins [31:21] + [15:11] (bit11=1; ADDVL/ADDPL have bit11=0); Rn/imm6/Rd vary
+// SME FP outer product (FMOPA/FMOPS/BFMOPA/BFMOPS): base (in Arm64SmeFpPrecision) | Zm<<16 | Pm<<13 | Pn<<10 | Zn<<5 |
+// subtract<<4 | ZAtile. F32 0x8080_0000, F64 0x80C0_0000 (bit22=1), BF16 0x8180_0000 (bit24=1). The mask pins the
+// fixed frame; precision comes from [24] (bf16) and [22] (.d), subtract from [4].
+const SME_FP_MOP_MASK: u32 = 0xFEA0_0008; // pins [31:25]=1000000 + [23]=1 + [21]=0 + [3]=0; [24]/[22]/Zm/Pm/Pn/Zn/[4]/ZAtile vary
+const SME_FP_MOP_BASE: u32 = 0x8080_0000;
+const SME_BMOP_BASE: u32 = 0x8080_0008; // BMOPA/BMOPS: FP-MOP frame with the [3]=1 marker (SME_FP_MOP_MASK pins [3]=0)
+const SME_BMOP_MASK: u32 = 0xFFE0_000C; // pins [31:25]+[24]=0+[23]=1+[22:21]=0+[3]=1+[2]=0; frees Zm/Pm/Pn/Zn/sub[4]/tile[1:0]
+const SME_16BIT_MOP_H_BASE: u32 = 0x8180_0008; // FP16 (.h ZA); BF16 sets [21]=1
+const SME_16BIT_MOP_H_MASK: u32 = 0xFFC0_000E; // pins [31:24]=0x81 + [23:22]=10 + [3]=1 + [2:1]=00; frees bf16[21], Zm, Pm, Pn, Zn, op(sub)[4], tile[0]. [3]=1 separates it from the .s *MOPA (SME_FP_MOP_MASK pins [3]=0)
+// SME integer outer product (SMOPA/UMOPA/SUMOPA/USMOPA + S subtract): base 0xA080_0000 | uns_first<<24 | size_d<<22 |
+// uns_second<<21 | Zm<<16 | Pm<<13 | Pn<<10 | Zn<<5 | subtract<<4 | ZAtile. Top byte 0xA0/0xA1 (bit29=1) separates it
+// from the FP form (bit29=0). .s from .b, .d from .h.
+const SME_INT_MOP_MASK: u32 = 0xFE80_0008; // pins [31:25]=1010000 + [23]=1 + [3]=0; uns_first[24]/size[22]/uns_second[21]/.../ZAtile vary
+const SME_INT_MOP_BASE: u32 = 0xA080_0000;
+// SME2 FP8 outer product (FMOPA only; no FMOPS). [3]=0 -> .s tile (F8F32, 0-3), [3]=1 -> .h tile (F8F16, 0-1). [21]=1
+// + [24]=0 separate it from the FP32/16/BF16 FMOPA (SME_FP_MOP, [21]=0) and the .h 16-bit FMOPA (SME_16BIT_MOP_H,
+// [24]=1). The mask pins [4]=0 (no subtract) and [2]=0 (tile-high); [3] (.h marker) + tile[1:0] are read as fields.
+const SME_FP8_MOP_BASE: u32 = 0x80A0_0000;
+const SME_FP8_MOP_MASK: u32 = 0xFFE0_0014; // pins [31:21] + [4]=0 + [2]=0; frees Zm/Pm/Pn/Zn + [3]=.h + tile[1:0]
+// FEAT_SME_TMOP sparse outer product (STMOPA/UTMOPA/USTMOPA/SUTMOPA/BFTMOPA/FTMOPA + the FP8/FP16-dest FTMOPA forms).
+// Distinct from the predicated *MOPA outer products (which all pin [23]=1) by [23]=0 + [22]=1. The op selector lives
+// in [24]/[21]/[15]/[3] (mask 0x0120_8008); operands: Zm[20:16], Zk-z20[11:10], Zn>>1[9:6], index[5:4], tile[1:0].
+const SME_TMOP_BASE: u32 = 0x8040_0000;
+const SME_TMOP_MASK: u32 = 0xFEC0_7004; // pins [31]=1 + [30:25]=0 + [23]=0 + [22]=1 + [14:12]=000 + [2]=0; frees the op selector + operands
+const SME_TMOP_OP_MASK: u32 = 0x0120_8008; // the op selector bits ([24]+[21]+[15]+[3])
+// FEAT_SME_MOP4 quarter-tile outer product (SMOP4A/UMOP4A/.../FMOP4A/BFMOP4A + the *S subtract forms), .s accumulator.
+// Distinct from TMOP ([22]=1) + the predicated *MOPA ([23]=1) by [23]=0 + [22]=0. The op selector is [24]/[21]/[15]
+// (mask 0x0120_8000); Zn (single/list) at [9]+[8:6], Zm at [20]+[19:17], subtract[4], za_tile[1:0]. The .d (i16i64/
+// f64f64) forms (a separate [22]=1+[23]=1+[3]=1 sub-encoding) are NOT modeled here -- they fall through (bit22/23/3).
+const SME_MOP4_BASE: u32 = 0x8000_0000;
+const SME_MOP4_MASK: u32 = 0xFEC1_7C2C; // pins [31]=1 + [30:25]=0 + [23:22]=00 + [16]=0 + [14:10]=0 + [5]=0 + [3:2]=00
+const SME_MOP4_OP_MASK: u32 = 0x0120_8000; // the op selector bits ([24]+[21]+[15])
+// FEAT_SME_MOP4 quarter-tile outer product into a .d (64-bit) ZA tile (i16i64 int + f64f64 fp). The [23:22]=11 + [3]=1
+// sub-encoding; integer sets [29]. Operands as the .s form. za_tile is [2:0] (8 tiles). The op selector is [29]/[24]/[21].
+const SME_MOP4_D_BASE: u32 = 0x80C0_0008;
+const SME_MOP4_D_MASK: u32 = 0xDEC1_FC28; // pins [31]=1 + [30]=0 + [28:25]=0 + [23:22]=11 + [16]=0 + [15:10]=0 + [5]=0 + [3]=1
+const SME_MOP4_D_OP_MASK: u32 = 0x2120_0000; // the op selector bits ([29]+[24]+[21])
+// FEAT_SME_MOP4 quarter-tile FP outer product into a .h (16-bit) tile: f16 (FEAT_SME_F16F16) or bf16 (FEAT_SME_B16B16).
+// The [3]=1 (.h tile) FP sibling of the .s MOP4; [24]=1 fixed, [21] selects bf16. Only za0/za1 ([0]).
+const SME_MOP4_H_BASE: u32 = 0x8100_0008;
+const SME_MOP4_H_MASK: u32 = 0xFFC1_FC2E; // pins [31:24]=0x81 + [23:22]=00 + [16]=0 + [15:10]=0 + [5]=0 + [3:1]=001 (frees bf16[21] + operands + tile[0])
+// SME MOVA (move ZA tile slice <-> vector): base 0xC000_0000 | size<<22 | dir<<17 (1=tile->vec) | V<<15 | Wv<<13 |
+// Pg<<10. The 4-bit tile:offset field sits at [8:5] (read, with Zd[4:0]) or [3:0] (write, with Zn[9:5]). The field
+// splits by size: .b offs(4)/.h tile(1):offs(3)/.s tile(2):offs(2)/.d tile(3):offs(1).
+const SME_MOVA_BASE: u32 = 0xC000_0000;
+const SME_MOVA_MASK: u32 = 0xFF3D_0000; // pins [31:24]=0xC0 + [21:18]=0000 + [16]=0 (non-.q); size/dir/V/Wv/Pg/slice/Z vary
+// SME LD1/ST1 to ZA tile slice: base 0xE000_0000 | msz[24:22] | store<<21 | Rm<<16 | V<<15 | Wv<<13 | Pg<<10 | Rn<<5 |
+// tile:offset[3:0]. ([4]=0.) The tile:offset splits like MOVA (offs_bits by size). Index Xm scaled by the access size.
+const SME_TILE_LDST_BASE: u32 = 0xE000_0000;
+const SME_TILE_LDST_MASK: u32 = 0xFE00_0010; // pins [31:25]=1110000 (bit26=0 separates from the 0xe4 SVE stores) + [4]=0
+// SME ZERO {tiles}: base 0xC008_0000 | imm8[7:0] (the .d-slot tile mask).
+const SME_ZERO_BASE: u32 = 0xC008_0000;
+const SME_ZERO_MASK: u32 = 0xFFFF_FF00; // pins [31:8]; only the 8-bit tile mask varies
+// SME ADDHA/ADDVA: base 0xC090_0000 | size_d<<22 | vertical<<16 | Pm<<13 | Pn<<10 | Zn<<5 | ZAtile. ([23]=1,[20]=1.)
+const SME_ADDHV_BASE: u32 = 0xC090_0000;
+const SME_ADDHV_MASK: u32 = 0xFFBE_0000; // pins [31:24]=0xC0 + [23]=1 + [21]=0 + [20]=1 + [19:17]=000; size[22]/V[16]/Pm/Pn/Zn/ZAtile vary
+// SME ZA-array LDR/STR (whole-vector spill/fill): base 0xE100_0000 | store<<21 | Wv<<13 | Rn<<5 | offset[3:0]. The offset
+// (0-15) is both the ZA array-vector select and the MUL VL memory offset.
+const SME_ARRAY_LDST_BASE: u32 = 0xE100_0000;
+const SME_ARRAY_LDST_MASK: u32 = 0xFFDF_9C10; // pins [31:24]=0xE1 + [23:22]=00 + [20:15]=000000 + [12:10]=000 + [4]=0; store[21]/Wv/Rn/offset vary
+// FEAT_MOPS. CPYF (top 0x19) / CPY (top 0x1d): | stage[23:22] | read_nt[15] | write_nt[14] | Rs<<16 | [12:10]=001 | Rn<<5 |
+// Rd. SET (top 0x19, [23:22]=11): | stage[15:14] | nt[13] | Rm<<16 | [12:10]=001 | Rn<<5 | Rd. ([21]=0, [13]=0 for CPY.)
+const MOPS_CPYF_BASE: u32 = 0x1900_0400;
+const MOPS_CPY_BASE: u32 = 0x1D00_0400;
+const MOPS_CPY_MASK: u32 = 0xFF20_0C00; // pins [31:24] + [21]=0 + [11:10]=01; stage[23:22]/opts[15:12]/Rs/Rn/Rd vary (opts now include the unprivileged [13:12])
+// SME2 PSEL: base 0x2520_4000 ([21]=1, [14]=1) | tsz-split | Wv<<16 | Pn<<10 | Pm<<5 | Pd. The 5-bit tsz size+offset
+// field = (offset << (size_bits+1)) | (1 << size_bits), split bit4->[23], bit3->[22], bit2->[20], bit1->[19], bit0->[18].
+// SME2 multi-vector (2-reg) ZIP/UZP: base 0xC120_D000 | size<<22 | Zm<<16 | Zn<<5 | (Zd>>1)<<1 | uzp. Zd pair base even.
+const SME2_ZIPUZP2_BASE: u32 = 0xC120_D000;
+const SME2_ZIPUZP2_MASK: u32 = 0xFF20_FC00; // pins [31:24]=0xC1 + [21]=1 + [15:10]=110100; size/Zm/Zn/Zd/uzp vary
+// SME2 multi-vector (2-reg) clamp: base in Arm64Sme2ClampKind (SCLAMP/UCLAMP 0xC120_C400 [15:10]=110001, FCLAMP
+// 0xC120_C000 [15:10]=110000). Shares the 0xFF20_FC00 mask with ZIP/UZP (distinct [15:10]).
+const SME2_SUCLAMP2_BASE: u32 = 0xC120_C400;
+const SME2_FCLAMP2_BASE: u32 = 0xC120_C000;
+// SME2 four-vector (vgx4) clamp: the 2-reg bases with the [11]=1 four-register marker. Same 0xFF20_FC00 mask (which
+// pins [11], so the 2-vec and 4-vec forms are mutually exclusive). The dest quad base is Zd>>2 at [4:2].
+const SME2_SUCLAMP4_BASE: u32 = 0xC120_CC00;
+const SME2_FCLAMP4_BASE: u32 = 0xC120_C800;
+// SME2 multi-vector (2-reg) min/max by single vector, destructive: int base 0xC120_A000 ([15:9]=1010000, [8]=0,
+// [5]=min, [0]=sign), FP base 0xC120_A100 ([8]=1, [0]=min). | size<<22 | Zm<<16 | bit5<<5 | (Zd>>1)<<1 | bit0.
+// The single Zm is a 4-bit field [19:16] (Z0..Z15), so [20]=0 is pinned in the mask.
+const SME2_MINMAX2_BASE: u32 = 0xC120_A000;
+const SME2_MINMAX2_MASK: u32 = 0xFF30_FEC0; // pins [31:24]=0xC1 + [21]=1 + [20]=0 + [15:9]=1010000 + [7:6]=00; size/Zm[19:16]/[8]/[5]/Zd/[0] vary
+// SME2 multi-vector (2-reg) min/max by a 2-reg source list: same scheme + the [12]=1 marker; source pair at [20:16]
+// (even, [16]=0). int base 0xC120_B000, FP base 0xC120_B100.
+const SME2_MINMAX2_MULTI_BASE: u32 = 0xC120_B000;
+const SME2_MINMAX2_MULTI_MASK: u32 = 0xFF21_FEC0; // pins [31:24]=0xC1 + [21]=1 + [16]=0 + [15:13]=101 + [12]=1 + [11:9]=000 + [7:6]=00
+// SME2 four-vector (vgx4) min/max: the 2-vec bases | the [11] list-size bit; dest quad base Zd>>2 at [4:2] ([1]=0
+// pinned). Single source 0xC120_A800 (z0..z15 Zm); 4-reg source 0xC120_B800 ([12]=1, source quad at [20:16]).
+const SME2_MINMAX4_BASE: u32 = 0xC120_A800;
+const SME2_MINMAX4_MASK: u32 = 0xFF30_FEC2; // = MINMAX2 mask + [1]=0 pin; [11]=1 distinguishes from the 2-vec base
+const SME2_MINMAX4_MULTI_BASE: u32 = 0xC120_B800;
+const SME2_MINMAX4_MULTI_MASK: u32 = 0xFF21_FEC2;
+// SME2 multi-vector (2-reg) rounding shift SRSHL/URSHL ([9]=1,[5]=1,[0]=sign) and SQDMULH ([10]=1) by single vector;
+// the multi-vector-source forms OR in the [12] marker and carry the source pair at [20:16] (even).
+const SME2_SRSHL2_BASE: u32 = 0xC120_A220;
+const SME2_SRSHL2_MASK: u32 = 0xFF30_FFE0; // pins all but size[23:22]/Zm[19:16]/Zd[4:1]/sign[0]
+const SME2_SQDMULH2_BASE: u32 = 0xC120_A400;
+const SME2_SQDMULH2_MASK: u32 = 0xFF30_FFE1; // pins all but size[23:22]/Zm[19:16]/Zd[4:1]
+const SME2_SRSHL2_MULTI_BASE: u32 = 0xC120_B220;
+const SME2_SRSHL2_MULTI_MASK: u32 = 0xFF21_FFE0; // [12]=1, source pair at [20:16] ([16]=0); pins all but size/Zm/Zd/sign
+const SME2_SQDMULH2_MULTI_BASE: u32 = 0xC120_B400;
+const SME2_SQDMULH2_MULTI_MASK: u32 = 0xFF21_FFE1;
+// SME2 four-vector (vgx4) shift/multiply: the 2-vec bases | the [11] list-size bit; dest quad Zd>>2 at [4:2] ([1]=0).
+const SME2_SRSHL4_BASE: u32 = 0xC120_AA20;
+const SME2_SRSHL4_MASK: u32 = 0xFF30_FFE2;
+const SME2_SQDMULH4_BASE: u32 = 0xC120_AC00;
+const SME2_SQDMULH4_MASK: u32 = 0xFF30_FFE3;
+const SME2_SRSHL4_MULTI_BASE: u32 = 0xC120_BA20;
+const SME2_SRSHL4_MULTI_MASK: u32 = 0xFF21_FFE2;
+const SME2_SQDMULH4_MULTI_BASE: u32 = 0xC120_BC00;
+const SME2_SQDMULH4_MULTI_MASK: u32 = 0xFF21_FFE3;
+// SME2 multi-vector (2-reg) .s unary round/convert (FRINT*/FCVTZS/FCVTZU/SCVTF/UCVTF): common frame [31:24]=0xC1 +
+// [15:10]=111000 + [0]=0; the per-op selector is [23:16]+[5]; source pair Zn>>1 at [9:6], dest pair Zd>>1 at [4:1].
+const SME2_UNARY2_BASE: u32 = 0xC100_E000;
+const SME2_UNARY2_MASK: u32 = 0xFF00_FC01; // pins [31:24]=0xC1 + [15:10]=111000 + [0]=0; [23:16]/Zn[9:6]/[5]/Zd[4:1] vary
+// SME2 ZA-vector-group ADD/SUB accumulate (Zn group INTO ZA): base 0xC1A0_1C10 (.s, vgx2, add, W8, off 0, Zn 0).
+// size[22] (.s=0/.d=1), vgx[16], Wv-8 at [14:13], Zn>>1 at [9:6], op[3] (add=0/sub=1), offset[2:0].
+const SME2_ZA_ADDSUB_BASE: u32 = 0xC1A0_1C10;
+const SME2_ZA_ADDSUB_MASK: u32 = 0xFFBE_9C30; // pins [31:24] + [23]=1 + [21]=1 + [20:17]=0 + [15]=0 + [12:10]=111 + [5]=0 + [4]=1
+const SME2_ZA_FP_ADDSUB_BASE: u32 = 0xC1A0_1C00; // FADD/FSUB group into ZA: like ADDSUB but [4]=0; .d adds [22], .h adds [18]
+const SME2_ZA_FP_ADDSUB_MASK: u32 = 0xFFBA_9C30; // frees size[22]/[18] + four[16] + wv[14:13] + zn[9:6] + sub[3] + off[2:0]; pins [5:4]=0
+const SME2_ZA_FMLA_SINGLE_BASE: u32 = 0xC120_1800; // FMLA/FMLS group x single Zm into ZA: [23]=0, [21]=1, [12:11]=11
+const SME2_ZA_FMLA_MULTI_BASE: u32 = 0xC1A0_1800; // FMLA/FMLS group x Zm group into ZA: [23]=1 multi marker
+// Shared mask: pins [31:24] + [23] (single 0 vs multi 1) + [21]=1 + [15]=0 + [12:11]=11 + [10]=0 + [5:4]=00. [10]=0
+// excludes the FP16 .h form ([10]=1); [11]=1 excludes the .h multi form ([11]=0). The single/multi bases differ in [23].
+const SME2_ZA_FMLA_MASK: u32 = 0xFFA0_9C30;
+// SME2 ZA-group FMLA/FMLS .h forms (FEAT_SME_F16F16). The single .h is the single base with [10]=1 ([22]=0 pinned);
+// op stays at [3]. The multi .h is genuinely different: [12:11]=10 (not 11), [3]=1 FIXED, and the op moves to [4].
+const SME2_ZA_FMLA_SINGLE_HALF_BASE: u32 = 0xC120_1C00; // [23]=0, [22]=0, [21]=1, [12:10]=111, op[3]
+const SME2_ZA_FMLA_HALF_SINGLE_MASK: u32 = 0xFFE0_9C30; // pins [31:24]+[23]=0+[22]=0+[21]=1+[15]=0+[12:10]=111+[5:4]=00
+const SME2_ZA_FMLA_MULTI_HALF_BASE: u32 = 0xC1A0_1008; // [23]=1, [22]=0, [21]=1, [12:10]=100, [3]=1, op[4]
+const SME2_ZA_FMLA_HALF_MULTI_MASK: u32 = 0xFFE0_9C28; // pins [31:24]+[23]=1+[22]=0+[21]=1+[15]=0+[12:10]=100+[5]=0+[3]=1
+// SME2 BF16 (FEAT_SME_B16B16) accumulate/MAC into a .h ZA group: the FP16 .h forms with a BF16 marker (bit [22]=1 for
+// add/sub/single/multi, bit [5]=1 for indexed). BFADD/BFSUB pins [22]=1+[18]=1 to stay off the FP FADD/FSUB decode
+// (which reads [18]=.h/[22]=.d and would otherwise claim these); the others are disjoint from their FP16 .h forms via
+// [22] / [5]. GNU-oracle verified.
+const SME2_ZA_BF_ADDSUB_BASE: u32 = 0xC1E4_1C00; // FP AddSub .h base 0xC1A4_1C00 | [22]
+const SME2_ZA_BF_ADDSUB_MASK: u32 = 0xFFFE_9C30; // pins [23]=1+[22]=1+[21]=1+[20:19]=00+[18]=1+[17]=1+[15]=0+[12:10]=111+[5:4]=0; frees four[16]/wv/zn/sub[3]/off
+const SME2_ZA_BFMLA_SINGLE_BASE: u32 = 0xC160_1C00; // FMLA .h single base 0xC120_1C00 | [22]
+const SME2_ZA_BFMLA_MULTI_BASE: u32 = 0xC1E0_1008; // FMLA .h multi base 0xC1A0_1008 | [22]
+const SME2_ZA_BFMLA_INDEXED_BASE: u32 = 0xC110_1020; // FMLA .h indexed base 0xC110_1000 | [5]
+// SME2 FP8 FDOT into ZA (FP8 .b sources -> .h F8F16 / .s F8F32 accumulator). [12:10]=100, [4]=.s. Single ([23]=0)
+// has [5]=0/[3]=1; multi ([23]=1) has [5]=1/[3]=0. Both share the FMLA-half mask value 0xFFE0_9C28, but the bases are
+// disjoint (single 0xC120_1008 [23]=0; multi 0xC1A0_1020 [5]=1/[3]=0; FMLA-multi-half 0xC1A0_1008 [5]=0/[3]=1).
+const SME2_ZA_FP8_DOT_SINGLE_BASE: u32 = 0xC120_1008;
+const SME2_ZA_FP8_DOT_MULTI_BASE: u32 = 0xC1A0_1020;
+const SME2_ZA_FP8_DOT_MASK: u32 = 0xFFE0_9C28; // pins [31:21] + [15]=0 + [12:10]=100 + [5] + [3]; frees vgx/Zm/Wv/Zn/[4]=.s/off
+// SME2 FP8 FDOT into ZA, indexed-by-element. FOUR distinct frames (vgx2/vgx4 x .h/.s) -- vgx2 packs Zn>>1 at [9:6],
+// vgx4 packs Zn>>2 at [9:7] (with a [6]=1 marker for .h vgx4). Zm is z0-7 at [18:16]. index = bit11:bit10:bit3 (.h) /
+// bit11:bit10 (.s). The masks pin [23:19] + [15] + [12] + the low frame bits ([6:3] vary by frame); fields are free.
+const SME2_ZA_FP8_DOTIDX_H_VGX2_BASE: u32 = 0xC1D0_0020;
+const SME2_ZA_FP8_DOTIDX_H_VGX2_MASK: u32 = 0xFFF8_9030;
+const SME2_ZA_FP8_DOTIDX_H_VGX4_BASE: u32 = 0xC110_9040;
+const SME2_ZA_FP8_DOTIDX_H_VGX4_MASK: u32 = 0xFFF8_9070;
+const SME2_ZA_FP8_DOTIDX_S_VGX2_BASE: u32 = 0xC150_0038;
+const SME2_ZA_FP8_DOTIDX_S_VGX2_MASK: u32 = 0xFFF8_9038;
+const SME2_ZA_FP8_DOTIDX_S_VGX4_BASE: u32 = 0xC150_8008;
+const SME2_ZA_FP8_DOTIDX_S_VGX4_MASK: u32 = 0xFFF8_9078;
+// SME2 FP8 vertical dot into ZA. FVDOT (.h vgx2) = the .h-vgx2 indexed FDOT frame with [12]=1 (base 0xC1D0_1020,
+// shares SME2_ZA_FP8_DOTIDX_H_VGX2_MASK, distinct base by [12]). FVDOTB/FVDOTT (.s, vgx4 ZA but 2-reg Zn) sit in the
+// same 0xC1D0 frame with [11]=1 + [5]=0 (vs FDOT/FVDOT [5]=1); top(FVDOTT)=[4]; index = bit10:bit3.
+const SME2_ZA_FP8_FVDOT_BASE: u32 = 0xC1D0_1020;
+const SME2_ZA_FP8_FVDOTBT_BASE: u32 = 0xC1D0_0800;
+const SME2_ZA_FP8_FVDOTBT_MASK: u32 = 0xFFF8_9820; // pins [23:19]+[15]=0+[12]=0+[11]=1+[5]=0; frees Wv/Zm/Zn/off/top[4]/index([10],[3])
+// SME2 FP8 FMLAL (.h, slice/2 at [1:0]) / FMLALL (.s, slice/4 at [0]) into a ZA slice RANGE, scalar Zn/Zm. [11:10] is the
+// FMLAL(11)/FMLALL(01) discriminant. Zm[19:16] (z0-15), Wv[14:13], Zn[9:5] (z0-31).
+const SME2_ZA_FP8_FMLAL_H_SINGLE_BASE: u32 = 0xC130_0C00;
+const SME2_ZA_FP8_FMLAL_H_SINGLE_MASK: u32 = 0xFFF0_9C1C; // pins [23:20]+[15]=0+[12]=0+[11:10]=11+[4:2]=0
+const SME2_ZA_FP8_FMLALL_S_SINGLE_BASE: u32 = 0xC130_0400;
+const SME2_ZA_FP8_FMLALL_S_SINGLE_MASK: u32 = 0xFFF0_9C1E; // pins [23:20]+[15]=0+[12]=0+[11:10]=01+[4:1]=0
+// SME2 FP8 FMLAL/FMLALL into a ZA slice range from a Zn vector group (vgx2/vgx4) by a single Zm. vgx[20]; vgx2 packs
+// Zn>>1[9:6], vgx4 packs Zn>>2[9:7]. .h base 0xC120_0804 ([11]=1,[2]=1), .s base 0xC120_0002 ([1]=1). Zm[19:16].
+const SME2_ZA_FP8_FMLAL_H_MULTI_BASE: u32 = 0xC120_0804;
+const SME2_ZA_FP8_FMLAL_H_MULTI_MASK: u32 = 0xFFE0_9C3C; // pins [23:21]+[15]=0+[12]=0+[11:10]=10+[5:2]=0100
+const SME2_ZA_FP8_FMLALL_S_MULTI_BASE: u32 = 0xC120_0002;
+const SME2_ZA_FP8_FMLALL_S_MULTI_MASK: u32 = 0xFFE0_9C3E; // pins [23:21]+[15]=0+[12]=0+[11:10]=00+[5:1]=00010
+// SME2 FP8 FMLAL/FMLALL into a ZA slice range by an indexed Zm element (z0-7 at [18:16], Zn z0-31 at [9:5]). .h base
+// 0xC1C0_0000 ([23:22]=11), index = bit15:bit11:bit10:bit3. .s base 0xC140_0000 ([23:22]=01), index = bit15:bit12:bit11:bit10.
+const SME2_ZA_FP8_FMLAL_H_IDX_BASE: u32 = 0xC1C0_0000;
+const SME2_ZA_FP8_FMLAL_H_IDX_MASK: u32 = 0xFFF8_1014; // pins [23:19]+[12]=0+[4]=0+[2]=0 (index bits 15/11/10/3 + Wv/Zn/off free)
+const SME2_ZA_FP8_FMLALL_S_IDX_BASE: u32 = 0xC140_0000;
+const SME2_ZA_FP8_FMLALL_S_IDX_MASK: u32 = 0xFFF8_001E; // pins [23:19]+[4:1]=0 (index bits 15/12/11/10 + Wv/Zn/off free)
+// SME2 FP8 FMLAL/FMLALL into a ZA slice range from a Zn group by a Zm GROUP. [23]=1 multi-Zm marker; vgx[16];
+// Zm>>1[20:17]; Zn>>1[9:6] (vgx2) / Zn>>2[9:7] (vgx4). .h base 0xC1A0_0820 ([11]=1,[5]=1) / .s base 0xC1A0_0020.
+const SME2_ZA_FP8_FMLAL_H_GRP_BASE: u32 = 0xC1A0_0820;
+const SME2_ZA_FP8_FMLAL_H_GRP_MASK: u32 = 0xFFE0_9C3C; // pins [23:21]+[15]=0+[12]=0+[11:10]=10+[5:2]=1000
+const SME2_ZA_FP8_FMLALL_S_GRP_BASE: u32 = 0xC1A0_0020;
+const SME2_ZA_FP8_FMLALL_S_GRP_MASK: u32 = 0xFFE0_9C3E; // pins [23:21]+[15]=0+[12]=0+[11:10]=00+[5:1]=10000
+// SME2 BFMLAL into ZA (BF16 .h -> FP32 .s). Mirrors the FP8 FMLAL .h slice-range frame but with [4]=1 (BF16-source
+// marker). Single 0xC120_0C10, multi 0xC120_0810 (vgx[20]), indexed 0xC180_1010 (index = bit15:bit11:bit10), Zm-group
+// 0xC1A0_0810 ([23]=1, vgx[16], Zm>>1[20:17]). All slice/2 at [1:0] (2-slice range); Zn z0-31[9:5]; FEAT_SME2.
+const SME2_ZA_BFMLAL_SINGLE_BASE: u32 = 0xC120_0C10;
+const SME2_ZA_BFMLAL_SINGLE_MASK: u32 = 0xFFF0_9C14; // pins [23:20]+[15]=0+[12]=0+[11:10]=11+[4]=1+[2]=0; [3]=subtract (BFMLSL) is FREE
+const SME2_ZA_BFMLAL_MULTI_BASE: u32 = 0xC120_0810;
+const SME2_ZA_BFMLAL_MULTI_MASK: u32 = 0xFFE0_9C34; // pins [23:21]+[15]=0+[12]=0+[11:10]=10+[5]=0+[4]=1+[2]=0; [3]=subtract FREE
+const SME2_ZA_BFMLAL_IDX_BASE: u32 = 0xC180_1010;
+const SME2_ZA_BFMLAL_IDX_MASK: u32 = 0xFFF8_1014; // pins [23:19]+[12]=1+[4]=1+[2]=0; [3]=subtract FREE (index bits 15/11/10 + Wv/Zn/off free)
+const SME2_ZA_BFMLAL_GRP_BASE: u32 = 0xC1A0_0810;
+const SME2_ZA_BFMLAL_GRP_MASK: u32 = 0xFFE0_9C34; // pins [23:21]+[15]=0+[12]=0+[11:10]=10+[5]=0+[4]=1+[2]=0; [3]=subtract FREE
+const SME2_ZA_DOT_SINGLE_BASE: u32 = 0xC120_1400; // ZA dot x single Zm: [23]=0, [21]=1, [12:10]=101
+const SME2_ZA_DOT_MULTI_BASE: u32 = 0xC1A0_1400; // ZA dot x Zm group: [23]=1 multi marker
+// Shared mask: pins [31:24] + [23] + [21]=1 + [15]=0 + [12:10]=101 + [5]=0. [22]/[4]/[3] are the op discriminant (NOT
+// pinned -- all eight allocated). [12:10]=101 + [5]=0 keep it disjoint from FMLA ([12:10]=110) and the indexed ZA dot
+// ([12:10]=100, [5]=1). The single/multi bases differ in [23].
+const SME2_ZA_DOT_MASK: u32 = 0xFFA0_9C20;
+const SME2_ZA_VDOT_BASE: u32 = 0xC150_0000; // VDOT into ZA: [22:20]=101, [12]=0; op via [23](.d)+[15](vgx4)+[5:3]
+const SME2_ZA_VDOT_MASK: u32 = 0xFF70_1000; // pins [31:24]+[22:20]=101+[12]=0; frees .d[23]/Zm[19:16]/vgx4[15]/Wv[14:13]/idx[11:10]/Zn[9:6]/op[5:3]/off[2:0] (op validity keeps it disjoint from FP8 indexed FDOT)
+// SME2 integer MLAL/MLALL into ZA. Each non-indexed form is `base_btos | h_src<<22 | two_way<<11`; widen recovers from
+// ([22],[11]) and op from [4:2]. Each mask pins the bit that the deeply-interleaved FP8 FMLAL family uses as a marker
+// (single [20]=1, multi [1]=1, group [5]=1) so the integer forms (which keep those 0) stay disjoint; the integer single
+// Zm is z0..z15 ([19:16], [20]=0). Forms are told apart by ([23],[10]): Single (0,1), Multi (0,0), MultiZm (1,0).
+const SME2_ZA_MLAL_SINGLE_BASE: u32 = 0xC120_0400; // Zm[19:16] (z0-15), Zn[9:5]
+const SME2_ZA_MLAL_SINGLE_MASK: u32 = 0xFFB0_9400; // pins [23]=0+[21]=1+[20]=0+[15]+[12]+[10]=1
+const SME2_ZA_MLAL_MULTI_BASE: u32 = 0xC120_0000; // Zm[19:16], vgx4[20], Zn-list
+const SME2_ZA_MLAL_MULTI_MASK: u32 = 0xFFA0_9400; // pins [23]=0+[21]=1+[15]+[12]+[10]=0 (FP8 FMLALL_S multi's [1]=1 marker is excluded by the off-range check in mlal_decode_common)
+const SME2_ZA_MLAL_MULTIZM_BASE: u32 = 0xC1A0_0000; // Zm>>1[20:17], vgx4[16], Zn-list
+const SME2_ZA_MLAL_MULTIZM_MASK: u32 = 0xFFA0_9420; // pins [23]=1+[21]=1+[15]+[12]+[10]=0+[5]=0
+const SME2_ZA_MLAL_INDEXED_BASE: u32 = 0xC100_0000; // sparse: h_src[23], two_way[22]+[12]; Zm[19:16], index split, Zn[9:5]
+const SME2_ZA_MLAL_INDEXED_MASK: u32 = 0xFF30_0000; // pins [31:24]+[21:20]=00 only (widen/[12] consistency + op validity tighten it)
+// SME2 FP16 FMLAL/FMLSL into ZA (.h->.s pair; FEAT_SME_F16F16). The integer-MLAL HtoS forms with [22]=0 + op=sub[3].
+const SME2_ZA_FMLAL_SINGLE_BASE: u32 = 0xC120_0C00; // Zm[19:16], Zn[9:5]
+const SME2_ZA_FMLAL_SINGLE_MASK: u32 = 0xFFB0_9C14; // pins [23]=0+[22]=0+[21]=1+[20]=0+[15]=0+[12]=0+[11:10]=11+[4]=0+[2]=0
+const SME2_ZA_FMLAL_MULTI_BASE: u32 = 0xC120_0800; // Zm[19:16], vgx4[20], Zn-list
+const SME2_ZA_FMLAL_MULTI_MASK: u32 = 0xFFA0_9C14; // pins [23]=0+[22]=0+[21]=1+[15]=0+[12]=0+[11:10]=10+[4]=0+[2]=0
+const SME2_ZA_FMLAL_INDEXED_BASE: u32 = 0xC180_1000; // [23]=1,[12]=1; Zm[19:16], index[15,11,10], Zn[9:5]
+const SME2_ZA_FMLAL_INDEXED_MASK: u32 = 0xFFF0_1014; // pins [23:20]=1000+[12]=1+[4]=0+[2]=0
+const SME2_ZA_FMLAL_MULTIZM_BASE: u32 = 0xC1A0_0800; // Zm>>1[20:17], vgx4[16], Zn-list
+const SME2_ZA_FMLAL_MULTIZM_MASK: u32 = 0xFFA0_9C34; // pins [23]=1+[22]=0+[21]=1+[15]=0+[12]=0+[11:10]=10+[5]=0+[4]=0+[2]=0 ([5]=0 excludes the FP8 FMLAL group marker [5]=1)
+// SME2 FP16/BF16 FDOT/BFDOT into a .s ZA group (FEAT_SME2). [12:10]=100 + bf16[4]; FP8 FDOT (same [12:10]) has [3]=1.
+const SME2_ZA_FDOT_SINGLE_BASE: u32 = 0xC120_1000; // Zm[19:16], vgx4[20], Zn-list
+const SME2_ZA_FDOT_MULTI_BASE: u32 = 0xC1A0_1000; // Zm>>1[20:17], vgx4[16], Zn-list ([23]=1)
+const SME2_ZA_FDOT_NONIDX_MASK: u32 = 0xFFA0_9C28; // pins [22]=0+[21]=1+[15]=0+[12]=1+[11:10]=00+[5]=0+[3]=0 ([3]=0 / [5]=0 keep it off the FP8 FDOT)
+const SME2_ZA_FDOT_INDEXED_BASE: u32 = 0xC150_1008; // [22]=1,[21]=0,[20]=1,[12]=1,[3]=1; vgx4[15], Zm[19:16], index[11:10]
+const SME2_ZA_FDOT_INDEXED_MASK: u32 = 0xFFF0_1028; // pins [23:20]=0101+[12]=1+[5]=0+[3]=1 ([21]=0 keeps it off SEL/shift-narrow which set [21]=1)
+// SME2 indexed FMLA/FMLS into ZA (Zn group x Zm[index]). .s/.d share a base ([23]=.d); [12]=0/[5]=0/[3]=0 keep it off
+// VDOT (whose op codes all set [5] or [3]) and the [12]=1 indexed dots. The .h form (FEAT_SME_F16F16) is a separate
+// [12]=1/[22:20]=001 base with a split index (high [11:10], low [3]).
+const SME2_ZA_FMLA_INDEXED_BASE: u32 = 0xC150_0000; // .s (|1<<23 = .d); Zm[19:16], vgx4[15], Wv[14:13], index[11:10], op[4], off[2:0]
+const SME2_ZA_FMLA_INDEXED_MASK: u32 = 0xFF70_1028; // pins [31:24]+[22:20]=101+[12]=0+[5]=0+[3]=0; frees [23]/Zm/vgx4/Wv/index/Zn/op[4]/off
+const SME2_ZA_FMLA_INDEXED_HALF_BASE: u32 = 0xC110_1000; // .h: [22:20]=001, [12]=1; index high [11:10] + low [3], op[4]
+const SME2_ZA_FMLA_INDEXED_HALF_MASK: u32 = 0xFFF0_1020; // pins [31:20]=0xC11+[12]=1+[5]=0; frees Zm/vgx4/Wv/index-hi[11:10]/Zn/op[4]/index-lo[3]/off
+// SME2 indexed integer SDOT/UDOT/USDOT/SUDOT into ZA (Zn group x Zm[index]). Op muxed per-form (see indexed_base):
+// the .s-accumulator ops set [12]=1 (disjoint from VDOT's [12]=0), the .d ops set [12]=0/[11]=0 (disjoint from VDOT's
+// [11]=1 i16i64 forms). Placed BEFORE VDOT so the [11]=0 .d words are claimed here, not mis-read as SVDOT/UVDOT.
+const SME2_ZA_DOT_INDEXED_S_MASK: u32 = 0xFFF0_1038; // pins [31:20]+[12]+[5:3]; frees Zm[19:16]/vgx4[15]/Wv/index[11:10]/Zn/off
+const SME2_ZA_DOT_INDEXED_D_MASK: u32 = 0xFFF0_1838; // pins [31:20]+[12]=0+[11]=0+[5:3]; frees Zm/vgx4/Wv/index[10]/Zn/off
+// SME2 multi-vector array MOVA (whole-vector, element-agnostic). to-vector [17]=1, to-array [17]=0. Field positions
+// DIFFER by direction (the operand-role asymmetry): to-vector has off[7:5]+Zd[4:1]; to-array has off[2:0]+Zn[9:6]. So
+// the two forms need distinct masks (each pins all bits but its own operands). Both share Wv-8[14:13] + vgx[10].
+const SME2_MOVA_ARRAY_TO_VEC_BASE: u32 = 0xC006_0800;
+const SME2_MOVA_ARRAY_TO_VEC_MASK: u32 = 0xFFFF_9B01; // frees Wv[14:13], vgx[10], off[7:5], Zd[4:1]
+const SME2_MOVA_VEC_TO_ARRAY_BASE: u32 = 0xC004_0800;
+const SME2_MOVA_VEC_TO_ARRAY_MASK: u32 = 0xFFFF_9838; // frees Wv[14:13], vgx[10], Zn[9:6], off[2:0]
+// SME2 multi-vector TILE-SLICE MOVA. base 0xC004_0000 | (to_vector<<17); size[23:22], V[15], Wv[14:13], vgx[10]. The
+// combined (za_tile<<goff)|groff field + the Z group swap positions by direction (to-vector [7:5]+[4:1], to-tile
+// [2:0]+[9:6]). [11]=0 here vs the array MOVA's [11]=1 keeps the two MOVA sub-forms disjoint.
+const SME2_MOVA_TILE_BASE: u32 = 0xC004_0000;
+const SME2_MOVA_TILE_TO_VEC_MASK: u32 = 0xFF3F_1B01; // frees size[23:22], V[15], Wv[14:13], vgx[10], comb[7:5], Zd[4:1]
+const SME2_MOVA_TILE_TO_TILE_MASK: u32 = 0xFF3F_1838; // frees size[23:22], V[15], Wv[14:13], vgx[10], Zn[9:6], comb[2:0]
+// SME2.1 MOVAZ (move-and-zero from ZA). The array + multi-tile forms are the MOVA-to-vector forms with [9]=1 (zero
+// marker), reusing the MOVA masks (which pin [9]=0) with bit9-set bases. The single tile-slice form is a distinct frame
+// ([18]=0, [17]=1, [9]=1): size[23:22], V[15], Wv-12[14:13], combined (za_tile<<(4-size)|off) at [8:5], Zd[4:0].
+const SME2_MOVAZ_ARRAY_BASE: u32 = 0xC006_0A00;
+const SME2_MOVAZ_TILE_MULTI_BASE: u32 = 0xC006_0200;
+const SME2_MOVAZ_TILE_SINGLE_BASE: u32 = 0xC002_0200;
+const SME2_MOVAZ_TILE_SINGLE_MASK: u32 = 0xFF3F_1E00; // pins [31:24]+[21:16]=000010+[12:10]=0+[9]=1; frees size[23:22]/V[15]/Wv[14:13]/comb[8:5]/Zd[4:0]
+// SME2 MOVT (vector -> ZT0 lookup table, FEAT_SME_LUTv2). base 0xC04F_03E0: off[13:12] (MUL VL, 0-3), Zt[4:0].
+const SME2_MOVT_TABLE_BASE: u32 = 0xC04F_03E0;
+const SME2_MOVT_TABLE_MASK: u32 = 0xFFFF_CFE0; // pins all but off[13:12] + Zt[4:0]
+// SME2 multi-vector CONTIGUOUS LD1/ST1 + LDNT1/STNT1 (PN-governed). [22]=1 scalar+imm, [22]=0 scalar+scalar;
+// [21]=store; [0]=non-temporal; Zt>>1 at [4:1]. **[24]=0 (vs strided [24]=1) is the discriminant from the strided
+// form** -- pinned (the [31:24]=0xA0 byte pins [24]=0). [0] (NT) is now a modeled flag, so it is FREED in the mask.
+// The masked space is a fully-utilized encoding (every other bit an operand), so the broad mask is collision-free.
+// LD2/3/4 multi-vec use a predicate-as-mask (p0-7), a different opcode region.
+const SME2_MULTIVEC_LDST_IMM_BASE: u32 = 0xA040_0000;
+const SME2_MULTIVEC_LDST_IMM_MASK: u32 = 0xFFD0_0000; // pins [31:24]+[23]+[22]=1+[20]=0
+const SME2_MULTIVEC_LDST_SCALAR_BASE: u32 = 0xA000_0000;
+const SME2_MULTIVEC_LDST_SCALAR_MASK: u32 = 0xFFC0_0000; // pins [31:24]+[23]+[22]=0
+// SME2 STRIDED multi-vector load/store: the contiguous bases | (1<<24). Same masks (the pinned [31:24]=0xA1 byte
+// carries [24]=1, distinguishing strided from the contiguous [24]=0). The NT bit is [3] (the always-zero bit3 of the
+// strided base N), and for vgx4 the reserved [2] must be 0 (validated on decode).
+const SME2_MULTIVEC_STRIDED_IMM_BASE: u32 = 0xA140_0000;
+const SME2_MULTIVEC_STRIDED_SCALAR_BASE: u32 = 0xA100_0000;
+// SME2 LUTI2/LUTI4. The form (luti2/4, 2/4-vec, .b/.h) lives in [18:17]+[15:14]+[12] and the index overlaps [16:15],
+// so a frame mask + internal dispatch (not a per-form base==mask) is used. Frame pins [31:24]=0xC0 + [23:19]=10001 +
+// [13]=0 + [11:10]=00; [19]=1 separates LUTI from the [23]=1 tile-MOVA forms ([19]=0).
+// SVE2.1 WHILE-to-predicate-as-counter. [4]=1 (the PN-counter dest marker) distinguishes it from the regular
+// WHILE-to-predicate ([4]=0, Pd at [3:0]). Frees size[23:22], Rm[20:16], vlx[13], op[11:10], Rn[9:5], op[3], PN[2:0].
+const WHILE_PN_BASE: u32 = 0x2520_4010;
+const WHILE_PN_MASK: u32 = 0xFF20_D010; // pins [31:24]+[21]=1+[15]=0+[14]=1+[12]=0+[4]=1
+const SVE_QUAD_PERMUTE_BASE: u32 = 0x4400_E000;
+const SVE_QUAD_PERMUTE_MASK: u32 = 0xFF20_F000; // pins [31:24]+[21]=0+[15:13]=111+[12]=0; frees size[23:22], Zm[20:16], op[11:10], Zn[9:5], Zd[4:0]
+const SVE_QUAD_TBLQ_BASE: u32 = 0x4400_F800;
+const SVE_QUAD_TBLQ_MASK: u32 = 0xFF20_FC00; // [15:13]=111+[12:10]=110 (vs ZIPQ's [12]=0)
+const SVE_QUAD_TBXQ_BASE: u32 = 0x0520_3400;
+const SVE_QUAD_TBXQ_MASK: u32 = 0xFF20_FC00; // 0x05 region; pins [21]=1+[15:14]=00+[13:10]=1101
+const SVE_BF16_PRED_BIN_BASE: u32 = 0x6500_8000;
+const SVE_BF16_PRED_BIN_MASK: u32 = 0xFFF8_E000; // pins [31:24]=0x65+[23:19]=00000+[15]=1+[14:13]=00; frees op[18:16], Pg[12:10], Zm[9:5], Zdn[4:0]
+const SVE_BF16_UNPRED_BIN_BASE: u32 = 0x6500_0000;
+const SVE_BF16_UNPRED_BIN_MASK: u32 = 0xFFE0_F000; // pins [31:24]=0x65+[23:21]=000+[15:12]=0000; frees Zm[20:16], op[11:10], Zn[9:5], Zd[4:0]
+const SVE_BF16_CLAMP_BASE: u32 = 0x6420_2400;
+const SVE_BF16_CLAMP_MASK: u32 = 0xFFE0_FC00; // pins [31:24]=0x64+[23:22]=00 (BF16)+[21]=1+[15:10]=001001; frees Zm[20:16], Zn[9:5], Zd[4:0]
+const SVE_BF16_MLA_BASE: u32 = 0x6520_0000;
+const SVE_BF16_MLA_MASK: u32 = 0xFFE0_C000; // pins [31:24]=0x65+[23:22]=00+[21]=1+[15:14]=00; frees op(mls)[13], Zm[20:16], Pg[12:10], Zn[9:5], Zda[4:0]
+const SVE_BF16_MUL_IDX_BASE: u32 = 0x6420_2800;
+const SVE_BF16_MUL_IDX_MASK: u32 = 0xFFA0_FC00; // pins [31:24]=0x64+[23]=0+[21]=1+[15:14]=00+[13]=1+[12]=0+[11]=1+[10]=0; frees idx[22]/[20:19], Zm[18:16], Zn[9:5], Zd[4:0]
+const SVE_BF16_MLA_IDX_BASE: u32 = 0x6420_0800;
+const SVE_BF16_MLA_IDX_MASK: u32 = 0xFFA0_F800; // pins [31:24]=0x64+[23]=0+[21]=1+[15:14]=00+[13]=0+[12]=0+[11]=1; frees op(mls)[10], idx[22]/[20:19], Zm[18:16], Zn[9:5], Zda[4:0]
+const SVE_QUAD_DUPQ_BASE: u32 = 0x0520_2400;
+const SVE_QUAD_DUPQ_MASK: u32 = 0xFFE0_FC00; // pins [23:21]=001+[15:10]=001001; frees tsz[20:16], Zn[9:5], Zd[4:0]
+const SVE_QUAD_EXTQ_BASE: u32 = 0x0560_2400;
+const SVE_QUAD_EXTQ_MASK: u32 = 0xFFF0_FC00; // [22]=1 (vs DUPQ's 0); frees imm[19:16], Zn[9:5], Zd[4:0]
+const WHILE_PAIR_BASE: u32 = 0x2520_5010;
+const WHILE_PAIR_MASK: u32 = 0xFF20_F010; // pins [31:24]+[21]=1+[15:12]=0101 ([13]=0 no vlx, [12]=1 vs PN's 0)+[4]=1
+const PTRUE_PN_BASE: u32 = 0x2520_7810;
+const PTRUE_PN_MASK: u32 = 0xFF3F_FFF8; // tight: only size[23:22] + PN[2:0] free
+const CNTP_PN_BASE: u32 = 0x2520_8300;
+const CNTP_PN_MASK: u32 = 0xFF3F_8B00; // frees size[23:22], vlx[10], PN[7:5], Rd[4:0]
+const PEXT_SINGLE_BASE: u32 = 0x2520_7010;
+const PEXT_SINGLE_MASK: u32 = 0xFF3F_7C10; // [10]=0 single; frees size[23:22], index[9:8], PN[7:5], Pd[3:0]
+const PEXT_PAIR_BASE: u32 = 0x2520_7410;
+const PEXT_PAIR_MASK: u32 = 0xFF3F_7E11; // [10]=1 pair, [9]=0; frees size[23:22], index[8], PN[7:5], Pd>>1[3:1]
+const SME2_LUTI_FRAME_BASE: u32 = 0xC088_0000;
+const SME2_LUTI_FRAME_MASK: u32 = 0xFFF8_2C00; // pins [31:24] + [23:19]=10001 + [13]=0 + [11:10]=00 (frees [18:17] luti2/4, [16:14] index/count, [12] .h, Zm[9:5], Zd[4:0])
+
+const SME_PSEL_BASE: u32 = 0x2520_4000;
+const SME_PSEL_MASK: u32 = 0xFF20_C210; // pins [31:24]=0x25 + [21]=1 + [15]=0 + [14]=1 + [9]=0 + [4]=0; tsz/Wv/Pn/Pm/Pd vary
+const MOPS_SET_BASE: u32 = 0x19C0_0400;
+const MOPS_SETG_BASE: u32 = 0x1DC0_0400; // SETG (set with tag, +MTE): same as SET but top byte 0x1d
+const MOPS_SET_MASK: u32 = 0xFFE0_0C00; // pins [31:24] + [23:22]=11 + [21]=0 + [11:10]=01; stage[15:14]/nt[13]/unpriv[12]/Rm/Rn/Rd vary
+// SVE integer compare (vectors): | size<<22 | Zm<<16 | op_high<<13 | Pg<<10 | Zn<<5 | op_low<<4 | Pd.
+const SVE_INT_CMP_VEC_BASE: u32 = 0x2400_0000;
+const SVE_INT_CMP_VEC_MASK: u32 = 0xFF20_4000; // pins [31:24] + bit21=0 + bit14=0; the op bits + size/Zm/Pg/Zn/Pd vary
+// SVE predicated FP binary (destructive): | size<<22 | opcode<<16 | Pg<<10 | Zm<<5 | Zdn. Mask value matches the
+// int groups; the base's top byte 0x65 + [15:13]=100 keep it distinct.
+const SVE_FP_PRED_BIN_BASE: u32 = 0x6500_8000;
+// SVE BFSCALE (FEAT_SVE_BFSCALE): FSCALE (opcode 9) in the BF16 size==00 slot. Tight mask (pins [31:13]) so it claims
+// ONLY 0x6509_8000-family words before the regular FP pred-bin decode (which would read size==00 as a bogus `.b`).
+const SVE_BFSCALE_BASE: u32 = 0x6509_8000;
+const SVE_BFSCALE_MASK: u32 = 0xFFFF_E000; // pins [31:13] (size 00, opcode 9, [15:13]=100); frees Pg[12:10]/Zm[9:5]/Zdn[4:0]
+// SVE2.2 FIRSTP/LASTP (predicate-extract to GPR): base 0x2520_8000, [20:16]=op (1=firstp/2=lastp), size[23:22],
+// Pg[12:10], Pn[8:5], Xd[4:0]. EXPAND: base 0x0531_8000, size[23:22], Pg[12:10], Zn[9:5], Zd[4:0].
+const SVE_PRED_EXTRACT_BASE: u32 = 0x2520_8000;
+const SVE_PRED_EXTRACT_MASK: u32 = 0xFF20_E200; // pins [31:24]+[21]=1+[15:13]=100+[9]=0; frees size/op[20:16]/Pg/Pn/Xd
+const SVE_EXPAND_BASE: u32 = 0x0531_8000;
+const SVE_EXPAND_MASK: u32 = 0xFF3F_E000; // pins [31:24]+[21:16]=110001+[15:13]=100; frees size/Pg/Zn/Zd
+// SVE FP compare (vectors): | size<<22 | Zm<<16 | op_high<<13 | Pg<<10 | Zn<<5 | op_low<<4 | Pd. bit14=1 (in base)
+// distinguishes it from the FP predicated-binary group ([15:13]=100, bit14=0). Reuses the 0xFF20_4000 mask value.
+const SVE_FP_CMP_VEC_BASE: u32 = 0x6500_4000;
+// SVE INDEX: | size<<22 | step_field<<16 | step_is_reg<<11 | base_is_reg<<10 | base_field<<5 | Zd.
+const SVE_INDEX_BASE: u32 = 0x0420_4000;
+const SVE_INDEX_MASK: u32 = 0xFF20_F000; // pins [31:24] + bit21 + [15:12]=0100; size/fields/form-bits/Zd vary
+// SVE scaled vector/predicate length: RDVL Xd,#imm6 (0x04BF_5000); ADDVL Xd|SP,Xn|SP,#imm6 (0x0420_5000, Rn@[20:16]);
+// ADDPL (0x0460_5000). All share [15:11]=01010, imm6 signed @[10:5]. [23:21] = 101/001/011 respectively.
+const SVE_RDVL_BASE: u32 = 0x04BF_5000;
+const SVE_RDVL_MASK: u32 = 0xFFFF_F800; // pins [31:16]=0x04BF + [15:11]=01010; imm6/Rd vary
+const SVE_ADDVL_BASE: u32 = 0x0420_5000;
+const SVE_ADDPL_BASE: u32 = 0x0460_5000;
+const SVE_ADDVPL_MASK: u32 = 0xFFE0_F800; // pins [31:24] + [23:21] + [15:11]=01010; Rn/imm6/Rd vary
+// SVE element count (CNTB/H/W/D): | size<<22 | (mul-1)<<16 | pattern<<5 | Rd.
+const SVE_CNT_BASE: u32 = 0x0420_E000;
+const SVE_CNT_MASK: u32 = 0xFF30_FC00; // pins [31:24] + bit21 + bit20=0 + [15:10]=111000; size/(mul-1)/pattern/Rd vary
+// SVE INC/DEC scalar (GP): | size<<22 | (mul-1)<<16 | D<<10 | pattern<<5 | Rdn. Like CNT but [21:20]=11 + bit10=D.
+const SVE_INCDEC_BASE: u32 = 0x0430_E000;
+const SVE_INCDEC_MASK: u32 = 0xFF30_F800; // pins [31:24] + [21:20]=11 + [15:11]=11100; size/(mul-1)/D/pattern/Rdn vary
+// SVE saturating INC/DEC by element count (SQINC/UQINC/SQDEC/UQDEC). Scalar GP: | size<<22 | sf<<20 | (mul-1)<<16
+// | D<<11 | U<<10 | pattern<<5 | Rdn, with [15:12]=1111 (sf=1 -> 64-bit Xd, sf=0 -> 32-bit). Vector (H/S/D):
+// same but [21:20]=10, [15:12]=1100, dest Zd. bit12=1 separates these from CNT/INCDEC ([15:12]=1110).
+const SVE_SAT_INCDEC_SCALAR_BASE: u32 = 0x0420_F000;
+const SVE_SAT_INCDEC_SCALAR_MASK: u32 = 0xFF20_F000; // pins [31:24] + bit21 + [15:12]=1111; size/sf/(mul-1)/D/U/pat/Rdn vary
+const SVE_SAT_INCDEC_VECTOR_BASE: u32 = 0x0420_C000;
+const SVE_SAT_INCDEC_VECTOR_MASK: u32 = 0xFF30_F000; // pins [31:24] + [21:20]=10 + [15:12]=1100; size/(mul-1)/D/U/pat/Zd vary
+// SVE DUP (broadcast): scalar | size<<22 | Rn<<5 | Zd; immediate | size<<22 | sh<<13 | imm8<<5 | Zd; indexed
+// | imm2<<22 | tsz<<16 | Zn<<5 | Zd.
+const SVE_DUP_SCALAR_BASE: u32 = 0x0520_3800;
+const SVE_DUP_SCALAR_MASK: u32 = 0xFF3F_FC00; // pins [31:24] + [21:16]=100000 + [15:10]=001110
+const SVE_DUP_IMM_BASE: u32 = 0x2538_C000;
+const SVE_DUP_IMM_MASK: u32 = 0xFF3F_C000; // pins [31:24] + [21:14]=111000 11; size/sh/imm8/Zd vary
+// SVE FDUP (disassembled FMOV Zd.<T>, #imm): 00100101 size[23:22] 111 001 110 imm8[12:5] Zd. The base carries
+// size=0/imm8=0/Zd=0; bit16=1 (the fixed 001 opcode) separates it from the integer DUP-immediate (bit16=0).
+const SVE_FDUP_BASE: u32 = 0x2539_C000;
+const SVE_FDUP_MASK: u32 = 0xFF3F_E000; // pins [31:24] + [21:13]=111001110; size[23:22]/imm8[12:5]/Zd vary
+const SVE_DUP_IDX_BASE: u32 = 0x0520_2000;
+const SVE_DUP_IDX_MASK: u32 = 0xFF20_FC00; // pins [31:24] + bit21 + [15:10]=001000; imm2:tsz/Zn/Zd vary
+// SVE predicate logical: | op<<23 | S<<22 | Pm<<16 | Pg<<10 | bit9 | Pn<<5 | bit4 | Pd. base has [15:14]=01.
+const SVE_PRED_LOGICAL_BASE: u32 = 0x2500_4000;
+const SVE_PRED_LOGICAL_MASK: u32 = 0xFF30_C000; // pins [31:24] + [21:20]=00 + [15:14]=01; op/S/Pm/Pg/bit9/Pn/bit4/Pd vary
+// SVE predicate break: BRKA/BRKB (| B<<23 | S<<22 | Pg<<10 | Pn<<5 | M<<4 | Pd, base 0x2510_4000, [21:16]=010000);
+// BRKN propagate (base 0x2518_4000, [21:16]=011000, destructive Pdm, always /z); BRKPA/BRKPB pair (| S<<22 |
+// Pm<<16 | Pg<<10 | Pn<<5 | B<<4 | Pd, base 0x2500_C000, [15:14]=11). Pg/Pn/Pd are 4-bit (P0-P15).
+const SVE_BRK_UNARY_BASE: u32 = 0x2510_4000;
+const SVE_BRK_UNARY_MASK: u32 = 0xFF3F_C000; // pins [31:24] + [21:16]=010000 + [15:14]=01; B/S/Pg/Pn/M/Pd vary
+const SVE_BRKN_BASE: u32 = 0x2518_4000;
+const SVE_BRKN_MASK: u32 = 0xFF3F_C000; // pins [31:24] + [21:16]=011000 + [15:14]=01; S/Pg/Pn/Pdm vary
+const SVE_BRK_PAIR_BASE: u32 = 0x2500_C000;
+const SVE_BRK_PAIR_MASK: u32 = 0xFFB0_C000; // pins [31:24] + bit23=0 + [21:20]=00 + [15:14]=11; S/Pm/Pg/Pn/B/Pd vary
+// (bit20 must be pinned: PFALSE/PTEST/PNEXT etc. share [15:14]=11 but have [21:20]=01.)
+// SVE CTERMEQ/CTERMNE (loop terminate): | sz<<22 | Rm<<16 | Rn<<5 | ne<<4. bit23/bit21=1, [15:10]=001000.
+const SVE_CTERM_BASE: u32 = 0x25A0_2000;
+const SVE_CTERM_MASK: u32 = 0xFFA0_FC0F; // pins [31:24] + bit23 + bit21 + [15:10]=001000 + [3:0]=0; sz/Rm/Rn/ne vary
+// SVE predicated complex FP: FCADD (| size<<22 | rot<<16 | Pg<<10 | Zm<<5 | Zdn, base 0x6400_8000, [21:17]=00000,
+// [15:13]=100, rot[16] 0=#90/1=#270); FCMLA (| size<<22 | Zm<<16 | rot<<13 | Pg<<10 | Zn<<5 | Zda, base
+// 0x6400_0000, bit21=0, bit15=0, rot[14:13] = #0/#90/#180/#270). bit21=0 separates these from the indexed FP ops.
+const SVE_FCADD_BASE: u32 = 0x6400_8000;
+const SVE_FCADD_MASK: u32 = 0xFF3E_E000; // pins [31:24] + [21:17]=00000 + [15:13]=100; size/rot/Pg/Zm/Zdn vary
+const SVE_FCMLA_BASE: u32 = 0x6400_0000;
+const SVE_FCMLA_MASK: u32 = 0xFF20_8000; // pins [31:24] + bit21=0 + bit15=0; size/Zm/rot/Pg/Zn/Zda vary
+// SVE integer dot product (SDOT/UDOT, 4-way): vector base 0x4400_0000 (bit21=0), indexed base 0x4420_0000
+// (bit21=1). size[23:22] = .s(10, from .b) / .d(11, from .h); U[10] = unsigned. Indexed: .s index[20:19]/Zm[18:16]
+// (Z0-Z7), .d index[20]/Zm[19:16] (Z0-Z15). [15:11]=00000, bit23=1 (dest is .s/.d only).
+const SVE_DOT_VEC_BASE: u32 = 0x4400_0000;
+const SVE_DOT_IDX_BASE: u32 = 0x4420_0000;
+const SVE_DOT_MASK: u32 = 0xFF20_F800; // pins [31:24] + bit21 + [15:11]=00000; size/Zm(+idx)/U/Zn/Zda vary
+// SVE FP8 FDOT (FEAT_SSVE_FP8DOT2/4): size selected by bit22 (.s = 1 / .h = 0). Vector opcode [15:10]=100001;
+// indexed opcode [15:12]=0100 + bit10=1 (bit11 = the .h index msb). Zm vector [20:16]; indexed Zm[18:16] (Z0-Z7),
+// index .s = [20:19], .h = bit11:[20:19].
+const SVE_FP8_DOT_VEC_BASE: u32 = 0x6420_8400; // .h vector; .s adds bit22
+const SVE_FP8_DOT_VEC_MASK: u32 = 0xFFA0_FC00; // pins [31:24]+bit23+bit21+[15:10]; free bit22+Zm[20:16]+Zn+Zda
+const SVE_FP8_DOT_IDX_BASE: u32 = 0x6420_4400; // .h indexed, index 0; .s adds bit22
+const SVE_FP8_DOT_IDX_MASK: u32 = 0xFFA0_F400; // pins [31:24]+bit23+bit21+[15:12]+bit10; free bit22+idx[20:19]+Zm[18:16]+bit11+Zn+Zda
+// SVE FP8 widening FMLAL into Z (FEAT_SSVE_FP8FMA), VECTOR forms. FMLALB/T (.h, bit23=1): B/T = bit12. FMLALL (.s,
+// bit23=0): first letter = bit13, second = bit12. Opcode [15:14]=10, bit11=1, bit10=0; Zm[20:16].
+const SVE_FP8_MLALB_BASE: u32 = 0x64A0_8800; // FMLALB .h; FMLALT adds bit12
+const SVE_FP8_MLALB_MASK: u32 = 0xFFE0_EC00; // pins [31:24]+[23:21]=101+[15:13]+bit11+bit10; free bit12(T)+Zm+Zn+Zda
+const SVE_FP8_MLALL_BASE: u32 = 0x6420_8800; // FMLALLBB .s; first=bit13, second=bit12
+const SVE_FP8_MLALL_MASK: u32 = 0xFFE0_CC00; // pins [31:24]+[23:21]=001+[15:14]+bit11+bit10; free bit13/bit12+Zm+Zn+Zda
+// SVE FP8 widening FMLAL into Z, INDEXED forms. index (0..15) = bit20<<3 | bit19<<2 | bit11<<1 | bit10 (LSB at bit10);
+// Zm[18:16] (Z0-7). FMLALB/T (.h, opcode[15:12]=0101): B/T = bit23. FMLALL (.s, opcode[15:12]=1100): first = bit23,
+// second = bit22.
+const SVE_FP8_MLALB_IDX_BASE: u32 = 0x6420_5000; // FMLALB .h indexed; FMLALT adds bit23
+const SVE_FP8_MLALB_IDX_MASK: u32 = 0xFF60_F000; // pins [31:24]+bit22+bit21+[15:12]; free bit23(T)+idx[20:19]+Zm[18:16]+idx[11:10]+Zn+Zda
+const SVE_FP8_MLALL_IDX_BASE: u32 = 0x6420_C000; // FMLALLBB .s indexed; first=bit23, second=bit22
+const SVE_FP8_MLALL_IDX_MASK: u32 = 0xFF20_F000; // pins [31:24]+bit21+[15:12]; free bit23/bit22(letters)+idx[20:19]+Zm[18:16]+idx[11:10]+Zn+Zda
+// SVE FP8 widening convert (F1/F2/BF1/BF2 CVT(LT)), Zd.h <- Zn.b, unpredicated single-vector. format = [11:10];
+// LT (top source lanes) = bit16. base = F1CVT bottom.
+const SVE_FP8_CONVERT_BASE: u32 = 0x6508_3000;
+const SVE_FP8_CONVERT_MASK: u32 = 0xFFFE_F000; // pins [31:24]+[23:17]+[15:12]; free bit16(LT)+format[11:10]+Zn+Zd
+// SVE FP8 narrowing convert (FCVTN/FCVTNB/BFCVTN): Zd.b <- 2-vec source list. op = [11:10]; Zn-pair (base>>1) at
+// [9:6]; bit5 fixed 0. base = FCVTN.
+const SVE_FP8_NARROW_BASE: u32 = 0x650A_3000;
+const SVE_FP8_NARROW_MASK: u32 = 0xFFFF_F020; // pins [31:24]+[23:16]+[15:12]+bit5; free op[11:10]+Zn-pair[9:6]+Zd[4:0]
+// SVE indexed mixed/bf dot products into .s (BFDOT/USDOT/SUDOT): 2-bit index [20:19], Zm Z0-7 [18:16]. BFDOT base
+// 0x6460_4000 ([23:21]=011, [15:10]=010000; mask 0xFFE0_FC00 -- same as the vector BFDOT but [15:10]=010000 vs 100000).
+// USDOT/SUDOT base 0x44A0_1800/0x44A0_1C00 ([23:21]=101, [15:11]=00011, [10]=0/1; group mask 0xFFE0_F800).
+const SVE_BFDOT_INDEXED_MASK: u32 = 0xFFE0_FC00;
+const SVE_USDOT_INDEXED_BASE: u32 = 0x44A0_1800;
+const SVE_USDOT_INDEXED_MASK: u32 = 0xFFE0_F800; // pins [31:24] + [23:21]=101 + [15:11]=00011; idx/Zm/U(sudot)[10]/Zn/Zda vary
+// SVE FP by-indexed-element (FMLA/FMLS/FMUL): base 0x6420_0000, bit21=1. [15:13] = 000(FMLA/FMLS)/001(FMUL),
+// [10] = subtract. Size/index/Zm packing: .h bit23=0 (index={bit22,[20:19]}, Zm[18:16]); .s [23:22]=10
+// (index[20:19], Zm[18:16]); .d [23:22]=11 (index[20], Zm[19:16]).
+const SVE_FP_INDEXED_BASE: u32 = 0x6420_0000;
+const SVE_FP_INDEXED_MASK: u32 = 0xFF20_D800; // pins [31:24] + bit21=1 + [15:14]=00 + [12:11]=00; size/idx/Zm/opc/sub/Zn/Zd vary
+// SVE2 integer by-indexed-element (MUL/MLA/MLS): base 0x4420_0000, bit21=1, same size/index/Zm packing as the FP
+// indexed group. MUL [15:10]=111110; MLA/MLS [15:11]=00001, [10] = subtract.
+const SVE_INT_INDEXED_BASE: u32 = 0x4420_0000;
+const SVE_INT_MUL_INDEXED_MASK: u32 = 0xFF20_FC00; // pins [31:24] + bit21 + [15:10]=111110; size/idx/Zm/Zn/Zd vary
+const SVE_INT_MLA_INDEXED_MASK: u32 = 0xFF20_F800; // pins [31:24] + bit21 + [15:11]=00001; size/idx/Zm/sub/Zn/Zd vary
+// SVE2 widening integer (long/wide add-sub, multiply-long, multiply-accumulate-long): | size<<22 | Zm<<16 |
+// opcode<<10 | Zn<<5 | Zd. Non-accumulating ops use the 0x45 prefix, the MLAL/MLSL family the 0x44 prefix; size
+// [23:22] is the WIDE result element (.h/.s/.d). bit21=0 (3-register, not indexed).
+const SVE2_WIDEN_ARITH_BASE: u32 = 0x4500_0000;
+const SVE2_WIDEN_MLAL_BASE: u32 = 0x4400_0000;
+const SVE2_WIDEN_MASK: u32 = 0xFF20_0000; // pins [31:24] + bit21=0; size/Zm/opcode/Zn/Zd vary (opcode validated)
+// SVE2 bitwise ternary (EOR3/BCAX/BSL/BSL1N/BSL2N/NBSL): | opc<<22 | Zm<<16 | grp<<10 | Zk<<5 | Zdn. .d only,
+// [21]=1, [15:11]=00111. opc[23:22] + grp[10] select the op.
+const SVE2_TERNARY_LOGICAL_BASE: u32 = 0x0420_3800;
+const SVE2_TERNARY_LOGICAL_MASK: u32 = 0xFF20_F800; // pins [31:24] + bit21 + [15:11]=00111; opc/Zm/grp/Zk/Zdn vary
+// SVE2 unpredicated integer multiply (MUL/PMUL/SMULH/UMULH): | size<<22 | Zm<<16 | opcode<<10 | Zn<<5 | Zd. Shares
+// the int-bin-unpred frame ([15:13]=011 here vs 000 for ADD/SUB). PMUL is .b only.
+const SVE2_MUL_BASE: u32 = 0x0420_6000;
+const SVE2_MUL_MASK: u32 = 0xFF20_E000; // pins [31:24] + bit21 + [15:13]=011; size/Zm/opcode/Zn/Zd vary
+// SVE2 XAR (rotate then exclusive-OR): | tszh<<22 | tszl<<19 | imm3<<16 | Zm<<5 | Zdn. The rotate amount is encoded
+// as v = 2*esize - rotate in the tszh:tszl:imm3 field (esize from the highest set bit), exactly as the SVE shift-
+// immediates. [21]=1, [15:10]=001101.
+const SVE2_XAR_BASE: u32 = 0x0420_3400;
+const SVE2_XAR_MASK: u32 = 0xFF20_FC00; // pins [31:24] + bit21 + [15:10]=001101; tsz/imm3/Zm/Zdn vary
+// SVE2 complex integer add (CADD/SQCADD): | size<<22 | sat<<16 | rot<<10 | Zm<<5 | Zdn (0x45 prefix, [15:11]=11011,
+// rot[10] 0=#90/1=#270). Complex MAC (CMLA/SQRDCMLAH): | size<<22 | Zm<<16 | rnd<<12 | rot<<10 | Zn<<5 | Zda
+// (0x44 prefix, [15:13]=001, rnd[12]=SQRDCMLAH, rot[11:10] one of #0/#90/#180/#270).
+const SVE2_CADD_BASE: u32 = 0x4500_D800;
+const SVE2_CADD_MASK: u32 = 0xFF3E_F800; // pins [31:24] + bit21=0 + [20:17]=0000 + [15:11]=11011; size/sat/rot/Zm/Zdn vary
+const SVE2_CMLA_BASE: u32 = 0x4400_2000;
+const SVE2_CMLA_MASK: u32 = 0xFF20_E000; // pins [31:24] + bit21=0 + [15:13]=001; size/Zm/rnd/rot/Zn/Zda vary
+// SVE complex multiply-accumulate by indexed element (CMLA integer / FCMLA float): | size[22] | index/Zm | rot<<10
+// | Zn<<5 | Zda. [23]=1, [21]=1 fixed. .h: [22]=0, index2 at [20:19], Zm Z0-7 at [18:16]. .s: [22]=1, index1 at
+// [20], Zm Z0-15 at [19:16]. CMLA base 0x44A0_6000 ([15:12]=0110); FCMLA base 0x64A0_1000 ([15:12]=0001).
+const SVE_CMLA_INDEXED_BASE: u32 = 0x44A0_6000;
+const SVE_FCMLA_INDEXED_BASE: u32 = 0x64A0_1000;
+const SVE_COMPLEX_INDEXED_MASK: u32 = 0xFFA0_F000; // pins [31:24] + [23]=1 + [21]=1 + [15:12]; size[22]/index/Zm/rot vary
+// SVE2 cryptography (FEAT_SVE_AES/SM4/SHA3): bases in Arm64SveCryptoDestructiveOp/Arm64SveCryptoBinaryOp::base().
+// AESE 0x4522_E000 / AESD 0x4522_E400 / SM4E 0x4523_E000 destructive (Zm[9:5], Zdn[4:0]); AESMC 0x4520_E000 /
+// AESIMC 0x4520_E400 unary (Zdn[4:0] only); SM4EKEY 0x4520_F000 / RAX1 0x4520_F400 constructive (Zm[20:16]/Zn[9:5]/Zd).
+const SVE2_CRYPTO_DESTRUCTIVE_MASK: u32 = 0xFFFF_FC00; // pins [31:10]; only Zm/Zdn vary
+const SVE2_AES_MIX_MASK: u32 = 0xFFFF_FFE0; // pins [31:5]; only Zdn varies (Zm field is zero)
+const SVE2_AESMC_BASE: u32 = 0x4520_E000;
+const SVE2_AESIMC_BASE: u32 = 0x4520_E400;
+const SVE2_CRYPTO_BINARY_MASK: u32 = 0xFFE0_FC00; // pins [31:21] + [15:10]; Zm/Zn/Zd vary
+// SVE2 histogram. HISTCNT (predicated, .s/.d): base 0x4520_C000 | size<<22 | Zm<<16 | Pg<<10 | Zn<<5 | Zd ([15:13]=110,
+// [21]=1; size 10/11). HISTSEG (.b, unpredicated): base 0x4520_A000 | Zm<<16 | Zn<<5 | Zd ([23:22]=00, [15:10]=101000).
+const SVE2_HISTCNT_BASE: u32 = 0x4520_C000;
+const SVE2_HISTCNT_MASK: u32 = 0xFF20_E000; // pins [31:24] + [21]=1 + [15:13]=110; size/Zm/Pg/Zn/Zd vary
+const SVE2_HISTSEG_BASE: u32 = 0x4520_A000;
+const SVE2_HISTSEG_MASK: u32 = 0xFFE0_FC00; // pins [31:21] + [15:10]=101000; Zm/Zn/Zd vary
+// SVE2 128-bit polynomial multiply long (PMULLB/PMULLT .q from .d, FEAT_SVE_AES): base 0x4500_6800 | top<<10 | Zm<<16 |
+// Zn<<5 | Zd ([23:21]=000, [15:11]=01101). size field 00 is what frees it from the regular widening group (size != 00).
+// SVE2.1 structured quadword LD2Q-4Q/ST2Q-4Q. count-1 sits at [24:23] for loads but [23:22] for stores; mode at [21].
+const SVE_STRUCTQ_LD_IMM_BASE: u32 = 0xA410_E000; // [20]=1 imm marker, [21]=0; count-1<<23, imm[19:16]
+const SVE_STRUCTQ_LD_IMM_MASK: u32 = 0xFE70_E000; // pins [31:25]+[22:20]=001+[15:13]=111; frees count[24:23]/imm/Pg/Rn/Zt
+const SVE_STRUCTQ_LD_SCALAR_BASE: u32 = 0xA420_8000; // [21]=1; count-1<<23, Rm[20:16]
+const SVE_STRUCTQ_LD_SCALAR_MASK: u32 = 0xFE60_E000; // pins [31:25]+[22:21]=01+[15:13]=100; frees count[24:23]/Rm/Pg/Rn/Zt
+const SVE_STRUCTQ_ST_IMM_BASE: u32 = 0xE400_0000; // [21:20]=00; count-1<<22, imm[19:16]
+const SVE_STRUCTQ_ST_IMM_MASK: u32 = 0xFF30_E000; // pins [31:24]+[21:20]=00+[15:13]=000; frees count[23:22]/imm/Pg/Rn/Zt
+const SVE_STRUCTQ_ST_SCALAR_BASE: u32 = 0xE420_0000; // [21]=1; count-1<<22, Rm[20:16]
+const SVE_STRUCTQ_ST_SCALAR_MASK: u32 = 0xFF20_E000; // pins [31:24]+[21]=1+[15:13]=000; frees count[23:22]/Rm/Pg/Rn/Zt
+const SVE_LD1Q_BASE: u32 = 0xC400_A000; // LD1Q quadword gather (vector .d base + scalar offset): Rm[20:16], Pg[12:10], Zn[9:5], Zt[4:0]
+const SVE_ST1Q_BASE: u32 = 0xE420_2000; // ST1Q quadword scatter
+const SVE_LDST1Q_MASK: u32 = 0xFFE0_E000; // pins [31:24]+[23:21]+[15:13]; frees Rm/Pg/Zn/Zt
+const SVE_PMOV_BASE: u32 = 0x0500_3800; // PMOV: tsz size+index [23:17], direction[16], operands at [9:5]/[8:5]/[4:0]/[3:0]
+const SVE_PMOV_MASK: u32 = 0xFF00_FC00; // pins [31:24]=0x05 + [15:10]=001110; the [23:16] tsz is validated by the size parse
+const SVE2_AES2_MULTIVEC_BASE: u32 = 0x4523_E800; // AESEMC/AESDIMC multi-vector: decrypt[10], vgx4[18], index[20:19], Zm[7:5], Zdn[4:0]
+const SVE2_AES2_MULTIVEC_MASK: u32 = 0xFFE3_FB00; // pins [31:24]=0x45+[23:21]=001+[18 free]+[17:16]=11+[15:11]=11101+[9:8]=00
+// NEON LUTI2/LUTI4. [23:22]: luti2.16b=10, luti2.8h=11, luti4(.16b|.8h)=01 (so luti2 has [23]=1, luti4 [23:22]=01); the
+// luti4 element lives in the index-field marker. index left-aligns into [14:12] over a 1-marker. Two frames keep it off TBL ([23:22]=00).
+const FPRCVT_BASE: u32 = 0x1E00_0000; // FEAT_FPRCVT scalar convert: sf[31], ftype[23:22] (only 00/01), opcode[21:16], [15:10]=0, Rn[9:5], Rd[4:0]
+const FPRCVT_MASK: u32 = 0x7F80_FC00; // pins [30:24]=0011110 + [23]=0 + [15:10]=000000; frees sf[31]/ftype[22]/opcode[21:16]/Rn/Rd (opcode validity keeps it off the regular FP<->GP converts)
+const VEC_FP8_MMLA_BASE: u32 = 0x6E00_EC00; // NEON FP8 FMMLA: [23]=.4s (else .8h), [15:10]=111011, Vm[20:16], Vn[9:5], Vd[4:0]
+const VEC_FP8_MMLA_MASK: u32 = 0xFF60_FC00; // pins [31:24]=0x6E + [22:21]=00 + [15:10]=111011; frees .4s[23]/Vm/Vn/Vd
+const VEC_LUTI2_BASE: u32 = 0x4E80_0000; // LUTI2: [23]=1, half[22]
+const VEC_LUTI2_MASK: u32 = 0xFFA0_8C00; // pins [31:24]=0x4E + [23]=1 + [21]=0 + [15]=0 + [11:10]=00; frees half[22]/Vm/index/Vn/Vd
+const VEC_LUTI4_BASE: u32 = 0x4E40_0000; // LUTI4: [23:22]=01
+const VEC_LUTI4_MASK: u32 = 0xFFE0_8C00; // pins [31:24]=0x4E + [23:21]=010 + [15]=0 + [11:10]=00; frees Vm/index(+element marker)/Vn/Vd
+const VEC_FP8_NARROW_BASE: u32 = 0x0E00_F400; // NEON FP8 FCVTN narrow: Q[30], fp16[22], Vm[20:16], Vn[9:5], Vd[4:0]
+const VEC_FP8_NARROW_MASK: u32 = 0xBFA0_FC00; // pins [31]=0+[29:24]=000111+[23]=0+[21]=0+[15:10]=111101; frees Q/fp16/Vm/Vn/Vd
+const SVE_FP8_MATMUL_BASE: u32 = 0x6420_E000; // FP8 FMMLA: size[22] (.h=1/.s=0), Zm[20:16], Zn[9:5], Zda[4:0]
+const SVE_FP8_MATMUL_MASK: u32 = 0xFFA0_FC00; // pins [31:24]=0x64 + [23]=0 + [21]=1 + [15:10]=111000; frees size[22]/Zm/Zn/Zda
+// FEAT_F16MM half-precision FMMLA (Zda.H, Zn.H, Zm.H): [23]=1 separates it from FP8 FMMLA ([23]=0); [15:10]=111000.
+// Experimental: binutils-trunk-only -- LLVM-20 has no FP16-matmul feature (only f8f16mm).
+#[cfg(feature = "experimental")]
+const SVE_FP16_MATMUL_BASE: u32 = 0x64A0_E000;
+#[cfg(feature = "experimental")]
+const SVE_FP16_MATMUL_MASK: u32 = 0xFFE0_FC00; // pins [31:21] + [15:10]=111000; frees Zm[20:16]/Zn[9:5]/Zda[4:0]
+const SVE2_PMULL128_BASE: u32 = 0x4500_6800;
+const SVE2_PMULL128_MASK: u32 = 0xFFE0_F800; // pins [31:21]=01000101000 + [15:11]=01101; top[10]/Zm/Zn/Zd vary
+// SVE2.1 clamp (SCLAMP/UCLAMP integer .b/.h/.s/.d; FCLAMP float .h/.s/.d): bases in Arm64SveClampOp::base(). Integer
+// SCLAMP 0x4400_C000 / UCLAMP 0x4400_C400 ([21]=0, [15:11]=11000, U[10]); group mask 0xFF20_F800. FCLAMP 0x6420_2400
+// ([21]=1, [15:10]=001001); mask 0xFF20_FC00. size[23:22] in all.
+const SVE_INT_CLAMP_BASE: u32 = 0x4400_C000;
+const SVE_INT_CLAMP_MASK: u32 = 0xFF20_F800; // pins [31:24] + [21]=0 + [15:11]=11000; size/Zm/U[10]/Zn/Zd vary
+const SVE_FCLAMP_MASK: u32 = 0xFF20_FC00; // pins [31:24] + [21]=1 + [15:10]=001001; size/Zm/Zn/Zd vary
+// SVE2 add/subtract narrow high (ADDHN/SUBHN/RADDHN/RSUBHN): | size<<22 | Zm<<16 | opcode<<10 | Zn<<5 | Zd. size
+// [23:22] is the WIDE source element (.h/.s/.d), result is one narrower. [15:13]=011, [21]=1.
+const SVE2_NARROW_HIGH_BASE: u32 = 0x4520_6000;
+const SVE2_NARROW_HIGH_MASK: u32 = 0xFF20_E000; // pins [31:24] + bit21 + [15:13]=011; size/Zm/opcode/Zn/Zd vary
+// SVE2 saturating extract narrow (SQXTN/UQXTN/SQXTUN): | size_field | opcode<<11 | T<<10 | Zn<<5 | Zd. Two-register
+// (no Zm); the result size is tsz-encoded (tsz = 1<<result_size_bits at bits {22,20,19}); imm3[18:16]=0, bit21=1.
+const SVE2_EXTRACT_NARROW_BASE: u32 = 0x4520_4000;
+const SVE2_EXTRACT_NARROW_MASK: u32 = 0xFF27_E000; // pins [31:24] + bit21 + [18:16]=000 + [15:13]=010; tsz/op/T/Zn/Zd vary
+// SVE2 SABA/UABA (accumulate absolute difference): | size<<22 | Zm<<16 | U<<10 | Zn<<5 | Zd. [15:11]=11111, [21]=0.
+const SVE2_ABA_BASE: u32 = 0x4500_F800;
+const SVE2_ABA_MASK: u32 = 0xFF20_F800; // pins [31:24] + bit21=0 + [15:11]=11111; size/Zm/U/Zn/Zd vary
+// SVE2 SSHLL/USHLL (shift left long, B/T): | tsz | U<<11 | T<<10 | Zn<<5 | Zd. The shift is v = esize + shift in the
+// tszh[22]:tszl[20:19]:imm3[18:16] field (esize from the highest set bit); the result is one element wider.
+// [15:12]=1010, [21]=0.
+const SVE2_SHLL_BASE: u32 = 0x4500_A000;
+const SVE2_SHLL_MASK: u32 = 0xFF20_F000; // pins [31:24] + bit21=0 + [15:12]=1010; tsz/U/T/Zn/Zd vary
+// SVE2 shift right narrow by immediate (SHRN/SQSHRN/UQSHRN/SQSHRUN families): | tsz | code<<11 | T<<10 | Zn<<5 | Zd.
+// (spec C8 "SVE2 bitwise shift right narrow") -- code[13:11]=op:U:R selects the op; shift = 2*esize - tsz:imm3,
+// where esize is the NARROW result element. [15:14]=00, [21]=1. Disjoint from the other 0x45 groups by [15:14].
+const SVE2_NARROW_SHIFT_BASE: u32 = 0x4520_0000;
+const SVE2_NARROW_SHIFT_MASK: u32 = 0xFFA0_C000; // pins [31:24] + bit23=0 + bit21 + [15:14]=00; tsz/code/T/Zn/Zd vary. bit23=0 separates the single-vector SVE2 narrow-shift from the SVE2.1 *two-vector* SQRSHRN/etc. (bit23=1) -- without this pin the single-vec decode over-claims the 2-vec encodings
+// SVE2 predicated halving add/subtract + pairwise arithmetic: | size<<22 | code<<16 | Pg<<10 | Zm<<5 | Zdn. Both
+// share [31:24]=0x44 + [21:19]=010; [15:13]=100 (halving, code=R:S:U) vs 101 (pairwise, code=opc:U). Destructive.
+const SVE2_HALVING_BASE: u32 = 0x4410_8000;
+const SVE2_PAIRWISE_BASE: u32 = 0x4410_A000;
+// SVE2 saturating add/subtract (predicated): | size<<22 | code<<16 | Pg<<10 | Zm<<5 | Zdn. [21:19]=011, [15:13]=100,
+// code[18:16]=op:S:U. Same mask shape as halving (disjoint via bit19=1).
+const SVE2_SAT_ADDSUB_BASE: u32 = 0x4418_8000;
+// SVE2 integer pairwise add and accumulate long (SADALP/UADALP): | size<<22 | U<<16 | Pg<<10 | Zn<<5 | Zda. size
+// is the WIDE accumulator (.h/.s/.d); the source is half-width. [21:17]=00010, [15:13]=101. Predicated.
+const SVE2_ADALP_BASE: u32 = 0x4404_A000;
+const SVE2_ADALP_MASK: u32 = 0xFF3E_E000; // pins [31:24] + [21:17]=00010 + [15:13]=101; size/U/Pg/Zn/Zda vary
+// SVE2 Accumulate group (0x45, bit21=0, [15:12] selects the family). SABALB/T/UABALB/T (abs-diff-accumulate-long):
+// base 0x4500_C000 ([15:12]=1100), size=WIDE result, U[11], T[10], Zm[20:16], Zn[9:5], Zda[4:0].
+const SVE2_ABALB_BASE: u32 = 0x4500_C000;
+const SVE2_ABALB_MASK: u32 = 0xFF20_F000; // pins [31:24] + bit21=0 + [15:12]=1100; size/Zm/U/T/Zn/Zda vary
+// SVE2 bitwise shift right and accumulate (SSRA/USRA/SRSRA/URSRA): base 0x4500_E000 ([15:12]=1110), tsz-encoded
+// right shift (v=2*esize-shift, tszh[23:22]:tszl[20:19]:imm3[18:16]), R[11], U[10]. Accumulates into Zd.
+const SVE2_SSRA_BASE: u32 = 0x4500_E000;
+const SVE2_SSRA_MASK: u32 = 0xFF20_F000; // pins [31:24] + bit21=0 + [15:12]=1110; tsz/R/U/Zn/Zd vary
+// SVE2 bitwise shift and insert (SRI right / SLI left): base 0x4500_F000 ([15:11]=11110), tsz-encoded, op[10].
+const SVE2_SRI_BASE: u32 = 0x4500_F000;
+const SVE2_SRI_MASK: u32 = 0xFF20_F800; // pins [31:24] + bit21=0 + [15:11]=11110; tsz/op/Zn/Zd vary
+// SVE2 integer add/subtract long with carry (ADCLB/ADCLT/SBCLB/SBCLT): base 0x4500_D000 ([15:11]=11010). [23] picks
+// SBC, [22] picks the .d element (else .s), [10] picks the T form. Zm[20:16], Zn[9:5], Zda[4:0].
+const SVE2_ADCL_BASE: u32 = 0x4500_D000;
+const SVE2_ADCL_MASK: u32 = 0xFF20_F800; // pins [31:24] + bit21=0 + [15:11]=11010; sub/element/Zm/T/Zn/Zda vary
+// SVE bit-permute (BEXT/BDEP/BGRP, FEAT_SVE_BitPerm): base 0x4500_B000 ([15:12]=1011). size[23:22], Zm[20:16],
+// opc[11:10], Zn[9:5], Zd[4:0].
+const SVE2_BITPERM_BASE: u32 = 0x4500_B000;
+const SVE2_BITPERM_MASK: u32 = 0xFF20_F000; // pins [31:24] + bit21=0 + [15:12]=1011; size/Zm/opc/Zn/Zd vary (opc via from_opc)
+// SVE2 widening by-indexed-element (SMULLB/SMLALB/SQDMULLB/... indexed). base 0x4420_8000 (bit21=1, bit15=1). size
+// [23:22]=10(.s)/11(.d); the index/Zm are packed in [20:16]+il[11] per size; disc[15:12] selects the op, T[10].
+const SVE2_WIDEN_INDEXED_BASE: u32 = 0x4420_8000;
+const SVE2_WIDEN_INDEXED_MASK: u32 = 0xFF20_8000; // pins [31:24] + bit21 + bit15; size/idx/Zm/disc/il/T/Zn/Zd vary
+// SVE2 character match (MATCH/NMATCH -> predicate): base 0x4520_8000. sz[22] (.b/.h), Zm[20:16], Pg[12:10],
+// Zn[9:5], op[4] (NMATCH), Pd[3:0]. [21]=1, [15:13]=100.
+const SVE2_MATCH_BASE: u32 = 0x4520_8000;
+const SVE2_MATCH_MASK: u32 = 0xFF20_E000; // pins [31:24] + bit21 + [15:13]=100; sz/Zm/Pg/Zn/op/Pd vary
+// SVE2 table lookup: TBL (two-register table {Zn,Zn+1}, op[10]=0) / TBX (single-register table, merging, op[10]=1).
+// base 0x0520_2800 (0x05 permute space, [15:11]=00101). size[23:22], Zm[20:16], Zn[9:5], Zd[4:0].
+const SVE2_TBL_BASE: u32 = 0x0520_2800;
+const SVE2_TBL_MASK: u32 = 0xFF20_F800; // pins [31:24] + bit21 + [15:11]=00101; size/Zm/op/Zn/Zd vary
+// SVE2 saturating doubling multiply high (unpredicated): SQDMULH/SQRDMULH. base 0x0420_7000 ([15:11]=01110, R[10]).
+const SVE2_SQDMULH_BASE: u32 = 0x0420_7000;
+const SVE2_SQDMULH_MASK: u32 = 0xFF20_F800; // pins [31:24] + bit21 + [15:11]=01110; size/Zm/R/Zn/Zd vary
+// SVE2 saturating doubling multiply-add high: SQRDMLAH/SQRDMLSH. base 0x4400_7000 ([15:11]=01110, S[10]).
+const SVE2_SQRDMLAH_BASE: u32 = 0x4400_7000;
+const SVE2_SQRDMLAH_MASK: u32 = 0xFF20_F800; // pins [31:24] + bit21=0 + [15:11]=01110; size/Zm/S/Zn/Zda vary
+// SVE USDOT (vectors, FEAT_I8MM): .s from .b only. base 0x4480_7800 ([23:21]=100, [15:10]=011110).
+const SVE_USDOT_BASE: u32 = 0x4480_7800;
+const SVE_USDOT_MASK: u32 = 0xFFE0_FC00; // pins [31:24] + [23:21]=100 + [15:10]=011110; Zm/Zn/Zda vary
+// SVE2 CDOT (complex integer dot product): base 0x4400_1000 ([15:12]=0001). size[23:22] (.s/.d), rot[11:10].
+const SVE2_CDOT_BASE: u32 = 0x4400_1000;
+const SVE2_CDOT_MASK: u32 = 0xFF20_F000; // pins [31:24] + bit21=0 + [15:12]=0001; size/Zm/rot/Zn/Zda vary
+// SVE2 floating-point pairwise (FADDP/FMAXNMP/FMINNMP/FMAXP/FMINP): | size<<22 | opc<<16 | Pg<<10 | Zm<<5 | Zdn.
+// base 0x6410_8000 ([21:19]=010, [15:13]=100), predicated-destructive.
+const SVE2_FP_PAIRWISE_BASE: u32 = 0x6410_8000;
+const SVE2_FP_PAIRWISE_MASK: u32 = 0xFF38_E000; // pins [31:24] + [21:19]=010 + [15:13]=100; size/opc/Pg/Zm/Zdn vary
+// SVE2 FP precision up/down convert (FCVTLT/FCVTNT/FCVTX/FCVTXNT/BFCVT/BFCVTNT). | disc<<16 | Pg<<10 | Zn<<5 | Zd,
+// where disc is the irregular 9-bit [24:16] op/size selector. [31:25]=0110010, [15:13]=101. Predicated (merging).
+const SVE2_FP_UPDOWN_BASE: u32 = 0x6400_A000;
+const SVE2_FP_UPDOWN_MASK: u32 = 0xFE00_E000; // pins [31:25]=0110010 + [15:13]=101; disc[24:16]/Pg/Zn/Zd vary
+// SVE2 FLOGB (FP base-2 logarithm as integer, predicated): | size_fp<<17 | Pg<<10 | Zn<<5 | Zd. base 0x6518_A000
+// ([21:19]=011, [16]=0, [15:13]=101); size_fp[18:17] = .h(01)/.s(10)/.d(11) = size_bits.
+const SVE2_FLOGB_BASE: u32 = 0x6518_A000;
+const SVE2_FLOGB_MASK: u32 = 0xFF39_E000; // pins [31:24] + [21:19]=011 + [16]=0 + [15:13]=101; size/Pg/Zn/Zd vary
+// FEAT_SVE2p2 zeroing-predicate FLOGB: relocated 0x641e_8000 frame with the size in [14:13] (not [18:17]).
+const SVE2_FLOGB_ZEROING_BASE: u32 = 0x641E_8000;
+const SVE2_FLOGB_ZEROING_MASK: u32 = 0xFFFF_8000; // pins [31:15]; size[14:13]/Pg/Zn/Zd vary
+// SVE2 FP16/BF16 widening multiply-add long (FMLALB/T, FMLSLB/T, BFMLALB/T): | bf16<<22 | Zm<<16 | sub<<13 |
+// T<<10 | Zn<<5 | Zda. base 0x64A0_8000 ([23]=1, [21]=1, [15:14]=10, [12:11]=00). All produce .s from .h. BF16 has
+// no subtract form.
+const SVE2_FMLAL_BASE: u32 = 0x64A0_8000;
+const SVE2_FMLAL_MASK: u32 = 0xFFA0_D800; // pins [31:24] + bit23 + bit21 + [15:14]=10 + [12:11]=00; bf16/Zm/sub/T/Zn/Zda vary
+// SVE2 FP16/BF16 widening multiply-add long BY INDEXED ELEMENT (FMLALB/T, FMLSLB/T, BFMLALB/T indexed): base
+// 0x64A0_4000 ([23]=1, [21]=1, [15:14]=01, [12]=0). bf16[22], sub[13], top[10]; Zm Z0-7 at [18:16]; the 3-bit index
+// is split i2[20]:i1[19]:i0[11]. Distinct from the vector form ([15:14]=10) and BFDOT-indexed ([23]=0).
+const SVE2_FMLAL_INDEXED_BASE: u32 = 0x64A0_4000;
+const SVE2_FMLAL_INDEXED_MASK: u32 = 0xFFA0_D000; // pins [31:24] + bit23 + bit21 + [15:14]=01 + [12]=0; bf16/idx/Zm/sub/top vary
+// SVE/SVE2 matrix-multiply and BFloat16 dot (unpredicated | Zm<<16 | Zn<<5 | Zda; the size/sign discriminant is
+// carried in Arm64SveMatmulOp::word). Integer matmul SMMLA/USMMLA/UMMLA: base 0x4500_9800 ([21]=0, [15:10]=100110),
+// uns[23:22]. FP matmul FMMLA/BFMMLA: base 0x6420_E400 ([21]=1, [15:10]=111001), size[23:22]=01(bf)/10(.s)/11(.d).
+// The mask pins [21] (0=int, 1=FP) and the top byte distinguishes. BFDOT: base 0x6460_8000 ([23:21]=011, [15:10]=100000).
+const SVE_INT_MATMUL_BASE: u32 = 0x4500_9800;
+const SVE_FP_MATMUL_BASE: u32 = 0x6420_E400;
+const SVE_MATMUL_MASK: u32 = 0xFF20_FC00; // pins [31:24] + [21] + [15:10]; the [23:22] discriminant/Zm/Zn/Zda vary
+const SVE_BFDOT_BASE: u32 = 0x6460_8000;
+const SVE_BFDOT_MASK: u32 = 0xFFE0_FC00; // pins [31:24] + [23:21]=011 + [15:10]=100000; Zm/Zn/Zda vary
+const SVE2_HALVING_PAIRWISE_MASK: u32 = 0xFF38_E000; // pins [31:24] + [21:19]=010 + [15:13]; size/code/Pg/Zm/Zdn vary
+// SVE2 saturating/rounding bitwise shift left (predicated): | size<<22 | code<<16 | Pg<<10 | Zm<<5 | Zdn. code
+// [19:16]=Q:R:N:U selects the op. [21:20]=00, [15:13]=100. Destructive.
+const SVE2_SHIFT_LEFT_PRED_BASE: u32 = 0x4400_8000;
+const SVE2_SHIFT_LEFT_PRED_MASK: u32 = 0xFF30_E000; // pins [31:24] + [21:20]=00 + [15:13]=100; size/code/Pg/Zm/Zdn vary
+// SVE2 integer unary (predicated, merging): SQABS/SQNEG/URECPE/URSQRTE. | size<<22 | code<<16 | Pg<<10 | Zn<<5 | Zd.
+// code[19:16]=Q:0:0:op. [21:20]=00, [18:17]=00 (merging), [15:13]=101.
+const SVE2_UNARY_PRED_BASE: u32 = 0x4400_A000;
+const SVE2_UNARY_PRED_MASK: u32 = 0xFF36_E000; // pins [31:24] + [21:20]=00 + [18:17]=00 + [15:13]=101; size/Q/op/Pg/Zn/Zd vary
+// SVE2.2 zeroing-predicate form: same frame with bit [17] set ([18:17] 00 -> 01); reuses SVE2_UNARY_PRED_MASK.
+const SVE2_UNARY_PRED_ZEROING_BASE: u32 = 0x4402_A000;
+// SVE predicated integer unary: | size<<22 | opcode<<16 | Pg<<10 | Zn<<5 | Zd. [15:13]=101 (in base) distinguishes
+// it from the predicated-binary group ([15:13]=000); reuses the 0xFF20_E000 mask value.
+const SVE_PRED_UNARY_BASE: u32 = 0x0400_A000;
+// SVE reductions: | size<<22 | opcode<<16 | Pg<<10 | Zn<<5 | Vd. Integer base 0x0400_2000, FP base 0x6500_2000;
+// both have [15:13]=001.
+const SVE_INT_REDUCE_BASE: u32 = 0x0400_2000;
+const SVE_FP_REDUCE_BASE: u32 = 0x6500_2000;
+const SVE_REDUCE_MASK: u32 = 0xFF20_E000; // pins [31:24] + bit21=0 + [15:13]=001; size/opcode/Pg/Zn/Vd vary
+const SVE_FP_QUAD_REDUCE_BASE: u32 = 0x6400_A000; // SVE2.1 FP quadword reduction: same SVE_REDUCE_MASK frame; [15]=1 + region 0x64 separate it from the FP reduction 0x6500_2000
+const SVE_NARROW_CONVERT_BASE: u32 = 0x4531_4000;
+const SVE_NARROW_CONVERT_MASK: u32 = 0xFFFF_E420; // pins [31:24]=0x45+[23:16]=0x31+[15:13]=010+[10]=0+[5]=0; frees op[12:11], Zn-pair[9:6], Zd[4:0]
+const SME2_QUAD_SHIFT_NARROW_BASE: u32 = 0xC100_DC00; // size+shift byte[23:16], Zn-quad>>2 [9:7], op[6:5], Zd[4:0]
+const SME2_QUAD_SHIFT_NARROW_MASK: u32 = 0xFF00_FC00; // pins [31:24]=0xc1 + [15:10]=110111; frees shift-byte[23:16], Zn[9:7], op[6:5], Zd[4:0]
+const SME2_SHIFT_NARROW_NON4_BASE: u32 = 0xC100_D800; // no-N 4-vec: like QUAD_SHIFT_NARROW but [10]=0; reuses SME2_QUAD_SHIFT_NARROW_MASK
+const SME2_SHIFT_NARROW_NON2_BASE: u32 = 0xC1E0_D400; // no-N 2-vec (.s pair -> .h): (16-shift)[19:16], to-uns[20], uns-src[5], Zn-pair[9:6]
+const SME2_SHIFT_NARROW_NON2_MASK: u32 = 0xFFE0_FC00; // pins [31:24]=0xc1 + [23:21]=111 + [15:10]=110101; frees [20]/[19:16]/Zn[9:6]/[5]/Zd[4:0]
+const SME2_UNPACK_WIDEN_BASE: u32 = 0xC125_E000; // SUNPK/UUNPK widening unpack: size+1[23:22], vgx4[20], Zn[9:5], Zd>>1[4:1], U[0]
+const SME2_UNPACK_WIDEN_MASK: u32 = 0xFF2F_FC00; // pins [31:24]=0xc1 + [21]=1+[19:16]=1011 + [15:10]=111000; frees size[23:22]/four[20]/Zn[9:5]/Zd[4:1]/U[0]
+const SME2_VEC_SELECT_BASE: u32 = 0xC120_8000; // SME2 multi-vector SEL: size[23:22], Zm>>1[20:17], vgx4[16], PNg-8[12:10], Zn>>1[9:6], Zd[4:0]
+const SME2_VEC_SELECT_MASK: u32 = 0xFF20_E020; // pins [31:24]=0xc1 + [21]=1 + [15]=1 + [14:13]=00 + [5]=0; frees size/Zm/four/PNg/Zn/Zd
+const SVE_SHIFT_NARROW_BASE: u32 = 0x45A0_0800;
+const SVE_SHIFT_NARROW_MASK: u32 = 0xFFE0_CC20; // pins [31:24]=0x45+[23:21]=101+[15:14]=00+[11]=1+[10]=0+[5]=0; frees shift[20:16], op[13:12], Zn-pair[9:6], Zd[4:0]
+const SME2_NARROW_CVT_NON2_BASE: u32 = 0xC123_E000; // no-N 2-vec (.s pair -> .h); reuses SME2_FP_CVT_NARROW_MASK (differs from FCVTN at [17:16])
+const SME2_NARROW_CVT_NON4_BASE: u32 = 0xC133_E000; // no-N 4-vec; reuses SME2_NARROW_CONVERT_MASK with [6]=0 (the N form sets [6]=1)
+const SME2_NARROW_CONVERT_BASE: u32 = 0xC133_E040;
+const SME2_NARROW_CONVERT_MASK: u32 = 0xFF3F_FC40; // pins [31:24]=0xc1+[21:16]=110011+[15:10]=111000+[6]=1; frees dest-size[23], to-unsigned op[22], Zn-quad[9:7], unsigned-src op[5], Zd[4:0]
+const SME2_FP_CVT_NARROW_BASE: u32 = 0xC120_E000;
+const SME2_FP_CVT_NARROW_MASK: u32 = 0xFFBF_FC00; // pins [31:24]=0xc1+[23]=0+[21:16]=100000+[15:10]=111000; frees op[22], Zn-pair[9:6] (incl. [7]!), op[5], Zd[4:0]
+// SVE predicated shift by immediate: | tszh<<22 | opc<<16 | Pg<<10 | tszl<<8 | imm3<<5 | Zdn. The 7-bit
+// tszh:tszl:imm3 encodes (esize + shift) for LSL / (2*esize - shift) for ASR/LSR.
+const SVE_SHIFT_IMM_BASE: u32 = 0x0400_8000;
+const SVE_SHIFT_IMM_MASK: u32 = 0xFF38_E000; // pins [31:24] + [21:19]=000 + [15:13]=100; opc[18:16] (incl. ASRD)/tszh/Pg/tszl/imm3/Zdn vary
+const SVE_SHIFT_VEC_BASE: u32 = 0x0410_8000; // ASR/LSR/LSL/ASRR/LSRR/LSLR by vector (predicated); [21:19]=010, opc[18:16]
+const SVE_SHIFT_VEC_MASK: u32 = 0xFF38_E000; // same value as SVE_SHIFT_IMM_MASK but base has [21:19]=010 (distinct key)
+// SVE inc/dec by active-predicate-count (INCP/DECP/SQINCP/SQDECP/UQINCP/UQDECP). FOUR sub-encodings: scalar vs vector
+// dest ([11]=1/0), non-saturating ([18]=1, D at [16]) vs saturating ([18]=0, D[17]/U[16] + sf[10] for scalar).
+const SVE_INCP_SCALAR_BASE: u32 = 0x252C_8800; // INCP/DECP <Xdn>, Pm: | size<<22 | D<<16 | Pm<<5 | Rdn (64-bit)
+const SVE_INCP_SCALAR_MASK: u32 = 0xFF3E_FC00;
+const SVE_QINCP_SCALAR_BASE: u32 = 0x2528_8800; // SQ/UQ INCP/DECP scalar: | size<<22 | D<<17 | U<<16 | sf<<10 | Pm<<5 | Rdn
+const SVE_QINCP_SCALAR_MASK: u32 = 0xFF3C_F800;
+const SVE_INCP_VECTOR_BASE: u32 = 0x252C_8000; // INCP/DECP Zdn.<T>, Pm.<T>: | size<<22 | D<<16 | Pm<<5 | Zdn
+const SVE_INCP_VECTOR_MASK: u32 = 0xFF3E_F800;
+const SVE_QINCP_VECTOR_BASE: u32 = 0x2528_8000; // SQ/UQ INCP/DECP Zdn.<T>: | size<<22 | D<<17 | U<<16 | Pm<<5 | Zdn
+const SVE_QINCP_VECTOR_MASK: u32 = 0xFF3C_F800;
+// SVE LDR/STR (Z/P register): | imm9h<<16 | imm9l<<10 | Rn<<5 | Zt|Pt. Z has [15:13]=010, P has [15:13]=000;
+// LDR top byte 0x85, STR 0xE5. The 9-bit MUL VL offset splits imm9h[21:16]:imm9l[12:10].
+const SVE_LDR_Z_BASE: u32 = 0x8580_4000;
+const SVE_STR_Z_BASE: u32 = 0xE580_4000;
+const SVE_LDR_P_BASE: u32 = 0x8580_0000;
+const SVE_STR_P_BASE: u32 = 0xE580_0000;
+const SVE_FILLSPILL_MASK: u32 = 0xFFC0_E000; // pins [31:22] + [15:13]; imm9h/imm9l/Rn/Zt-Pt vary
+// SVE predicated FP fused multiply-add: | size<<22 | Zm<<16 | opcode<<13 | Pg<<10 | Zn<<5 | Zda. bit21=1 (the
+// predicated FP groups with bit21=0 are pred-binary/compare/reduction; 0x64 is the indexed form).
+const SVE_FP_FMA_BASE: u32 = 0x6520_0000;
+const SVE_FP_FMA_MASK: u32 = 0xFF20_0000; // pins [31:24] + bit21=1; size/Zm/opcode/Pg/Zn/Zda vary
+// SVE unpredicated bitwise logical (whole register): | opc<<22 | Zm<<16 | Zn<<5 | Zd.
+const SVE_BITWISE_LOGICAL_BASE: u32 = 0x0420_3000;
+const SVE_BITWISE_LOGICAL_MASK: u32 = 0xFF20_FC00; // pins [31:24] + bit21 + [15:10]=001100; opc/Zm/Zn/Zd vary
+// SVE predicated integer multiply-accumulate (MLA/MLS/MAD/MSB): | size<<22 | reg16<<16 | op[15:13] | Pg<<10 |
+// reg5<<5 | dst. The op occupies [15:13] = 010/011/110/111; bit14=1 is the common discriminant in the 0x04,
+// bit21=0 space (the other groups there have bit14=0).
+const SVE_INT_MAC_BASE: u32 = 0x0400_4000;
+const SVE_INT_MAC_MASK: u32 = 0xFF20_4000; // pins [31:24] + bit21=0 + bit14=1; op[15]/op[13]/size/regs/Pg vary
+// SVE integer compare with immediate: signed (base 0x2500_0000, imm5@[20:16], op=[15:13]+[4]); unsigned (base
+// 0x2420_0000, bit21=1, imm7@[20:14], op=lt[13]+ne[4]). Distinct from the vector compares (0x2400.., bit21=0).
+const SVE_CMP_IMM_SIGNED_BASE: u32 = 0x2500_0000;
+const SVE_CMP_IMM_SIGNED_MASK: u32 = 0xFF20_0000; // pins [31:24] + bit21=0; imm5/op/size/Pg/Zn/Pd vary
+const SVE_CMP_IMM_UNSIGNED_BASE: u32 = 0x2420_0000;
+const SVE_CMP_IMM_UNSIGNED_MASK: u32 = 0xFF20_0000; // pins [31:24] + bit21=1; imm7/op/size/Pg/Zn/Pd vary
+// SVE MOVPRFX: unpredicated base 0x0420_BC00 (only Zn/Zd vary); predicated base 0x0410_2000 | M<<16 ([15:13]=001,
+// [21:17]=01000 -- distinct from the reductions' 00000 under their mask).
+const SVE_MOVPRFX_UNPRED_BASE: u32 = 0x0420_BC00;
+const SVE_MOVPRFX_UNPRED_MASK: u32 = 0xFFFF_FC00;
+const SVE_MOVPRFX_PRED_BASE: u32 = 0x0410_2000;
+const SVE_MOVPRFX_PRED_MASK: u32 = 0xFF3E_E000; // pins [31:24] + [21:17]=01000 + [15:13]=001; size/M/Pg/Zn/Zd vary
+// SVE permute vectors (ZIP/UZP/TRN): | size<<22 | Zm<<16 | opcode<<10 | Zn<<5 | Zd.
+const SVE_PERMUTE_BASE: u32 = 0x0520_6000;
+const SVE_PERMUTE_MASK: u32 = 0xFF20_E000; // pins [31:24] + bit21 + [15:13]=011; size/Zm/opcode/Zn/Zd vary
+// SVE unpredicated FP binary: | size<<22 | Zm<<16 | opcode<<10 | Zn<<5 | Zd. bit21=0 + [15:13]=000 (the FMA group
+// is bit21=1; the other FP groups have [15:13] != 000). Reuses the 0xFF20_E000 mask value.
+const SVE_FP_BIN_UNPRED_BASE: u32 = 0x6500_0000;
+// SVE CPY immediate: | size<<22 | Pg<<16 | M<<14 | sh<<13 | imm8<<5 | Zd. CPY scalar (GP): | size<<22 | Pg<<10 |
+// Rn<<5 | Zd.
+const SVE_CPY_IMM_BASE: u32 = 0x0510_0000;
+const SVE_CPY_IMM_MASK: u32 = 0xFF30_8000; // pins [31:24] + [21:20]=01 + bit15=0; size/Pg/M/sh/imm8/Zd vary
+// SVE FCPY (disassembled FMOV Zd.<T>, Pg/M, #imm): 00000101 size[23:22] 01 Pg[19:16] 110 imm8[12:5] Zd. Merge-only
+// (no M/sh field, unlike the integer CPY-imm). bit15=1 (the fixed 110) separates it from the integer form (bit15=0).
+const SVE_FCPY_BASE: u32 = 0x0510_C000;
+const SVE_FCPY_MASK: u32 = 0xFF30_E000; // pins [31:24] + [21:20]=01 + [15:13]=110; size[23:22]/Pg[19:16]/imm8/Zd vary
+const SVE_CPY_SCALAR_BASE: u32 = 0x0528_A000;
+const SVE_CPY_SCALAR_MASK: u32 = 0xFF3F_E000; // pins [31:24] + [21:16]=101000 + [15:13]=101; size/Pg/Rn/Zd vary
+// SVE REV (unpredicated element reverse): | size<<22 | Zn<<5 | Zd. REVB/REVH/REVW (predicated): | size<<22 |
+// opc<<16 | Pg<<10 | Zn<<5 | Zd.
+const SVE_REV_BASE: u32 = 0x0538_3800;
+const SVE_REV_MASK: u32 = 0xFF3F_FC00; // pins [31:24] + [21:16]=111000 + [15:10]=001110; size/Zn/Zd vary
+const SVE_REVB_BASE: u32 = 0x0524_8000;
+const SVE_REVB_MASK: u32 = 0xFF3C_E000; // pins [31:24] + [21:18]=1001 + [15:13]=100; size/opc/Pg/Zn/Zd vary
+// SVE2.2 zeroing-predicate REVB/REVH/REVW and RBIT: identical frames to the merging forms but bit [13] set
+// ([15:13] 100 -> 101). Same masks; only the base value at [15:13] differs.
+const SVE_REVB_ZEROING_BASE: u32 = 0x0524_A000;
+const SVE_RBIT_ZEROING_BASE: u32 = 0x0527_A000;
+const SVE_REVD_BASE: u32 = 0x052E_8000; // REVD (FEAT_SVE2p1): reverse doublewords in quadwords (predicated)
+const SVE_REVD_MASK: u32 = 0xFFFF_E000; // pins [31:13]; Pg[12:10]/Zn[9:5]/Zd[4:0] vary
+// SVE TBL (table lookup, single table): | size<<22 | Zm<<16 | Zn<<5 | Zd.
+const SVE_TBL_BASE: u32 = 0x0520_3000;
+const SVE_TBL_MASK: u32 = 0xFF20_FC00; // pins [31:24] + bit21 + [15:10]=001100; size/Zm/Zn/Zd vary
+// SVE predicated FP unary (same-size round/recpx/sqrt): | size<<22 | opcode<<16 | Pg<<10 | Zn<<5 | Zd. [15:13]=101
+// distinguishes it from the FP pred-binary ([15:13]=100); reuses the 0xFF20_E000 mask value.
+const SVE_FP_UNARY_BASE: u32 = 0x6500_A000;
+// SVE2.2 zeroing-predicate FP unary (FRINT*/FRECPX/FSQRT) + FP converts share a relocated 0x64../[15]=1 frame:
+// | size<<22 | opcode6<<16 | 1<<15 | sub2<<13 | Pg<<10 | Zn<<5 | Zd. The frame mask pins only [31:24]+[15]; a
+// strict (opcode6, sub2) table lookup separates the unary group from the convert group (disjoint opcodes).
+const SVE_FP_UNARY_ZEROING_BASE: u32 = 0x6400_8000;
+const SVE_FP_ZEROING_FRAME_MASK: u32 = 0xFF00_8000; // pins [31:24]=0x64 + [15]=1; size/opcode/sub/Pg/Zn/Zd vary
+// FEAT_SVE2p2 SVE FRINT32/64 X/Z. Merging /M: 0x65.. [21:16]=01 0 op2 size, [15:13]=101. Zeroing /Z: 0x64.. with
+// [21:17]=01110, [16]=is64, [15]=1, [14]=size(.d), [13]=is_x.
+const SVE_FRINTTS_M_BASE: u32 = 0x6510_A000;
+const SVE_FRINTTS_M_MASK: u32 = 0xFFF8_E000; // pins [31:22]([23:22]=00) + [21:19]=010 + [15:13]=101; [18:16] vary
+const SVE_FRINTTS_Z_BASE: u32 = 0x641C_8000;
+const SVE_FRINTTS_Z_MASK: u32 = 0xFFFE_8000; // pins [31:22]([23:22]=00) + [21:17]=01110 + [15]=1; [16]/[14:13] vary
+// SVE predicate ops: PFALSE/PTEST/RDFFR/WRFFR/SETFFR/PFIRST/PNEXT -- each a small fixed-frame encoding.
+const SVE_PFALSE_BASE: u32 = 0x2518_E400;
+const SVE_PTEST_BASE: u32 = 0x2550_C000;
+const SVE_PTEST_MASK: u32 = 0xFFFF_C21F; // pins [31:16] + [15:14]=11 + bit9=0 + [4:0]; Pg[13:10]/Pn[8:5] vary
+const SVE_RDFFR_BASE: u32 = 0x2519_F000;
+const SVE_RDFFR_PRED_BASE: u32 = 0x2518_F000;
+const SVE_RDFFRS_PRED_BASE: u32 = 0x2558_F000; // RDFFRS = RDFFR-predicated + S[22]; same SVE_RDFFR_PRED_MASK key
+const SVE_RDFFR_PRED_MASK: u32 = 0xFFFF_FC10; // pins all but Pg[8:5]/Pd[3:0]
+const SVE_FADDA_BASE: u32 = 0x6518_2000; // FADDA <V>dn, Pg, <V>dn, Zm.<T>: | size<<22 | Pg<<10 | Zm<<5 | Vdn
+const SVE_FTMAD_BASE: u32 = 0x6510_8000; // FTMAD Zdn,Zdn,Zm,#imm3: | size<<22 | imm3<<16 | Zm<<5 | Zdn
+const SVE_PUNPK_BASE: u32 = 0x0530_4000; // PUNPKLO Pd.H, Pn.B; PUNPKHI sets bit16; | Pn<<5 | Pd
+const SVE2_EORBT_BASE: u32 = 0x4500_9000; // EORBT Zd,Zn,Zm: | size<<22 | Zm<<16 | tb<<10 | Zn<<5 | Zd
+const SVE_WRFFR_BASE: u32 = 0x2528_9000;
+const SVE_WRFFR_MASK: u32 = 0xFFFF_FC1F; // pins all but Pn[8:5]
+const SVE_SETFFR_WORD: u32 = 0x252C_9000;
+const SVE_PFIRST_BASE: u32 = 0x2558_C000;
+const SVE_PFIRST_MASK: u32 = 0xFFFF_FC10; // pins all but Pg[8:5]/Pdn[3:0]
+const SVE_PNEXT_BASE: u32 = 0x2519_C400;
+const SVE_PNEXT_MASK: u32 = 0xFF3F_FC10; // pins [31:24] + [21:16] + [15:10] + bit4; size/Pg/Pdn vary
+// SVE INSR (insert GP scalar): | size<<22 | Rn<<5 | Zdn. LASTA/LASTB -> GP: | size<<22 | B<<16 | Pg<<10 | Zn<<5 | Rd.
+const SVE_INSR_BASE: u32 = 0x0524_3800;
+const SVE_INSR_MASK: u32 = 0xFF3F_FC00; // pins [31:24] + [21:16]=100100 + [15:10]=001110; size/Rn/Zdn vary
+const SVE_LAST_GP_BASE: u32 = 0x0520_A000;
+const SVE_LAST_GP_MASK: u32 = 0xFF3E_E000; // pins [31:24] + [21:17]=10000 + [15:13]=101; size/B/Pg/Zn/Rd vary
+// SVE extract-last (SIMD&FP dest) and conditional-extract (CLASTA/CLASTB to vector/GP/SIMD). All share the mask
+// shape above (0xFF3E_E000); the [21:17]:[15:13] key distinguishes each form. B[16] selects LASTB/CLASTB.
+const SVE_LAST_SIMD_BASE: u32 = 0x0522_8000; // [21:17]=10001, [15:13]=100 -- LASTA/LASTB -> Vd
+const SVE_CLAST_VEC_BASE: u32 = 0x0528_8000; // [21:17]=10100, [15:13]=100 -- CLASTA/CLASTB -> Zdn (destructive)
+const SVE_CLAST_SIMD_BASE: u32 = 0x052A_8000; // [21:17]=10101, [15:13]=100 -- CLASTA/CLASTB -> Vd
+const SVE_CLAST_GP_BASE: u32 = 0x0530_A000; // [21:17]=11000, [15:13]=101 -- CLASTA/CLASTB -> Rdn
+// SVE vector address generation (ADR): | sel<<22 | Zm<<16 | shift<<10 | Zn<<5 | Zd. sel[23:22] picks element +
+// extend (see Arm64SveAdrMode); [21]=1, [15:12]=1010. Shares the 0xFF20_F000 mask VALUE with saturating inc/dec
+// (different [15:12] key: 1010 vs 1111).
+const SVE_ADR_BASE: u32 = 0x0420_A000;
+const SVE_ADR_MASK: u32 = 0xFF20_F000; // pins [31:24] + bit21 + [15:12]=1010; sel/Zm/shift/Zn/Zd vary
+// SVE unpredicated FP reciprocal estimate (FRECPE/FRSQRTE): | size<<22 | sqrt<<16 | Zn<<5 | Zd. [21:17]=00111,
+// [15:10]=001100; bit16 selects FRSQRTE.
+const SVE_FP_RECIP_EST_BASE: u32 = 0x650E_3000;
+const SVE_FP_RECIP_EST_MASK: u32 = 0xFF3E_FC00; // pins [31:24] + [21:17]=00111 + [15:10]=001100; size/sqrt/Zn/Zd vary
+// SVE FEXPA (exponential accelerator): | size<<22 | Zn<<5 | Zd. [21:16]=100000, [15:10]=101110.
+const SVE_FEXPA_BASE: u32 = 0x0420_B800;
+const SVE_FEXPA_MASK: u32 = 0xFF3F_FC00; // pins [31:24] + [21:16]=100000 + [15:10]=101110; size/Zn/Zd vary
+// SVE FTSSEL (trig select coefficient): | size<<22 | Zm<<16 | Zn<<5 | Zd. [21]=1, [15:10]=101100.
+const SVE_FTSSEL_BASE: u32 = 0x0420_B000;
+const SVE_FTSSEL_MASK: u32 = 0xFF20_FC00; // pins [31:24] + bit21 + [15:10]=101100; size/Zm/Zn/Zd vary
+// SVE EXT (byte extract from a pair): | imm8h<<16 | imm8l<<10 | Zm<<5 | Zdn. SPLICE: | size<<22 | Pg<<10 | Zm<<5 | Zdn.
+const SVE_EXT_BASE: u32 = 0x0520_0000;
+const SVE_EXT_MASK: u32 = 0xFF20_E000; // pins [31:24] + bit21 + [15:13]=000; imm8h/imm8l/Zm/Zdn vary
+const SVE_SPLICE_BASE: u32 = 0x052C_8000;
+const SVE_SPLICE_MASK: u32 = 0xFF3F_E000; // pins [31:24] + [21:16]=101100 + [15:13]=100; size/Pg/Zm/Zdn vary
+// SVE COMPACT (pack active) + RBIT (predicated bit-reverse): | size<<22 | Pg<<10 | Zn<<5 | Zd. Both share the
+// SPLICE mask shape (0xFF3F_E000); the [21:16] field distinguishes them (100001 / 100111 / 101100).
+const SVE_COMPACT_BASE: u32 = 0x0521_8000;
+const SVE_RBIT_BASE: u32 = 0x0527_8000;
+// SVE SEL (element select): | size<<22 | Zm<<16 | Pg<<10 | Zn<<5 | Zd. SUNPK/UUNPK: | dest_size<<22 | U<<17 |
+// H<<16 | Zn<<5 | Zd.
+const SVE_SEL_BASE: u32 = 0x0520_C000;
+const SVE_SEL_MASK: u32 = 0xFF20_C000; // pins [31:24] + bit21 + [15:14]=11; size/Zm/Pg/Zn/Zd vary
+const SVE_UNPK_BASE: u32 = 0x0530_3800;
+const SVE_UNPK_MASK: u32 = 0xFF3C_FC00; // pins [31:24] + [21:18]=1100 + [15:10]=001110; size/U/H/Zn/Zd vary
+// SVE bitwise logical with immediate: | opc<<22 | imm13<<5 | Zdn. imm13 = N[17]:immr[16:11]:imms[10:5].
+const SVE_BITWISE_IMM_BASE: u32 = 0x0500_0000;
+const SVE_BITWISE_IMM_MASK: u32 = 0xFF3C_0000; // pins [31:24] + [21:18]=0000; opc/imm13/Zdn vary
+// SVE predicated FP convert: 0x6500_A000 | disc<<16 | Pg<<10 | Zn<<5 | Zd, where disc=[23:16] is an irregular
+// opcode/size discriminant. Shares the 0x65../[15:13]=101 frame with the predicated FP-unary group, so decode is
+// a table lookup (the convert disc bytes are disjoint from every FP-unary opcode). The 34 legal triples below are
+// each confirmed against GNU + LLVM. Tuple: (disc, kind, dest_element, src_element).
+const SVE_FP_CONVERT_BASE: u32 = 0x6500_A000;
+const SVE_FP_CONVERT_FRAME_MASK: u32 = 0xFF00_E000; // pins [31:24]=0x65 + [15:13]=101; disc/Pg/Zn/Zd vary
+const SVE_FP_CONVERTS: [(
+    u32,
+    Arm64SveFpConvertKind,
+    Arm64VectorElement,
+    Arm64VectorElement,
+); 34] = {
+    use Arm64SveFpConvertKind::{Fcvt, Fcvtzs, Fcvtzu, Scvtf, Ucvtf};
+    use Arm64VectorElement::{D, H, S};
+    [
+        // FCVT -- change of precision (dest, src both FP).
+        (0x88, Fcvt, H, S),
+        (0xC8, Fcvt, H, D),
+        (0x89, Fcvt, S, H),
+        (0xCA, Fcvt, S, D),
+        (0xC9, Fcvt, D, H),
+        (0xCB, Fcvt, D, S),
+        // FCVTZS -- FP (src) to signed integer (dest).
+        (0x5A, Fcvtzs, H, H),
+        (0x5C, Fcvtzs, S, H),
+        (0x5E, Fcvtzs, D, H),
+        (0x9C, Fcvtzs, S, S),
+        (0xDC, Fcvtzs, D, S),
+        (0xD8, Fcvtzs, S, D),
+        (0xDE, Fcvtzs, D, D),
+        // FCVTZU -- FP (src) to unsigned integer (dest) = FCVTZS disc | 1.
+        (0x5B, Fcvtzu, H, H),
+        (0x5D, Fcvtzu, S, H),
+        (0x5F, Fcvtzu, D, H),
+        (0x9D, Fcvtzu, S, S),
+        (0xDD, Fcvtzu, D, S),
+        (0xD9, Fcvtzu, S, D),
+        (0xDF, Fcvtzu, D, D),
+        // SCVTF -- signed integer (src) to FP (dest).
+        (0x52, Scvtf, H, H),
+        (0x54, Scvtf, H, S),
+        (0x56, Scvtf, H, D),
+        (0x94, Scvtf, S, S),
+        (0xD0, Scvtf, D, S),
+        (0xD4, Scvtf, S, D),
+        (0xD6, Scvtf, D, D),
+        // UCVTF -- unsigned integer (src) to FP (dest) = SCVTF disc | 1.
+        (0x53, Ucvtf, H, H),
+        (0x55, Ucvtf, H, S),
+        (0x57, Ucvtf, H, D),
+        (0x95, Ucvtf, S, S),
+        (0xD1, Ucvtf, D, S),
+        (0xD5, Ucvtf, S, D),
+        (0xD7, Ucvtf, D, D),
+    ]
+};
+
+// FEAT_SVE2p2 zeroing-predicate FP converts (the `Pg/Z` forms of SVE_FP_CONVERTS). Relocated to the 0x64.. frame;
+// unlike the merging form's regular disc<<16 these bases are irregular, so the full [31:13] base is stored and
+// matched under SVE_FP_CONVERT_ZEROING_MASK. Tuple: (base, kind, dest_element, src_element). Each byte confirmed
+// against binutils-trunk's aarch64-tbl.h SVE2p2 entries + GNU/LLVM-20.
+const SVE_FP_CONVERT_ZEROING_MASK: u32 = 0xFFFF_E000; // pins [31:13]; Pg[12:10]/Zn[9:5]/Zd[4:0] vary
+const SVE_FP_CONVERTS_ZEROING: [(
+    u32,
+    Arm64SveFpConvertKind,
+    Arm64VectorElement,
+    Arm64VectorElement,
+); 34] = {
+    use Arm64SveFpConvertKind::{Fcvt, Fcvtzs, Fcvtzu, Scvtf, Ucvtf};
+    use Arm64VectorElement::{D, H, S};
+    [
+        // FCVT -- change of precision (dest, src both FP).
+        (0x649A_A000, Fcvt, S, H),
+        (0x64DA_A000, Fcvt, D, H),
+        (0x649A_8000, Fcvt, H, S),
+        (0x64DA_E000, Fcvt, D, S),
+        (0x64DA_8000, Fcvt, H, D),
+        (0x64DA_C000, Fcvt, S, D),
+        // FCVTZS -- FP (src) to signed integer (dest).
+        (0x645E_C000, Fcvtzs, H, H),
+        (0x645F_8000, Fcvtzs, S, H),
+        (0x645F_C000, Fcvtzs, D, H),
+        (0x649F_8000, Fcvtzs, S, S),
+        (0x64DF_8000, Fcvtzs, D, S),
+        (0x64DE_8000, Fcvtzs, S, D),
+        (0x64DF_C000, Fcvtzs, D, D),
+        // FCVTZU -- FP (src) to unsigned integer (dest).
+        (0x645E_E000, Fcvtzu, H, H),
+        (0x645F_A000, Fcvtzu, S, H),
+        (0x645F_E000, Fcvtzu, D, H),
+        (0x649F_A000, Fcvtzu, S, S),
+        (0x64DF_A000, Fcvtzu, D, S),
+        (0x64DE_A000, Fcvtzu, S, D),
+        (0x64DF_E000, Fcvtzu, D, D),
+        // SCVTF -- signed integer (src) to FP (dest).
+        (0x645C_C000, Scvtf, H, H),
+        (0x645D_8000, Scvtf, H, S),
+        (0x649D_8000, Scvtf, S, S),
+        (0x64DC_8000, Scvtf, D, S),
+        (0x645D_C000, Scvtf, H, D),
+        (0x64DD_8000, Scvtf, S, D),
+        (0x64DD_C000, Scvtf, D, D),
+        // UCVTF -- unsigned integer (src) to FP (dest).
+        (0x645C_E000, Ucvtf, H, H),
+        (0x645D_A000, Ucvtf, H, S),
+        (0x649D_A000, Ucvtf, S, S),
+        (0x64DC_A000, Ucvtf, D, S),
+        (0x645D_E000, Ucvtf, H, D),
+        (0x64DD_A000, Ucvtf, S, D),
+        (0x64DD_E000, Ucvtf, D, D),
+    ]
+};
+
+// LSE atomic memory operations (ARMv8.1): size[31:30] 111 0 00 A R 1 Rs[20:16] o3[15] opc[14:12] 00 Rn Rt. The
+// RMW base (o3=0) carries opc via the op enum; SWP sets o3=1. Mask pins [29:24]=111000 + bit21=1 + bits[11:10]=00,
+// which keeps this distinct from the register-offset group (bits[11:10]=10) that shares [29:24]+bit21.
+const LSE_RMW_BASE: u32 = 0x3820_0000; // o3=0 -- LDADD/LDCLR/LDEOR/LDSET/LD{S,U}{MAX,MIN}
+const SWP_BASE: u32 = 0x3820_8000; // o3=1 -- SWP
+const LSE_ATOMIC_MASK: u32 = 0x3F20_0C00;
+const LSE_ATOMIC_BASE: u32 = 0x3820_0000;
+// FEAT_LSUI unprivileged LSE atomics (LDTADD/LDTCLR/LDTSET/SWPT): 0 size[30] 011001 A R 1 Rs[20:16] o3:opc[15:12]
+// 01 Rn Rt. Distinct from the privileged LSE atomics (0x38, [11:10]=00) and LSE128 (0x19, [11:10]=00) by [11:10]=01;
+// bit31 is fixed 0 (W/X only -- bit30 is the single size bit). The op enum carries the [15:12] o3:opc field.
+const LSUI_ATOMIC_BASE: u32 = 0x1920_0400;
+const LSUI_ATOMIC_MASK: u32 = 0xBF20_0C00; // pins bit31=0 + [29:24]=011001 + bit21=1 + [11:10]=01; frees size/A/R/Rs/opc/Rn/Rt
+
+// system: memory barriers (DMB/DSB in the hint/barrier space, CRm[11:8] = option), exception-generating
+// (BRK/SVC, imm16[20:5]), and the MRS/MSR system-register move.
+const DMB_BASE: u32 = 0xD503_30BF; // DMB; CRm[11:8] supplies the option (opc2[7:5] = 101)
+const DSB_BASE: u32 = 0xD503_309F; // DSB; opc2[7:5] = 100
+const ISB_WORD: u32 = 0xD503_3FDF; // ISB SY (fixed; opc2[7:5] = 110, CRm = 1111)
+const SB_WORD: u32 = 0xD503_30FF; // SB speculation barrier (fixed; opc2[7:5] = 111, CRm = 0000)
+const SSBB_WORD: u32 = 0xD503_309F; // SSBB = DSB #0 (CRm = 0000, opc2 = 100)
+const PSSBB_WORD: u32 = 0xD503_349F; // PSSBB = DSB #4 (CRm = 0100, opc2 = 100)
+const CLREX_BASE: u32 = 0xD503_305F; // CLREX #CRm (opc2[7:5] = 010; CRm[11:8] = imm, conventionally 15)
+const WFXT_BASE: u32 = 0xD503_1000; // WFET Xt (op2=000); WFIT sets op2 bit5; Rt[4:0]
+const WFXT_MASK: u32 = 0xFFFF_FFC0; // pins [31:6]; op2-low[5] picks WFET/WFIT, Rt[4:0] varies
+const BARRIER_MASK: u32 = 0xFFFF_F0FF; // pins everything except CRm[11:8]
+const BRK_BASE: u32 = 0xD420_0000; // BRK #imm16 (imm16 at [20:5])
+const SVC_BASE: u32 = 0xD400_0001; // SVC #imm16
+const HVC_BASE: u32 = 0xD400_0002; // HVC #imm16 (opc 000, LL 10)
+const SMC_BASE: u32 = 0xD400_0003; // SMC #imm16 (opc 000, LL 11)
+const HLT_BASE: u32 = 0xD440_0000; // HLT #imm16 (opc 010, LL 00)
+const DCPS1_BASE: u32 = 0xD4A0_0001; // DCPS1 #imm16 (opc 101, LL 01); DCPS2/3 are LL 10/11
+const ERET_WORD: u32 = 0xD69F_03E0; // ERET (fixed)
+const DRPS_WORD: u32 = 0xD6BF_03E0; // DRPS (fixed)
+const RMIF_BASE: u32 = 0xBA00_0400; // RMIF Xn, #shift, #mask (imm6[20:15], Rn[9:5], mask[3:0])
+const SETF_BASE: u32 = 0x3A00_080D; // SETF8 Wn (sz[14]=0); SETF16 sets sz[14]=1; Rn[9:5]
+const CFINV_WORD: u32 = 0xD500_401F; // CFINV (fixed)
+const XAFLAG_WORD: u32 = 0xD500_403F; // XAFLAG (fixed)
+const AXFLAG_WORD: u32 = 0xD500_405F; // AXFLAG (fixed)
+const EXCEPTION_MASK: u32 = 0xFFE0_001F; // pins the opcode framing; imm16[20:5] varies
+const RMIF_MASK: u32 = 0xFFE0_7C10; // RMIF: pins [31:21] + [14:10]=00001 + bit4; imm6/Rn/mask vary
+const SETF_MASK: u32 = 0xFFFF_BC1F; // SETF8/16: pins all but sz[14] and Rn[9:5]
+const MRS_BASE: u32 = 0xD530_0000; // MRS Xt, sysreg (L=1); sysreg specifier at [19:5]
+const MSR_BASE: u32 = 0xD510_0000; // MSR sysreg, Xt (L=0)
+const SYSREG_MOVE_MASK: u32 = 0xFFF0_0000; // pins [31:20] = the MRS/MSR framing (0xD53 / 0xD51)
+const MRRS_BASE: u32 = 0xD570_0000; // FEAT_SYSREG128 MRRS (read, L=1, [22]=1); sysreg specifier at [19:5], even Rt pair
+const MSRR_BASE: u32 = 0xD550_0000; // FEAT_SYSREG128 MSRR (write, L=0, [22]=1)
+const MSR_IMM_BASE: u32 = 0xD500_401F; // MSR <pstate>, #imm; op1[18:16], CRm[11:8]=imm, op2[7:5] vary
+const MSR_IMM_MASK: u32 = 0xFFF8_F01F; // pins [31:19] + CRn[15:12]=0100 + Rt[4:0]=11111; op1/CRm/op2 vary
+const SYS_BASE: u32 = 0xD508_0000; // SYS #op1, Cn, Cm, #op2{, Xt} (L=0); op1/CRn/CRm/op2/Rt vary
+const SYSL_BASE: u32 = 0xD528_0000; // SYSL Xt, #op1, Cn, Cm, #op2 (L=1)
+const SYS_MASK: u32 = 0xFFF8_0000; // pins [31:19] (incl. op0=01 + L); op1/CRn/CRm/op2/Rt vary
+const TRCIT_BASE: u32 = 0xD50B_72E0; // FEAT_ITE TRCIT Xt: SYS #3,C7,C2,#7 with Rt=0; Rt[4:0] is the operand
+const SYS_ALIAS_RT_MASK: u32 = 0xFFFF_FFE0; // pins [31:5] (the whole SYS framing); leaves Rt[4:0] for the alias operand
+
+// load/store pair, W and X, all three index modes: base | (opc << 30) | (imm7 << 15) | (Rt2 << 10) | (Rn << 5)
+// | Rt, where opc = sf << 1 (W => 00, X => 10). The bases below carry opc = 0 (the W form); the encoder ORs in
+// (width.sf() << 31). The idx[24:23] + L[22] discriminant is FOLDED into each base: idx = offset 10 / pre 11 /
+// post 01, L = store 0 / load 1. The 64-bit (X) bases are these | 0x8000_0000 (STP(X) offset 0xA900_0000, ...).
+// All six bases verified vs DDI0487 C6.2 + both GNU binutils 2.42 and llvm-mc (identical).
+const STP_OFF_BASE: u32 = 0x2900_0000; // opc 0, idx 10 (offset), L 0
+const LDP_OFF_BASE: u32 = 0x2940_0000; // idx 10, L 1
+const STP_PRE_BASE: u32 = 0x2980_0000; // idx 11 (pre-index), L 0
+const LDP_PRE_BASE: u32 = 0x29C0_0000; // idx 11, L 1
+const STP_POST_BASE: u32 = 0x2880_0000; // idx 01 (post-index), L 0
+const LDP_POST_BASE: u32 = 0x28C0_0000; // idx 01, L 1
+// SIMD&FP load/store PAIR (LDP/STP St/Dt/Qt), offset/pre/post-index: the same LDST_PAIR_MASK frame but V=1 (the
+// 0x2C pair family), idx[24:23] != 00 (idx=00 is the non-temporal LDNP/STNP form). opc[31:30] = 00/01/10 -> S/D/Q
+// is dropped by the mask and recovered here; the six bases below fold idx + L exactly like the GP pair bases.
+const VEC_STP_OFF_BASE: u32 = 0x2D00_0000; // V=1, idx 10 (offset), L 0
+const VEC_LDP_OFF_BASE: u32 = 0x2D40_0000; // idx 10, L 1
+const VEC_STP_PRE_BASE: u32 = 0x2D80_0000; // idx 11 (pre-index), L 0
+const VEC_LDP_PRE_BASE: u32 = 0x2DC0_0000; // idx 11, L 1
+const VEC_STP_POST_BASE: u32 = 0x2C80_0000; // idx 01 (post-index), L 0
+const VEC_LDP_POST_BASE: u32 = 0x2CC0_0000; // idx 01, L 1
+
+// ---- masks for the decoder (the fixed-bit pattern that identifies each encoding) ----
+
+// Group masks share fixed bits across operand fields. For the register-branch group the whole non-Rn field
+// is fixed; for the immediate/register data-processing groups the opcode + size + the always-zero bits are.
+const UNCOND_BRANCH_REG_MASK: u32 = 0xFFFF_FC1F; // RET/BR/BLR: only Rn (bits [9:5]) varies
+// add/sub-immediate + move-wide are W-capable: the mask CLEARS bit 31 (sf) so it matches BOTH the sf=0 (W) and
+// sf=1 (X) words against the sf=0 base; the decoder recovers width from bit 31. (Original X-only mask was
+// 0xFF80_0000; & 0x7FFF_FFFF drops sf.) op/opc + the fixed bits below sf still discriminate the family; sh/hw/
+// imm/Rn/Rd vary.
+const ADDSUB_IMM_MASK: u32 = 0x7F80_0000; // (sf cleared) op+S+fixed; sh/imm12/Rn/Rd vary
+const MOVE_WIDE_MASK: u32 = 0x7F80_0000; // (sf cleared) opc+fixed; hw/imm16/Rd vary
+// PC-relative addressing: fixed bits op[31] + [28:24]=10000; immlo[30:29], immhi[23:5], Rd[4:0] vary. op
+// distinguishes ADR (0) from ADRP (1). 0x8000_0000 (op) | 0x1F00_0000 (bits[28:24]) = 0x9F00_0000. (bit24=0
+// separates these from add/sub-immediate, whose [28:24]=10001.)
+const PCREL_MASK: u32 = 0x9F00_0000;
+// NOTE: these MUST mask the shift-type bits [23:22] (and bit 21) so a non-LSL shift -- or the extended-register
+// form (bit 21 = 1) -- falls through this arm instead of mis-decoding as the LSL variant. The
+// model-level round-trip sweep cannot catch that mis-decode (it is still a model fixed point); only the GNU
+// differential oracle does. `0xFFE0_0000` = the fixed bits [31:21] of each LSL-shift, shifted-register form.
+// W-capable: the mask CLEARS bit 31 (sf) so it matches BOTH widths against the sf=0 base; width is recovered
+// from bit 31. (Original X-only mask 0xFFE0_0000; & 0x7FFF_FFFF drops sf.) The fixed bits [30:21] still pin the
+// family + LSL shift-type, so a non-LSL shift (unmodeled) / extended-register form (decoded separately) still falls through this arm.
+const ADDSUB_SHIFT_REG_MASK: u32 = 0x7FE0_0000; // (sf cleared) op+S+01011+shift(23:22=00)+bit21(=0); Rm/imm6/Rn/Rd vary
+const LOGICAL_SHIFT_REG_MASK: u32 = 0x7FE0_0000; // (sf cleared) opc+01010+shift(23:22=00)+N(21); opc+N select the op
+// data-processing (2 source): the fixed bits are [31:21] (sf=1,0,S=0,11010110) AND the 6-bit opcode
+// [15:10] that names the operation. The mask MUST cover [15:10] so e.g. UDIV (opcode 000010) does not
+// mis-decode as SDIV/LSLV/etc.; Rm[20:16]/Rn[9:5]/Rd[4:0] vary. (Same disambiguation lesson as the
+// shifted-register `0xFF20_0000`->`0xFFE0_0000` fix.) 0xFFE0_0000 | 0x0000_FC00 = 0xFFE0_FC00.
+// W-capable: bit 31 (sf) CLEARED so it matches BOTH widths against the sf=0 base; width recovered from bit 31.
+// (Original 0xFFE0_FC00; & 0x7FFF_FFFF drops sf.)
+const DP_TWO_SOURCE_MASK: u32 = 0x7FE0_FC00;
+// CRC32: the 2-source mask WITH bit31 (sf) kept, since sf is baked into each op's base (set for the *x ops).
+const CRC32_MASK: u32 = 0xFFE0_FC00;
+// data-processing (3 source): the discriminant bits are op54=00,11011,op31[23:21] AND o0[15], plus sf. The
+// mask MUST cover op31 + o0 so MADD/MSUB (op31 000, o0 0/1), SMULH (op31 010), and UMULH (op31 110) each
+// resolve uniquely; the W-mixed long forms (op31 001/101) and FEAT_CPA MADDPT/MSUBPT (op31 011) are decoded by
+// their own arms below, and the UNALLOCATED slots fall through to InvalidOpcode. The mask intentionally does NOT cover
+// Ra[14:10]: it is an operand for MADD/MSUB. SMULH/UMULH require Ra==11111, which the decoder checks explicitly.
+//
+// MADD/MSUB are W-capable, so the SHARED mask CLEARS bit 31 (sf) and matches both widths against the sf=0 base;
+// width is recovered from bit 31. (0xFFE0_8000 & 0x7FFF_FFFF = 0x7FE0_8000.) SMULH/UMULH are 64-bit ONLY, so
+// they are matched against the SEPARATE full mask (bit 31 kept) below -- a sf=0 word in their op31 slot is NOT
+// a modeled instruction and must not mis-decode as a phantom W-SMULH.
+const DP_THREE_SOURCE_MASK: u32 = 0x7FE0_8000; // (sf cleared) for the W-capable MADD/MSUB
+const DP_THREE_SOURCE_X_MASK: u32 = 0xFFE0_8000; // (sf kept) for the 64-bit-only SMULH/UMULH
+// conditional select: the discriminant is [31:21] (sf=1, op[30], S=0, 11010100) AND o2[11:10] (bit11=0, bit10
+// selects the inc/neg variant). The mask MUST cover op + o2[11:10] so CSEL/CSINC/CSINV/CSNEG each resolve
+// uniquely, and the UNALLOCATED op2=1x slots + every sf=0 W-form fall through to InvalidOpcode; cond[15:12] +
+// Rm[20:16]/Rn[9:5]/Rd[4:0] vary. 0xFFE0_0000 (bits[31:21]) | 0x0000_0C00 (bits[11:10]) = 0xFFE0_0C00.
+// W-capable: bit 31 (sf) CLEARED so it matches BOTH widths against the sf=0 base; width recovered from bit 31.
+// (Original 0xFFE0_0C00; & 0x7FFF_FFFF drops sf.)
+const COND_SELECT_MASK: u32 = 0x7FE0_0C00;
+// conditional compare: pins op[30] + S[29]=1 + [28:21]=11010010 + reg/imm[11] + o2[10]=0 + o3[4]=0; drops sf
+// (bit 31, recovered as width) + Rm|imm5[20:16] + cond[15:12] + Rn[9:5] + nzcv[3:0]. 0x7FE0_0000 (op+S+fixed) |
+// 0x800 (bit11) | 0x400 (o2) | 0x10 (o3) = 0x7FE0_0C10. op AND bit11 are IN the mask, so the four variants
+// resolve uniquely and reserved o2/o3=1 words fall to InvalidOpcode (no out-of-mask discriminant, unlike LDP's opc).
+const COND_COMPARE_MASK: u32 = 0x7FE0_0C10;
+// bitfield: pins opc[30:29] + [28:23]=100110; drops sf[31] (width), N[22] (validated == sf in decode), immr/imms/
+// Rn/Rd. 0x6000_0000 (opc) | 0x1F80_0000 ([28:23]) = 0x7F80_0000. (Same numeric mask as move-wide/add-sub-imm, but
+// the base's [28:23]=100110 is distinct, so no cross-family match.)
+const BITFIELD_MASK: u32 = 0x7F80_0000;
+const UNCOND_BRANCH_IMM_MASK: u32 = 0xFC00_0000; // op+fixed; imm26 varies
+const COND_BRANCH_MASK: u32 = 0xFF00_0010; // fixed bits + the o1(bit4)=0 / o0(bit24)... ; imm19/cond vary
+const COMPARE_BRANCH_MASK: u32 = 0x7F00_0000; // (sf cleared) [30:25]=011010 + op[24]; imm19/Rt vary
+const TEST_BRANCH_MASK: u32 = 0x7F00_0000; // (b5 cleared) [30:25]=011011 + op[24]; b40/imm14/Rt vary
+// load/store register (unsigned immediate): the discriminant bits are [29:24] = 111001 (the group + V=0 +
+// 01), opc bit 23 = 0 (plain integer, not a signed load), and opc bit 22 = L (store/load). The mask MUST drop
+// size[31:30] (now an operand -- recovered from bits [31:30]) yet pin [29:22], so all four sizes match the
+// size=0 base while the neighbor groups (each modeled in its own arm) fall through: bit 24 = 0 separates the unscaled/pre/post/
+// register-offset cluster, and bit 23 = 1 separates the signed loads (LDRSB/SH/SW) and bit 26 = V = 1 the
+// SIMD/FP forms -- all of which are inside this mask. (0xFFC0_0000 with size dropped = 0x3FC0_0000.) The
+// size bits being masked out makes the masked STR base 0x3900_0000 and LDR base 0x3940_0000.
+const LDST_UIMM_MASK: u32 = 0x3FC0_0000; // (size dropped) [29:22] = group+V+01+opc23+L; imm12/Rn/Rt vary
+// SIMD&FP single-register load/store, unsigned-offset: the V bit (26) = 1 separates it from the GP form. The
+// mask pins [29:24]=111101 (group + V=1 + 01 + the unsigned-offset bit 24) and EXCLUDES size[31:30] + opc[23:22],
+// which decode reads as fields (size_field + opc_high select B/H/S/D/Q; the L bit at 22 picks load vs store).
+const VEC_LDST_UIMM_MASK: u32 = 0x3F00_0000;
+const VEC_LDST_UIMM_BASE: u32 = 0x3D00_0000;
+// load/store pair: the discriminant is [29:25] = 10100 (the pair group + V=0 + bit25=0), idx[24:23], and
+// L[22]. The mask drops opc[31:30] (the W/X width operand, recovered from bit 31) and pins [29:22], so both
+// widths match the opc=0 bases and each (idx, L) pair resolves to exactly one variant; the idx=00 no-allocate
+// LDNP/STNP slot has no base in this pair group and is decoded by its own no-allocate-pair arm. Numerically this is the SAME mask as
+// the register-uimm group (0x3FC0_0000), but the bases never collide: bit 28 = 1 for register-uimm vs 0 for
+// pair, so a given word matches at most one family. (Both verified exhaustively against GNU+LLVM.)
+const LDST_PAIR_MASK: u32 = 0x3FC0_0000; // (opc dropped) [29:22] = pair group+V+0+idx+L; imm7/Rt2/Rn/Rt vary
+
+// scalar floating-point data-processing (2 source): base | (ftype << 22) | (Rm << 16) | (Rn << 5) | Rd. The
+// S-form base is the masked key; the D-form sets bit 22 (ftype=01). opcode[15:12] selects the operation.
+const FADD_FP_BASE: u32 = 0x1E20_2800; // single (S); opcode 0010
+const FSUB_FP_BASE: u32 = 0x1E20_3800; // opcode 0011
+const FMUL_FP_BASE: u32 = 0x1E20_0800; // opcode 0000
+const FDIV_FP_BASE: u32 = 0x1E20_1800; // opcode 0001
+const FP_DATA_TWO_SOURCE_MASK: u32 = 0xFF20_FC00; // pins [31:24]+bit21+opcode[15:12]+[11:10]; drops ftype[23:22]+Rm+Rn+Rd (so half ftype=11 decodes; reserved ftype=10 is rejected by from_ftype_bits)
+
+// scalar floating-point data-processing (1 source): base | (ftype << 22) | (Rn << 5) | Rd. opcode[20:15]
+// selects the operation; bits [14:10] = 10000 fixed. (FCVT, which changes precision, is opcode 000100/000101
+// and is modeled separately.)
+const FMOV_FP_BASE: u32 = 0x1E20_4000; // single (S); opcode 000000 (FP->FP register move)
+const FABS_FP_BASE: u32 = 0x1E20_C000; // opcode 000001
+const FNEG_FP_BASE: u32 = 0x1E21_4000; // opcode 000010
+const FSQRT_FP_BASE: u32 = 0x1E21_C000; // opcode 000011
+const FP_DATA_ONE_SOURCE_MASK: u32 = 0xFFBF_FC00; // pins [31:24]+bit23+bit21+opcode[20:15]+[14:10]; drops ftype(22)+Rn+Rd. Kept bit23-pinned for the S/D-only FRINTTS (FRINT32/64X/Z), which have no half form.
+// As above but with bit23 (ftype high) DROPPED, for the half-capable 1-source ops (FNEG/FABS/FSQRT/FMOV/FRINTN/P/M/Z/A):
+// half = ftype 11 must decode; the reserved ftype 10 is rejected by from_ftype_bits.
+const FP_DATA_ONE_SOURCE_HALF_MASK: u32 = 0xFF3F_FC00;
+
+// scalar FP convert-precision (FCVT, H/S/D): base | (src.ftype()<<22) | (dst.ftype()<<15) | (Rn<<5) | Rd. The
+// source precision is the `ftype` [23:22], the destination the `opc` [16:15] (same 2-bit code S=00/D=01/H=11).
+// One variant covers all six pairs. The mask pins the fixed framing
+// ([31:24]=00011110, [21:17]=10001, [14:10]=10000) and drops ftype/opc/Rn/Rd.
+const FCVT_BASE: u32 = 0x1E22_4000;
+const FCVT_MASK: u32 = 0xFF3E_7C00;
+
+// scalar convert FP<->FIXED-POINT (SCVTF/UCVTF int->fixed; FCVTZS/FCVTZU fixed->int): base | (sf<<31) | (ftype<<22)
+// | (scale<<10) | (Rn<<5) | Rd, scale = 64 - fbits. bit21=0 (vs 1 for the integer-form converts); rmode[20:19] +
+// opcode[18:16] select the op. The mask pins [30:24]+bit21+rmode+opcode, dropping sf/ftype/scale/Rn/Rd.
+const SCVTF_FIXED_BASE: u32 = 0x1E02_0000; // rmode 00, opcode 010 (signed int -> fixed)
+const UCVTF_FIXED_BASE: u32 = 0x1E03_0000; // rmode 00, opcode 011 (unsigned int -> fixed)
+const FCVTZS_FIXED_BASE: u32 = 0x1E18_0000; // rmode 11, opcode 000 (fixed -> signed int, toward zero)
+const FCVTZU_FIXED_BASE: u32 = 0x1E19_0000; // rmode 11, opcode 001 (fixed -> unsigned int, toward zero)
+const FP_CONVERT_FIXED_MASK: u32 = 0x7F3F_0000;
+
+// FJCVTZS (JavaScript double->int32, FEAT_JSCVT): a fully fixed encoding; only Rn/Rd vary.
+const FJCVTZS_BASE: u32 = 0x1E7E_0000;
+const FJCVTZS_MASK: u32 = 0xFFFF_FC00;
+
+// Advanced SIMD "three same" lane arithmetic: 0 Q U 01110 size 1 Rm opcode[15:11] 1 Rn Rd. The op sub-enum
+// supplies the size=0/Q=0 base (U + opcode, and bit23 for the FP forms); the arrangement supplies Q[30] +
+// size[23:22] (integer) or sz[22] (FP). The masks pin the op-identifying bits and drop Q/size/Rm/Rn/Rd.
+const VEC_INT_THREE_SAME_MASK: u32 = 0x3F20_FC00; // U[29] + [28:24] + bit21 + opcode[15:11] + bit10
+// NEON permute (ZIP/UZP/TRN) shares the three-same mask *value* (0x3F20_FC00) but the permute frame has bit21=0
+// while three-same has bit21=1 -- so the masked bases never collide. opcode is [14:12], with [15]=0 fixed.
+const VEC_PERMUTE_MASK: u32 = 0x3F20_FC00;
+// NEON three-different (widening/narrowing) shares the mask value too, but its frame has bits[11:10]=00 (the
+// three-same/permute frames have 10), so the masked bases stay distinct. U[29] + opcode[15:12] are in the mask.
+const VEC_THREE_DIFFERENT_MASK: u32 = 0x3F20_FC00;
+// FCMLA/FCADD (complex FP): three-same-extra with [21]=0. FCMLA pins [15:13]=110 + [10]=1 (rot at [12:11]);
+// FCADD pins [15:13]=111 + [11:10]=01 (rot at [12]). Distinct bases from SDOT/RDM under their masks.
+const VEC_FCMLA_MASK: u32 = 0x3F20_E400;
+const VEC_FCMLA_BASE: u32 = 0x2E00_C400;
+// NEON FCMLA by indexed element (FEAT_FCMA): 0 Q 1 01111 size L M Rm rot 1 H 0 Rn Rd. The mask pins the family
+// (U=1, [28:24]=01111) + [15]=0 + [12]=1 + [10]=0, which distinguishes it from the other by-element FP ops
+// (FMUL/FMULX/FMLA set [15] or a different [12]); size[23:22], Q[30], L/M/Rm, rot[14:13], H[11] all vary.
+const VEC_FCMLA_IDX_BASE: u32 = 0x2F00_1000;
+const VEC_FCMLA_IDX_MASK: u32 = 0xBF00_9400; // pins [31]=0 + [29:24]=101111 + [15]=0 + [12]=1 + [10]=0
+// NEON SHLL/SHLL2 (shift left long by element size): two-register-misc, U=1, opcode 10011. Source size B/H/S.
+const VEC_SHLL_BASE: u32 = 0x2E21_3800;
+const VEC_FCADD_MASK: u32 = 0x3F20_EC00;
+const VEC_FCADD_BASE: u32 = 0x2E00_E400;
+// Integer matrix-multiply (SMMLA/UMMLA/USMMLA): fixed .4s/.16b, so pin everything except Rm/Rn/Rd. The op's U
+// (bit29) + opcode bit (bit11) live in op.base().
+const VEC_MATRIX_MASK: u32 = 0xFFE0_FC00;
+// Scalar three-same: pin [31:24] (incl. the 01/scalar marker + U), bit21, opcode[15:11], bit10; drop size + regs.
+const SCALAR_THREE_SAME_MASK: u32 = 0xFF20_FC00;
+// Scalar three-same FP: additionally pin bit23 (the E sub-selector); drop sz (bit22) + regs.
+const SCALAR_FP_THREE_SAME_MASK: u32 = 0xFFA0_FC00;
+// Scalar FP16 three-same: pin bit23(E) + bit22(=1) + bit21(=0); the half-precision opcode space.
+const SCALAR_FP16_THREE_SAME_MASK: u32 = 0xFFE0_FC00;
+// Scalar FP16 two-register-misc: fully-pinned frame (dense bases), drop only Rn/Rd.
+const SCALAR_FP16_TWO_MISC_MASK: u32 = 0xFFFF_FC00;
+// Scalar two-register-misc: pin [31:24] + [21:16] (the 10000 frame + opcode high) + opcode[15:12] + [11:10]; the
+// scalar analogue of VEC_INT_UNARY_MASK with [31:30] pinned. Drops size (bit23:22) + regs.
+const SCALAR_TWO_MISC_MASK: u32 = 0xFF3F_FC00;
+// Scalar two-register-misc FP: additionally pin bit23 (E); the scalar analogue of VEC_FP_UNARY_MASK. Drops sz.
+const SCALAR_FP_TWO_MISC_MASK: u32 = 0xFFBF_FC00;
+// Scalar shift-by-immediate: pin [31:23] (the 01 marker + U + 111110 frame) + opcode[15:11] + bit10; drop
+// immh:immb[22:16] + regs. The scalar analogue of VEC_SHIFT_IMM_MASK with [31:30] pinned.
+const SCALAR_SHIFT_IMM_MASK: u32 = 0xFF80_FC00;
+// Scalar by-element: pin [31:24] (the 11111 scalar frame + U) + opcode[15:12] + bit10; drop size + L/M/Rm/H/regs.
+// The scalar analogue of VEC_BY_ELEMENT_MASK with [31:30] pinned (bit28=1 keeps it disjoint from the vector form).
+const SCALAR_BY_ELEMENT_MASK: u32 = 0xFF00_F400;
+// NEON across-lanes reductions reuse the two-register-misc mask *values* (the frame matches but [21:17]=11000 vs
+// the 2-reg-misc 10000, so bases stay distinct). The integer ops carry the lane size in [23:22] (excluded, like
+// VEC_INT_UNARY_MASK); the FP ops bake the size HIGH bit in the op, so their mask includes bit23 (like FP unary).
+const VEC_ACROSS_INT_MASK: u32 = 0x3F3F_FC00;
+const VEC_ACROSS_FP_MASK: u32 = 0x3FBF_FC00;
+// NEON EXT (byte extract): [29:24]=101110 + [23:22]=00 + [21]=0 + [15]=0 + [10]=0. The [21]=0 separates it from
+// the bitwise three-same (which shares [28:24]=01110 with U=1 but has [21]=1); Q + Rm + imm4 + Rn + Rd vary.
+const VEC_EXT_MASK: u32 = 0x3FE0_8400;
+const VEC_EXT_BASE: u32 = 0x2E00_0000;
+// NEON modified immediate (MOVI/MVNI/ORR/BIC vector constant): [28:19]=0111100000 + [11:10]=01. Its immh field
+// [22:19] is 0000 (part of the fixed frame), which is exactly the "not a shift" hole the shift-by-immediate
+// decode rejects -- so this MUST be tried before that decode. cmode/op/Q/imm8/Rd vary.
+const VEC_MODIMM_MASK: u32 = 0x1FF8_0C00;
+const VEC_MODIMM_BASE: u32 = 0x0F00_0400;
+// NEON vector by indexed element: U[29] + [28:24]=01111 + opcode[15:12] + [10]=0. The [10]=0 distinguishes it
+// from the shift-by-immediate / modified-immediate groups (both [10]=1) that share [28:24]=01111. size[23:22] +
+// L[21] + M[20] + Rm[19:16] + H[11] (the index + Vm) and the registers vary.
+const VEC_BY_ELEMENT_MASK: u32 = 0x3F00_F400;
+const VEC_FP_THREE_SAME_MASK: u32 = 0x3FA0_FC00; // + bit23 (FADD vs FSUB differ there)
+// FP16 three-same: like the f32/f64 mask but pin bit22 (fixed 1 for FP16, not a sz field) + bit21 (fixed 0);
+// drop Q (bit30) + regs.
+const VEC_FP16_THREE_SAME_MASK: u32 = 0x3FE0_FC00;
+// FP16 two-register-misc: pin [29:10] (the whole frame + opcode), drop only Q (bit30) + regs -- the bases are
+// dense so a wide mask is needed to keep them apart from one another and from neighbors.
+const VEC_FP16_TWO_MISC_MASK: u32 = 0xBFFF_FC00;
+const VEC_BITWISE_MASK: u32 = 0x3FE0_FC00; // U[29] + frame + size-selector[23:22] + opcode[15:11] + bit10
+const VEC_INT_UNARY_MASK: u32 = 0x3F3F_FC00; // two-reg-misc, size[23:22] EXCLUDED (ABS/NEG take it from the arrangement)
+const VEC_FP_UNARY_MASK: u32 = 0x3FBF_FC00; // + the fixed FP `size` high bit (bit23); `sz` (bit22) excluded
+const VEC_FMLAL_MASK: u32 = 0xBFE0_FC00; // FEAT_FHM FMLAL/FMLAL2/FMLSL/FMLSL2: pins U[29]+[28:21]+sz[23]+[15:10]; Q/Rm/Rn/Rd vary
+// FP8 (FEAT_FP8) two-register-misc convert-long: pin U[29]+frame[28:24]+[21:16]+opcode[15:10]; free Q[30] (lower/
+// upper half), size[23:22] (the op selector), and the regs. Base = F1CVTL with Q=0.
+const FP8_CVTL_MASK: u32 = 0xBF3F_FC00;
+const FP8_CVTL_BASE: u32 = 0x2E21_7800;
+// FP8 FDOT and FMLALL share this mask: pin everything except Q[30], size-low[22], Rm[20:16], and Rn/Rd. The opcode
+// field [15:10] (111111 for FDOT vs 110001 for FMLALL) keeps the two bases disjoint.
+const FP8_DOT_MASK: u32 = 0xBFA0_FC00;
+const FP8_DOT_BASE: u32 = 0x0E00_FC00; // FDOT: opcode 111111, .2s (size 00, Q 0); size-bit[22]=half, Q=wide
+const FP8_MLALL_BASE: u32 = 0x0E00_C400; // FMLALLBB: opcode 110001; Q[30]=first letter (B/T), size-bit[22]=second
+// FP8 FMLALB/FMLALT (2-way widening MAC): size fixed 11, opcode 111111; only Q[30] (B vs T) + regs vary.
+const FP8_MLAL_LONG_MASK: u32 = 0xBFE0_FC00;
+const FP8_MLAL_LONG_BASE: u32 = 0x0EC0_FC00;
+// FP8 indexed-element forms (op0[28:24]=01111). FDOT + FMLALB share U=0 / opcode[15:12]=0000 / bit10=0, dispatched by
+// size[23:22]: 00 = FDOT 4-way (.2s/.4s), 01 = FDOT 2-way (.4h/.8h), 11 = FMLALB/T -- and 10 is FHM FMLAL-by-element
+// (NOT FP8), which falls through. Mask frees Q[30] + size[23:22] + L/M/Rm[21:16] + H[11] + regs.
+const FP8_IDX_DOT_MLALB_MASK: u32 = 0xBF00_F400;
+const FP8_IDX_DOT_MLALB_BASE: u32 = 0x0F00_0000;
+// FP8 indexed FMLALL: U=1 / opcode[15:12]=1000 / bit10=0; size-high[23] fixed 0. Frees Q[30] (first B/T) + size-low[22]
+// (second B/T) + index[21:19] + Rm[18:16] + H[11] + regs.
+const FP8_IDX_MLALL_MASK: u32 = 0xBF80_F400;
+const FP8_IDX_MLALL_BASE: u32 = 0x2F00_8000;
+const VEC_NOT_MASK: u32 = 0x3FFF_FC00; // two-reg-misc with size INCLUDED (NOT is size 00; size 01 is RBIT)
+const VEC_SHIFT_IMM_MASK: u32 = 0x3F80_FC00; // U[29] + frame[28:23]=011110 + opcode[15:11] + bit10 (immh:immb excluded)
+const VEC_COPY_MASK: u32 = 0x3FE0_FC00; // op[29] + frame[28:21]=01110000 + bit15 + imm4[14:11] + bit10 (imm5/Q excluded)
+const VEC_DUP_GENERAL_BASE: u32 = 0x0E00_0C00; // AdvSIMD copy: op=0, imm4=0001
+const VEC_DUP_ELEMENT_BASE: u32 = 0x0E00_0400; // AdvSIMD copy: op=0, imm4=0000 (DUP element)
+const VEC_UMOV_BASE: u32 = 0x0E00_3C00; // op=0, imm4=0111
+const VEC_SMOV_BASE: u32 = 0x0E00_2C00; // op=0, imm4=0101
+// INS (element): op=1, Q=1; imm4 is the SOURCE lane index (varies), so its mask drops imm4 [14:11] from
+// VEC_COPY_MASK (0x3FE0_FC00 & ~0x7800 = 0x3FE0_8400). The base's bit10=1 distinguishes it from EXT (bit10=0),
+// which shares that mask value.
+const VEC_INS_ELEMENT_MASK: u32 = 0x3FE0_8400;
+const VEC_INS_ELEMENT_BASE: u32 = 0x2E00_0400;
+// NEON TBL/TBX (table lookup): [29:24]=001110 + [23:21]=000 + [15]=0 + [11:10]=00. The mask excludes op[12]
+// (TBL/TBX, recovered from the word), len[14:13] (table size), Q, Rm, Rn, Rd. [21]=0 + [11:10]=00 keep it apart
+// from permute ([11:10]=10) and three-different ([21]=1).
+const VEC_TBL_MASK: u32 = 0x3FE0_8C00;
+const VEC_TBL_BASE: u32 = 0x0E00_0000;
+// NEON load/store multiple structures (no-offset): the frame pins [29:23]=0011000 + [21:16]=000000 (the
+// no-offset form -- the post-index forms have [21]=1 or Rm in [20:16]); L[22] + opcode[15:12] + Q + size[11:10]
+// + Rn + Rt vary.
+const VEC_LDST_MULTI_MASK: u32 = 0x3FBF_0000;
+const VEC_LDST_MULTI_BASE: u32 = 0x0C00_0000;
+// Load/store SINGLE structure (no-offset): pin [29:23] (bit24=1 / bit23=0) + [20:16]=00000; drop Q/L/R/opcode/
+// S/size/Rn/Rt.
+const VEC_LDST_SINGLE_MASK: u32 = 0x3F9F_0000;
+const VEC_LDST_SINGLE_BASE: u32 = 0x0D00_0000;
+// Structure load/store POST-INDEX (bit23=1): pin [29:23] (incl. bit24 = multi/single, bit23 = 1) but NOT Rm
+// (which is the immediate marker 11111 or the offset register Xm).
+const VEC_LDST_STRUCT_POST_MASK: u32 = 0x3F80_0000;
+const VEC_LDST_MULTI_POST_BASE: u32 = 0x0C80_0000;
+const VEC_LDST_SINGLE_POST_BASE: u32 = 0x0D80_0000;
+// AES (crypto): a fully-fixed two-register encoding -- the mask pins everything but Rn[9:5] + Rd[4:0]. Decoded
+// first in the vector section so the four AES words are claimed before the data-processing loops.
+const VEC_AES_MASK: u32 = 0xFFFF_FC00;
+// SHA1/SHA256 crypto: the 3-register form pins [31:21]=01011110000 + [11:10]=00 (opcode[15:12] recovered from the
+// word); the 2-register form pins [31:17] + [11:10]=10 (opcode[16:12] recovered). Both decoded in the crypto block.
+const VEC_SHA3_MASK: u32 = 0xFFE0_0C00;
+const VEC_SHA3_BASE: u32 = 0x5E00_0000;
+const VEC_SHA2_MASK: u32 = 0xFFFE_0C00;
+const VEC_SHA2_BASE: u32 = 0x5E28_0800;
+const VEC_INS_GENERAL_BASE: u32 = 0x0E00_1C00; // op=0, imm4=0011 (Q always 1)
+
+// scalar FP compare (FCMP): base | (ftype<<22) | (Rm<<16) | (Rn<<5). opcode2[4:0] = 00000 (register) / 01000
+// (#0.0). The S-form base is the masked key; D sets bit 22.
+const FCMP_REG_BASE: u32 = 0x1E20_2000; // FCMP Fn, Fm
+const FCMP_ZERO_BASE: u32 = 0x1E20_2008; // FCMP Fn, #0.0
+const FCMPE_REG_BASE: u32 = 0x1E20_2010; // FCMPE Fn, Fm  (opcode2[4:0]=10000, the signaling bit [4]=1)
+const FCMPE_ZERO_BASE: u32 = 0x1E20_2018; // FCMPE Fn, #0.0
+const FP_COMPARE_MASK: u32 = 0xFF20_FC1F; // pins [31:24]+bit21+[15:10]+opcode2[4:0]; drops ftype[23:22]+Rm+Rn (half ftype=11 decodes; reserved 10 rejected)
+
+// scalar FP conditional compare (FCCMP/FCCMPE): base | (ftype<<22) | (Rm<<16) | (cond<<12) | (Rn<<5) | (op4<<4)
+// | nzcv. op[4] = FCCMP(0) / FCCMPE(1). [11:10]=01 distinguishes it from FCMP ([11:10]=00) and FCSEL ([11:10]=11).
+const FCCMP_BASE: u32 = 0x1E20_0400;
+const FCCMP_MASK: u32 = 0xFF20_0C00; // pins [31:24]+bit21+[11:10]; drops ftype(23:22)+Rm+cond+Rn+op4+nzcv
+
+// convert FP<->integer (SCVTF/UCVTF/FCVTZS/FCVTZU): base | (sf<<31) | (ftype<<22) | (Rn<<5) | Rd. The GP width
+// (sf, bit 31) and FP precision (ftype, bit 22) are INDEPENDENT discriminants, both recovered on decode, so
+// the mask drops both; rmode[20:19]+opcode[18:16] select the operation. The S-form/W-form (sf=0,ftype=00) base
+// is the masked key.
+const SCVTF_BASE: u32 = 0x1E22_0000; // int->FP signed   (rmode 00, opcode 010)
+const UCVTF_BASE: u32 = 0x1E23_0000; // int->FP unsigned (rmode 00, opcode 011)
+const FCVTZS_BASE: u32 = 0x1E38_0000; // FP->int signed, toward zero   (rmode 11, opcode 000)
+const FCVTZU_BASE: u32 = 0x1E39_0000; // FP->int unsigned, toward zero (rmode 11, opcode 001)
+const FP_CONVERT_INT_MASK: u32 = 0x7F3F_FC00; // pins [30:24]+bit21+rmode+opcode+[15:10]; drops sf(31)+ftype[23:22]+Rn+Rd (so half ftype=11 decodes; reserved ftype=10 rejected by the from_ftype_bits in decode_int_to_fp/decode_fp_to_int)
+// Scalar FP->GP-int convert with explicit rounding mode (FCVT{N,A,P,M}{S,U}): pins [30:24]+bit21+[15:10] only --
+// frees sf(31)+ftype[23:22] (so S/D/H all decode)+rmode[20:19]+opcode[18:16]. The op is recovered from rmode+opcode
+// (Arm64FpToIntRoundOp::from_fields returns None for SCVTF/UCVTF/FCVTZS/FCVTZU/FMOV, which fall through).
+const FP_TO_INT_ROUND_MASK: u32 = 0x7F20_FC00;
+const FP_TO_INT_ROUND_BASE: u32 = 0x1E20_0000;
+
+// FMOV between general-purpose and FP registers (bitwise reinterpret) -- same encoding space as the convert-int
+// family (rmode 00, opcode 110 FP->GP / 111 GP->FP), reusing FP_CONVERT_INT_MASK. The scalar move is W<->S / X<->D,
+// so sf (bit 31) and ftype (bit 22) MUST be equal; the decode validates that (both are dropped by the mask).
+const FMOV_FP_TO_GENERAL_BASE: u32 = 0x1E26_0000; // FMOV Wd, Sn
+const FMOV_GENERAL_TO_FP_BASE: u32 = 0x1E27_0000; // FMOV Sd, Wn
+// FMOV half (ftype=11) reuses the FP<->GP bases (rmode=00, opcode 110/111) with ftype=11 ORed in at encode; the
+// GP width (sf) is independent of the FP precision here. FMOV top-half (Xd<->Vn.D[1]) is rmode=01 (opcode 110/111)
+// with the fixed ftype=10 + sf=1; the bases below carry sf=0/ftype=00 (ORed at encode) so they double as the
+// FP_CONVERT_INT_MASK decode keys (which drop sf + ftype[23:22]).
+const FMOV_TOP_HALF_TO_GENERAL_BASE: u32 = 0x1E2E_0000; // FMOV Xd, Vn.D[1] (rmode=01, opcode 110; +sf<<31 +0b10<<22)
+const FMOV_GENERAL_TO_TOP_HALF_BASE: u32 = 0x1E2F_0000; // FMOV Vd.D[1], Xn (rmode=01, opcode 111)
+
+// scalar FP move-immediate (FMOV Fd, #imm): base | (ftype<<22) | (imm8<<13) | Rd. The S-form base is the
+// masked key (D sets bit 22); the fixed `100 00000` at [12:5] distinguishes it from the other FP groups.
+const FMOV_IMM_BASE: u32 = 0x1E20_1000;
+const FP_IMM_MASK: u32 = 0xFF20_1FE0; // pins [31:24]+bit21+[12:5]; drops ftype[23:22]+imm8[20:13]+Rd[4:0] (half ftype=11 decodes; reserved 10 rejected)
+
+// FP 2-source extras (same family + `FP_DATA_TWO_SOURCE_MASK` as FADD): FMAX/FMIN/FMAXNM/FMINNM/FNMUL, S-form bases.
+const FMAX_FP_BASE: u32 = 0x1E20_4800; // opcode 0100
+const FMIN_FP_BASE: u32 = 0x1E20_5800; // opcode 0101
+const FMAXNM_FP_BASE: u32 = 0x1E20_6800; // opcode 0110
+const FMINNM_FP_BASE: u32 = 0x1E20_7800; // opcode 0111
+const FNMUL_FP_BASE: u32 = 0x1E20_8800; // opcode 1000
+
+// FP 1-source round-to-integral (same family + `FP_DATA_ONE_SOURCE_MASK` as FNEG): FRINTN/P/M/Z/A, S-form bases.
+const FRINTN_FP_BASE: u32 = 0x1E24_4000;
+const FRINTP_FP_BASE: u32 = 0x1E24_C000;
+const FRINTM_FP_BASE: u32 = 0x1E25_4000;
+const FRINTZ_FP_BASE: u32 = 0x1E25_C000;
+const FRINTA_FP_BASE: u32 = 0x1E26_4000;
+const FRINTX_FP_BASE: u32 = 0x1E27_4000; // opcode 001110
+const FRINTI_FP_BASE: u32 = 0x1E27_C000; // opcode 001111
+
+// FP data-processing (3 source): base | (ftype<<22) | (Rm<<16) | (Ra<<10) | (Rn<<5) | Rd. o1[21] + o0[15]
+// select the op; S-form bases (D sets bit 22).
+const FMADD_FP_BASE: u32 = 0x1F00_0000;
+const FMSUB_FP_BASE: u32 = 0x1F00_8000; // o0=1
+const FNMADD_FP_BASE: u32 = 0x1F20_0000; // o1=1
+const FNMSUB_FP_BASE: u32 = 0x1F20_8000; // o1=1, o0=1
+const FP_DATA_THREE_SOURCE_MASK: u32 = 0xFF20_8000; // pins [31:24]+o1[21]+o0[15]; drops ftype[23:22]+Rm+Ra+Rn+Rd (half ftype=11 decodes; reserved 10 rejected)
+
+// FP conditional select: base | (ftype<<22) | (Rm<<16) | (cond<<12) | (Rn<<5) | Rd; [11:10]=11 fixed.
+const FCSEL_FP_BASE: u32 = 0x1E20_0C00;
+const FP_COND_SELECT_MASK: u32 = 0xFF20_0C00; // pins [31:24]+bit21+[11:10]; drops ftype[23:22]+Rm+cond+Rn+Rd (half ftype=11 decodes; reserved 10 rejected)
+
+// data-processing (1 source): base | (sf<<31) | (Rn<<5) | Rd; opcode[15:10] selects the op. W-form bases.
+const RBIT_BASE: u32 = 0x5AC0_0000; // opcode 000000
+const REV16_BASE: u32 = 0x5AC0_0400; // opcode 000001
+const REV_OPC010_BASE: u32 = 0x5AC0_0800; // opcode 000010 (sf-cleared): REV on W (sf=0) / REV32 on X (sf=1)
+const REV_OPC011_BASE: u32 = 0x5AC0_0C00; // opcode 000011 (sf-cleared): REV on X (sf=1); the W slot is unallocated
+const CLZ_BASE: u32 = 0x5AC0_1000; // opcode 000100
+const CLS_BASE: u32 = 0x5AC0_1400; // opcode 000101
+const DP_ONE_SOURCE_MASK: u32 = 0x7FFF_FC00; // pins [30:16]+opcode[15:10]; drops sf(31)+Rn+Rd
+
+// add/subtract with carry: base | (sf<<31) | (Rm<<16) | (Rn<<5) | Rd; [30:29] (op+S) is in the base.
+const ADC_BASE: u32 = 0x1A00_0000;
+const ADCS_BASE: u32 = 0x3A00_0000;
+const SBC_BASE: u32 = 0x5A00_0000;
+const SBCS_BASE: u32 = 0x7A00_0000;
+const ADD_SUB_CARRY_MASK: u32 = 0x7FE0_FC00; // pins [30:21]+[15:10]; drops sf(31)+Rm+Rn+Rd
+
+// extract / ror-immediate (EXTR): base | (Rm<<16) | (imms<<10) | (Rn<<5) | Rd. N must equal sf, baked into the
+// base (W: sf=0,N=0; X: sf=1,N=1).
+const EXTR_W_BASE: u32 = 0x1380_0000;
+const EXTR_X_BASE: u32 = 0x93C0_0000;
+const EXTR_MASK: u32 = 0x7FA0_0000; // pins [30:23]+bit21; drops sf(31)+N(22)+Rm+imms+Rn+Rd (decode validates N==sf)
+
+fn word_le_bytes(word: u32) -> Vec<u8> {
+    word.to_le_bytes().to_vec()
+}
+
+fn check_unsigned_maximum(
+    field: &'static str,
+    value: u32,
+    maximum: u32,
+) -> Result<(), EncodeError> {
+    if value > maximum {
+        return Err(EncodeError::ImmediateOutOfRange {
+            field,
+            value: value as i64,
+            minimum: 0,
+            maximum: maximum as i64,
+        });
+    }
+    Ok(())
+}
+
+// Pack a tszh[23:22]:tszl[20:19]:imm3[18:16] shift value (the SVE2-Accumulate shift form) into the [23:16] bits.
+fn sve2_tsz_field(v: u32) -> u32 {
+    (((v >> 5) & 0x3) << 22) | (((v >> 3) & 0x3) << 19) | ((v & 0x7) << 16)
+}
+
+// Recover (element, esize) from a tszh[23:22]:tszl[20:19]:imm3[18:16] field, or None if the size is unallocated.
+fn decode_sve2_tsz(word: u32) -> Option<(Arm64VectorElement, u32)> {
+    let v = (((word >> 22) & 0x3) << 5) | (((word >> 19) & 0x3) << 3) | ((word >> 16) & 0x7);
+    if v < 8 {
+        return None;
+    }
+    let size_bits = (31 - v.leading_zeros()) - 3;
+    if size_bits > 3 {
+        return None;
+    }
+    Some((
+        Arm64VectorElement::from_size_bits(size_bits),
+        8 << size_bits,
+    ))
+}
+
+// Encode the per-element-width size/index/Zm field packing shared by the SVE/SVE2 by-indexed-element groups (the
+// index loses bits and the indexed register range shrinks as the element grows). Returns the `[23:16]` bits.
+fn encode_sve_indexed_size(
+    size: Arm64VectorElement,
+    index: u32,
+    zm_bits: u32,
+    detail: &'static str,
+) -> Result<u32, EncodeError> {
+    match size {
+        Arm64VectorElement::H => {
+            if index > 7 || zm_bits > 7 {
+                return Err(EncodeError::InvalidOperandCombination { detail });
+            }
+            Ok(((index >> 2) << 22) | ((index & 0b11) << 19) | (zm_bits << 16))
+        }
+        Arm64VectorElement::S => {
+            if index > 3 || zm_bits > 7 {
+                return Err(EncodeError::InvalidOperandCombination { detail });
+            }
+            Ok((0b10 << 22) | ((index & 0b11) << 19) | (zm_bits << 16))
+        }
+        Arm64VectorElement::D => {
+            if index > 1 {
+                return Err(EncodeError::InvalidOperandCombination { detail });
+            }
+            Ok((0b11 << 22) | ((index & 1) << 20) | (zm_bits << 16))
+        }
+        Arm64VectorElement::B => Err(EncodeError::InvalidOperandCombination { detail }),
+    }
+}
+
+// Decode that packing back into (element, index, Zm register field).
+fn decode_sve_indexed_size(word: u32) -> (Arm64VectorElement, u8, u8) {
+    if (word >> 23) & 1 == 0 {
+        (
+            Arm64VectorElement::H,
+            ((((word >> 22) & 1) << 2) | ((word >> 19) & 0b11)) as u8,
+            ((word >> 16) & 0b111) as u8,
+        )
+    } else if (word >> 22) & 1 == 0 {
+        (
+            Arm64VectorElement::S,
+            ((word >> 19) & 0b11) as u8,
+            ((word >> 16) & 0b111) as u8,
+        )
+    } else {
+        (
+            Arm64VectorElement::D,
+            ((word >> 20) & 1) as u8,
+            ((word >> 16) & 0b1111) as u8,
+        )
+    }
+}
+
+// Validate an SVE gather/scatter dtype: the destination/source element must be `.s` or `.d`, the memory access
+// size must not exceed it, and a full-width access (`msz == element`) cannot be signed (there is nothing to
+// sign-extend, so only the unsigned form is defined).
+fn check_sve_gather_element(
+    msz: Arm64VectorElement,
+    element: Arm64VectorElement,
+    signed: bool,
+) -> Result<(), EncodeError> {
+    if !matches!(element, Arm64VectorElement::S | Arm64VectorElement::D) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "an SVE gather/scatter element must be .s or .d",
+        });
+    }
+    if msz.size_bits() > element.size_bits() {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "an SVE gather/scatter access size cannot exceed the element size",
+        });
+    }
+    if signed && msz.size_bits() == element.size_bits() {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "a full-width SVE gather/scatter access has no signed form",
+        });
+    }
+    Ok(())
+}
+
+// The number of bits the slice OFFSET occupies in the 4-bit SME MOVA tile:offset field, by element size (`.b`=4,
+// `.h`=3, `.s`=2, `.d`=1). The tile NUMBER takes the remaining `4 - offs_bits` high bits.
+fn sme_tile_offset_bits(size: Arm64VectorElement) -> u32 {
+    match size {
+        Arm64VectorElement::B => 4,
+        Arm64VectorElement::H => 3,
+        Arm64VectorElement::S => 2,
+        Arm64VectorElement::D => 1,
+    }
+}
+
+// Validate the SME2 strided multi-vector access size and list base, returning the base register number for the `[4:0]`
+// field. The strided base is `z0..7`/`z16..23` (vgx2, the `{Zn, Zn+8}` group) or `z0..3`/`z16..19` (vgx4, the
+// `{Zn, Zn+4, Zn+8, Zn+12}` group) -- i.e. bit3 of the base is always 0 (it carries the non-temporal bit instead), and
+// for vgx4 bit2 is also 0.
+fn check_sme2_strided_base(
+    msz: Arm64VectorElement,
+    four: bool,
+    base: Arm64ScalableVectorRegister,
+) -> Result<u32, EncodeError> {
+    if !matches!(
+        msz,
+        Arm64VectorElement::B
+            | Arm64VectorElement::H
+            | Arm64VectorElement::S
+            | Arm64VectorElement::D
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "an SME2 multi-vector load/store uses an access size of .b/.h/.s/.d",
+        });
+    }
+    let n = base.as_operand_bits() as u32;
+    let misaligned = if four {
+        n & 0b1100 != 0
+    } else {
+        n & 0b1000 != 0
+    };
+    if misaligned {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "the SME2 strided list base must be z0..7 or z16..23 (vgx2) / z0..3 or z16..19 (vgx4)",
+        });
+    }
+    Ok(n)
+}
+
+// The SME2 LUTI form table: `(base, index_shift, max_index)` for a `(lut4, four, half)` combination, or `None` for the
+// one unallocated form (LUTI4 `.b` has no four-register destination). The index is `index << index_shift` (15 for the
+// two-register forms, 16 for the four-register), and its width shrinks for LUTI4 / four-register. GNU+LLVM verified.
+const fn luti_form(lut4: bool, four: bool, half: bool) -> Option<(u32, u32, u8)> {
+    let base = match (lut4, four, half) {
+        (false, false, false) => 0xC08C_4000, // luti2 .b 2-vec
+        (false, false, true) => 0xC08C_5000,  // luti2 .h 2-vec
+        (true, false, false) => 0xC08A_4000,  // luti4 .b 2-vec
+        (true, false, true) => 0xC08A_5000,   // luti4 .h 2-vec
+        (false, true, false) => 0xC08C_8000,  // luti2 .b 4-vec
+        (false, true, true) => 0xC08C_9000,   // luti2 .h 4-vec
+        (true, true, true) => 0xC08A_9000,    // luti4 .h 4-vec
+        (true, true, false) => return None,   // luti4 .b 4-vec: unallocated
+    };
+    let shift = if four { 16 } else { 15 };
+    let max_index = match (lut4, four) {
+        (false, false) => 3, // luti2 2-vec: index 0..3
+        (true, false) => 1,  // luti4 2-vec: index 0..1
+        (false, true) => 1,  // luti2 4-vec: index 0..1
+        (true, true) => 0,   // luti4 4-vec: index 0
+    };
+    Some((base, shift, max_index))
+}
+
+// Pack an SME2 PSEL-style size+offset into the split 5-bit tsz field (`bit4->[23], bit3->[22], bit2->[20], bit1->[19],
+// bit0->[18]`). The marker `1<<size_bits` encodes the element; the offset sits above it.
+fn sme_psel_tsz_field(size: Arm64VectorElement, offset: u32) -> u32 {
+    let field = (offset << (size.size_bits() + 1)) | (1 << size.size_bits());
+    ((field >> 3) << 22) | ((field & 0b111) << 18)
+}
+
+// Recover (element, offset) from the split tsz field, or `None` if the field is zero (no size marker).
+fn decode_sme_psel_tsz(word: u32) -> Option<(Arm64VectorElement, u8)> {
+    let field = (((word >> 22) & 0b11) << 3) | ((word >> 18) & 0b111);
+    if field == 0 {
+        return None;
+    }
+    let size_bits = field.trailing_zeros();
+    Some((
+        Arm64VectorElement::from_size_bits(size_bits),
+        (field >> (size_bits + 1)) as u8,
+    ))
+}
+
+fn check_multiple_of(
+    field: &'static str,
+    value: i64,
+    required_multiple: u32,
+) -> Result<(), EncodeError> {
+    if value.rem_euclid(required_multiple as i64) != 0 {
+        return Err(EncodeError::ImmediateNotAligned {
+            field,
+            value,
+            required_multiple,
+        });
+    }
+    Ok(())
+}
+
+fn check_signed_range(
+    field: &'static str,
+    value: i64,
+    minimum: i64,
+    maximum: i64,
+) -> Result<(), EncodeError> {
+    if value < minimum || value > maximum {
+        return Err(EncodeError::ImmediateOutOfRange {
+            field,
+            value,
+            minimum,
+            maximum,
+        });
+    }
+    Ok(())
+}
+
+// Many SVE instructions encode the governing predicate `Pg` in a 3-bit field, so only P0..P7 are representable.
+fn check_governing_predicate(pg: Arm64PredicateRegister) -> Result<(), EncodeError> {
+    if pg.as_operand_bits() > 7 {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "the governing predicate Pg must be P0..P7 (a 3-bit field)",
+        });
+    }
+    Ok(())
+}
+
+/// Validate the `Wv` slice register (`W8..W11`) and a 2-slice BFMLAL slice range (`slice` in {0,2,4,6}), returning the
+/// encoded slice offset (`slice/2`, at bits `[1:0]`).
+fn check_bfmlal_slice(wv: u8, slice: u8) -> Result<u32, EncodeError> {
+    if wv > 3 {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "the ZA slice register is W8..W11",
+        });
+    }
+    if !slice.is_multiple_of(2) || slice > 6 {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "the BFMLAL slice range is {0,2,4,6}:slice+1",
+        });
+    }
+    Ok((slice / 2) as u32)
+}
+
+// The 5-bit field value of an SVE INDEX base/step operand: a register number, or a `-16..=15` immediate.
+fn sve_index_field(operand: &Arm64SveIndexOperand) -> Result<u32, EncodeError> {
+    match operand {
+        Arm64SveIndexOperand::Register(r) => Ok(r.as_operand_bits() as u32),
+        Arm64SveIndexOperand::Immediate(v) => {
+            check_signed_range("index immediate", *v as i64, -16, 15)?;
+            Ok((*v as u32) & 0x1F)
+        }
+    }
+}
+
+// sign-extend the low `bits` bits of `value` to i32.
+fn sign_extend(value: u32, bits: u32) -> i32 {
+    let shift = 32 - bits;
+    ((value << shift) as i32) >> shift
+}
+
+// Recover the operand width from bit 31 (sf) of a decoded word: sf=1 => X, sf=0 => W. The inverse of
+// `Arm64RegisterWidth::sf`. Used by every W-capable decode arm to thread width into the model.
+fn width_from_word(word: u32) -> Arm64RegisterWidth {
+    if (word >> 31) & 1 == 1 {
+        Arm64RegisterWidth::X
+    } else {
+        Arm64RegisterWidth::W
+    }
+}
+
+// Per-width validation of a shift amount (the imm6 field of the add/sub/logical shifted-register family): for
+// `W` the amount must be 0..=31 (a 32-bit datum), for `X` 0..=63. Surfaces the same
+// `EncodeError::ImmediateOutOfRange` as the other range checks.
+fn check_shift_amount_for_width(width: Arm64RegisterWidth, amount: u8) -> Result<(), EncodeError> {
+    let maximum = match width {
+        Arm64RegisterWidth::W => 31,
+        Arm64RegisterWidth::X => 63,
+    };
+    check_unsigned_maximum("shift_amount", amount as u32, maximum)
+}
+
+// Per-width validation of the move-wide `hw` field: for `W` it is 0..=1 (halfword shift 0/16 -- a W datum is
+// only two halfwords), for `X` 0..=3 (shift 0/16/32/48).
+fn check_hw_for_width(width: Arm64RegisterWidth, hw: u8) -> Result<(), EncodeError> {
+    let maximum = match width {
+        Arm64RegisterWidth::W => 1,
+        Arm64RegisterWidth::X => 3,
+    };
+    check_unsigned_maximum("hw", hw as u32, maximum)
+}
+
