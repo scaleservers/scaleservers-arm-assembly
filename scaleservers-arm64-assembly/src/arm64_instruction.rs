@@ -17264,6 +17264,9121 @@ impl Arm64Instruction {
 
         Ok(word_le_bytes(word))
     }
+
+    /// Decode one A64 instruction from a little-endian byte iterator, advancing `iter_offset` past the four
+    /// bytes consumed. Returns `Ok(None)` at a clean end of input, `Ok(Some(_))` for a decoded instruction,
+    /// or a [`DecodeError`] for malformed / unrecognized words. Never panics on arbitrary input.
+    ///
+    /// A64 is fixed-width, so this always reads exactly four bytes (or `Ok(None)` if zero remain /
+    /// `IncompleteInstruction` if one to three remain). The decoder recognizes the modeled instruction set; an
+    /// unallocated word -- or a form the library does not model -- yields [`DecodeError::InvalidOpcode`].
+    pub fn decode<'a, I>(iter: &mut I, iter_offset: &mut usize) -> Result<Option<Self>, DecodeError>
+    where
+        I: Iterator<Item = &'a u8>,
+    {
+        let word = match next_u32le_from_iter(iter, iter_offset)? {
+            Some(word) => word,
+            None => return Ok(None), // clean EOF at an instruction boundary
+        };
+
+        // SVE (FEAT_SVE) -- a distinct encoding space (top byte 0x04/0x05/0x25/...); decoded first behind specific
+        // masks so an SVE word can never be mistaken for an A64/NEON form.
+        if word & SVE_PTRUE_MASK == SVE_PTRUE_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pd = Arm64PredicateRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SvePtrue {
+                sets_flags: (word >> 16) & 1 == 1,
+                size,
+                pattern: ((word >> 5) & 0x1F) as u8,
+                pd,
+            }));
+        }
+        // SME2 multi-vector (2-reg) ZIP/UZP. Dest pair base = (Zd>>1) at [4:1]; uzp at [0].
+        if word & SME2_ZIPUZP2_MASK == SME2_ZIPUZP2_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 1) & 0xF) << 1) as u8);
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sme2MultiVecZipUzp {
+                uzp: word & 1 == 1,
+                size,
+                zd_base,
+                zn,
+                zm,
+            }));
+        }
+        // SME2 multi-vector (2-reg) clamp. SCLAMP/UCLAMP share a base ([0]=s/u); FCLAMP is the [12:10]=000 base ([0]=0).
+        let clamp_kind = if word & SME2_ZIPUZP2_MASK == SME2_SUCLAMP2_BASE {
+            Some(if word & 1 == 1 {
+                Arm64Sme2ClampKind::Uclamp
+            } else {
+                Arm64Sme2ClampKind::Sclamp
+            })
+        } else if word & SME2_ZIPUZP2_MASK == SME2_FCLAMP2_BASE && word & 1 == 0 {
+            // FCLAMP's size==00 slot is BFCLAMP (FEAT_SME_B16B16); .h/.s/.d are FCLAMP proper.
+            Some(if (word >> 22) & 0b11 == 0 {
+                Arm64Sme2ClampKind::Bfclamp
+            } else {
+                Arm64Sme2ClampKind::Fclamp
+            })
+        } else {
+            None
+        };
+        if let Some(kind) = clamp_kind {
+            let size = if kind.is_bf16() {
+                Arm64VectorElement::H
+            } else {
+                Arm64VectorElement::from_size_bits((word >> 22) & 0b11)
+            };
+            let zd_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 1) & 0xF) << 1) as u8);
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sme2MultiVecClamp {
+                kind,
+                size,
+                zd_base,
+                zn,
+                zm,
+            }));
+        }
+        // SME2 four-vector (vgx4) clamp: same frame as the 2-vec clamp but with the [11]=1 marker (folded into the
+        // base). FCLAMP's size==00 slot is BFCLAMP. Dest quad base = Zd>>2 at [4:2].
+        let clamp4_kind = if word & SME2_ZIPUZP2_MASK == SME2_SUCLAMP4_BASE {
+            Some(if word & 1 == 1 {
+                Arm64Sme2ClampKind::Uclamp
+            } else {
+                Arm64Sme2ClampKind::Sclamp
+            })
+        } else if word & SME2_ZIPUZP2_MASK == SME2_FCLAMP4_BASE && word & 1 == 0 {
+            Some(if (word >> 22) & 0b11 == 0 {
+                Arm64Sme2ClampKind::Bfclamp
+            } else {
+                Arm64Sme2ClampKind::Fclamp
+            })
+        } else {
+            None
+        };
+        if let Some(kind) = clamp4_kind {
+            let size = if kind.is_bf16() {
+                Arm64VectorElement::H
+            } else {
+                Arm64VectorElement::from_size_bits((word >> 22) & 0b11)
+            };
+            let zd_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 2) & 0x7) << 2) as u8);
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sme2Vgx4Clamp {
+                kind,
+                size,
+                zd_base,
+                zn,
+                zm,
+            }));
+        }
+        // SME2 multi-vector (2-reg) min/max by single vector (destructive). [8] picks int(0)/FP(1); for int [5]=min,
+        // [0]=sign; for FP [0]=min. Dest pair = (Zd>>1) at [4:1]; Zm at [20:16].
+        if word & SME2_MINMAX2_MASK == SME2_MINMAX2_BASE {
+            let size_bits = (word >> 22) & 0b11;
+            // an FP min/max in the size==00 slot is the BF16 form (FEAT_SME_B16B16); integer size==00 is the valid .b.
+            let op = if size_bits == 0 {
+                Arm64Sme2MinMaxOp::from_bits((word >> 8) & 1, (word >> 5) & 1, word & 1)
+                    .bf16_in_size00_slot()
+            } else {
+                Arm64Sme2MinMaxOp::from_bits((word >> 8) & 1, (word >> 5) & 1, word & 1)
+            };
+            let size = if op.is_bf16() {
+                Arm64VectorElement::H
+            } else {
+                Arm64VectorElement::from_size_bits(size_bits)
+            };
+            let zd_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 1) & 0xF) << 1) as u8);
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sme2MultiVecMinMax {
+                op,
+                size,
+                zd_base,
+                zm,
+            }));
+        }
+        // SME2 multi-vector (2-reg) min/max by a 2-reg source list (the [12]=1 marker). Source pair = reg number at
+        // [20:16] (even); op recovered as in the by-single form.
+        if word & SME2_MINMAX2_MULTI_MASK == SME2_MINMAX2_MULTI_BASE {
+            let size_bits = (word >> 22) & 0b11;
+            let op = if size_bits == 0 {
+                Arm64Sme2MinMaxOp::from_bits((word >> 8) & 1, (word >> 5) & 1, word & 1)
+                    .bf16_in_size00_slot()
+            } else {
+                Arm64Sme2MinMaxOp::from_bits((word >> 8) & 1, (word >> 5) & 1, word & 1)
+            };
+            let size = if op.is_bf16() {
+                Arm64VectorElement::H
+            } else {
+                Arm64VectorElement::from_size_bits(size_bits)
+            };
+            let zd_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 1) & 0xF) << 1) as u8);
+            let zm_base = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sme2MultiVecMinMaxMulti {
+                op,
+                size,
+                zd_base,
+                zm_base,
+            }));
+        }
+        // SME2 four-vector (vgx4) min/max by single vector ([11]=1; dest quad Zd>>2 at [4:2]).
+        if word & SME2_MINMAX4_MASK == SME2_MINMAX4_BASE {
+            let size_bits = (word >> 22) & 0b11;
+            let op = if size_bits == 0 {
+                Arm64Sme2MinMaxOp::from_bits((word >> 8) & 1, (word >> 5) & 1, word & 1)
+                    .bf16_in_size00_slot()
+            } else {
+                Arm64Sme2MinMaxOp::from_bits((word >> 8) & 1, (word >> 5) & 1, word & 1)
+            };
+            let size = if op.is_bf16() {
+                Arm64VectorElement::H
+            } else {
+                Arm64VectorElement::from_size_bits(size_bits)
+            };
+            let zd_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 2) & 0x7) << 2) as u8);
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sme2Vgx4MinMax {
+                op,
+                size,
+                zd_base,
+                zm,
+            }));
+        }
+        // SME2 four-vector (vgx4) min/max by a 4-reg source list ([12]=1, [11]=1; source quad at [20:16]).
+        if word & SME2_MINMAX4_MULTI_MASK == SME2_MINMAX4_MULTI_BASE {
+            let size_bits = (word >> 22) & 0b11;
+            let op = if size_bits == 0 {
+                Arm64Sme2MinMaxOp::from_bits((word >> 8) & 1, (word >> 5) & 1, word & 1)
+                    .bf16_in_size00_slot()
+            } else {
+                Arm64Sme2MinMaxOp::from_bits((word >> 8) & 1, (word >> 5) & 1, word & 1)
+            };
+            let size = if op.is_bf16() {
+                Arm64VectorElement::H
+            } else {
+                Arm64VectorElement::from_size_bits(size_bits)
+            };
+            let zd_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 2) & 0x7) << 2) as u8);
+            let zm_base = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sme2Vgx4MinMaxMulti {
+                op,
+                size,
+                zd_base,
+                zm_base,
+            }));
+        }
+        // SME2.2 multi-vector FMUL: 0xC1 frame, [21]=1, [15:12]=1110; [16]=vgx4, [11:10]=mode (10 single / 01 multi),
+        // size at [23:22] (00 unallocated). Zm at [20:17] (single full / multi >>1), Zn/Zd shifted per list size.
+        if word & 0xFF20_F000 == 0xC120_E000 {
+            let mode = (word >> 10) & 0b11;
+            let size_bits = (word >> 22) & 0b11;
+            if size_bits != 0 && (mode == 0b10 || mode == 0b01) {
+                let multi_src = mode == 0b01;
+                let vgx4 = (word >> 16) & 1 == 1;
+                let size = Arm64VectorElement::from_size_bits(size_bits);
+                let zm_raw = (word >> 17) & 0xF;
+                let zm = Arm64ScalableVectorRegister::from_operand_bits(if multi_src {
+                    (zm_raw << 1) as u8
+                } else {
+                    zm_raw as u8
+                });
+                let (zn_base, zd_base) = if vgx4 {
+                    (
+                        Arm64ScalableVectorRegister::from_operand_bits(
+                            (((word >> 7) & 0x7) << 2) as u8,
+                        ),
+                        Arm64ScalableVectorRegister::from_operand_bits(
+                            (((word >> 2) & 0x7) << 2) as u8,
+                        ),
+                    )
+                } else {
+                    (
+                        Arm64ScalableVectorRegister::from_operand_bits(
+                            (((word >> 6) & 0xF) << 1) as u8,
+                        ),
+                        Arm64ScalableVectorRegister::from_operand_bits(
+                            (((word >> 1) & 0xF) << 1) as u8,
+                        ),
+                    )
+                };
+                return Ok(Some(Self::Sme2MultiVecFmul {
+                    size,
+                    vgx4,
+                    multi_src,
+                    zd_base,
+                    zn_base,
+                    zm,
+                }));
+            }
+        }
+        // SME2 multi-vector (2-reg) SRSHL/URSHL/SQDMULH by single vector. SRSHL/URSHL share a base ([0]=sign); SQDMULH
+        // is a distinct base. Zm is the z0..z15 single source at [19:16].
+        let shiftmul_op = if word & SME2_SRSHL2_MASK == SME2_SRSHL2_BASE {
+            Some(if word & 1 == 1 {
+                Arm64Sme2ShiftMulOp::Urshl
+            } else {
+                Arm64Sme2ShiftMulOp::Srshl
+            })
+        } else if word & SME2_SQDMULH2_MASK == SME2_SQDMULH2_BASE {
+            Some(Arm64Sme2ShiftMulOp::Sqdmulh)
+        } else {
+            None
+        };
+        if let Some(op) = shiftmul_op {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 1) & 0xF) << 1) as u8);
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sme2MultiVecShiftMul {
+                op,
+                size,
+                zd_base,
+                zm,
+            }));
+        }
+        // SME2 multi-vector (2-reg) SRSHL/URSHL/SQDMULH by a 2-reg source list (the [12]=1 marker; source pair at [20:16]).
+        let shiftmul_multi_op = if word & SME2_SRSHL2_MULTI_MASK == SME2_SRSHL2_MULTI_BASE {
+            Some(if word & 1 == 1 {
+                Arm64Sme2ShiftMulOp::Urshl
+            } else {
+                Arm64Sme2ShiftMulOp::Srshl
+            })
+        } else if word & SME2_SQDMULH2_MULTI_MASK == SME2_SQDMULH2_MULTI_BASE {
+            Some(Arm64Sme2ShiftMulOp::Sqdmulh)
+        } else {
+            None
+        };
+        if let Some(op) = shiftmul_multi_op {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 1) & 0xF) << 1) as u8);
+            let zm_base = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sme2MultiVecShiftMulMulti {
+                op,
+                size,
+                zd_base,
+                zm_base,
+            }));
+        }
+        // SME2 four-vector (vgx4) SRSHL/URSHL/SQDMULH by single vector ([11]=1; dest quad Zd>>2 at [4:2]).
+        let shiftmul4_op = if word & SME2_SRSHL4_MASK == SME2_SRSHL4_BASE {
+            Some(if word & 1 == 1 {
+                Arm64Sme2ShiftMulOp::Urshl
+            } else {
+                Arm64Sme2ShiftMulOp::Srshl
+            })
+        } else if word & SME2_SQDMULH4_MASK == SME2_SQDMULH4_BASE {
+            Some(Arm64Sme2ShiftMulOp::Sqdmulh)
+        } else {
+            None
+        };
+        if let Some(op) = shiftmul4_op {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 2) & 0x7) << 2) as u8);
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sme2Vgx4ShiftMul {
+                op,
+                size,
+                zd_base,
+                zm,
+            }));
+        }
+        // SME2 four-vector (vgx4) SRSHL/URSHL/SQDMULH by a 4-reg source list ([12]=1, [11]=1).
+        let shiftmul4_multi_op = if word & SME2_SRSHL4_MULTI_MASK == SME2_SRSHL4_MULTI_BASE {
+            Some(if word & 1 == 1 {
+                Arm64Sme2ShiftMulOp::Urshl
+            } else {
+                Arm64Sme2ShiftMulOp::Srshl
+            })
+        } else if word & SME2_SQDMULH4_MULTI_MASK == SME2_SQDMULH4_MULTI_BASE {
+            Some(Arm64Sme2ShiftMulOp::Sqdmulh)
+        } else {
+            None
+        };
+        if let Some(op) = shiftmul4_multi_op {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 2) & 0x7) << 2) as u8);
+            let zm_base = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sme2Vgx4ShiftMulMulti {
+                op,
+                size,
+                zd_base,
+                zm_base,
+            }));
+        }
+        // SME2 multi-vector (2-reg) .s unary round/convert. Match the family frame, then map the [23:16]+[5] selector
+        // (an unmodeled selector returns None and falls through). Source pair Zn>>1 at [9:6], dest pair Zd>>1 at [4:1].
+        if let Some(op) = (word & SME2_UNARY2_MASK == SME2_UNARY2_BASE)
+            .then(|| Arm64Sme2UnaryOp::from_bits((word >> 16) & 0xFF, (word >> 5) & 1))
+            .flatten()
+        {
+            let zd_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 1) & 0xF) << 1) as u8);
+            let zn_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8);
+            return Ok(Some(Self::Sme2MultiVecUnary {
+                op,
+                zd_base,
+                zn_base,
+            }));
+        }
+        // SME2 four-vector (vgx4) .s unary round/convert. Same family frame but with [20]=1 in the selector; strip the
+        // [20] bit (= 0x10 in the [23:16] byte) to recover the 2-vec op. Same Zn>>1 [9:6] / Zd>>1 [4:1] field layout.
+        if let Some(op) = (word & SME2_UNARY2_MASK == SME2_UNARY2_BASE && (word >> 20) & 1 == 1)
+            .then(|| Arm64Sme2UnaryOp::from_bits(((word >> 16) & 0xFF) & !0x10, (word >> 5) & 1))
+            .flatten()
+        {
+            let zd_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 1) & 0xF) << 1) as u8);
+            let zn_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8);
+            return Ok(Some(Self::Sme2Vgx4Unary {
+                op,
+                zd_base,
+                zn_base,
+            }));
+        }
+        // SME2 ZA-vector-group ADD/SUB accumulate (Zn group into ZA). size[22], vgx[16], Wv-8 [14:13], Zn>>1 [9:6],
+        // op[3], offset[2:0].
+        if word & SME2_ZA_ADDSUB_MASK == SME2_ZA_ADDSUB_BASE {
+            let size = if (word >> 22) & 1 == 1 {
+                Arm64VectorElement::D
+            } else {
+                Arm64VectorElement::S
+            };
+            let four = (word >> 16) & 1 == 1;
+            let wv = ((word >> 13) & 0x3) as u8;
+            let off = (word & 0x7) as u8;
+            let sub = (word >> 3) & 1 == 1;
+            let zn_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8);
+            return Ok(Some(Self::Sme2ZaAddSub {
+                sub,
+                size,
+                four,
+                wv,
+                off,
+                zn_base,
+            }));
+        }
+        // SME2 BF16 BFADD/BFSUB accumulate into a .h ZA group (FEAT_SME_B16B16). The .h FP add/sub with the BF16 marker
+        // [22]=1; placed BEFORE FADD/FSUB (which reads [18]=.h and would otherwise claim it), and the mask pins [22]=1 +
+        // [18]=1 so only the BF16 .h words match.
+        if word & SME2_ZA_BF_ADDSUB_MASK == SME2_ZA_BF_ADDSUB_BASE {
+            return Ok(Some(Self::Sme2ZaBfAddSub {
+                sub: (word >> 3) & 1 == 1,
+                four: (word >> 16) & 1 == 1,
+                wv: ((word >> 13) & 0x3) as u8,
+                off: (word & 0x7) as u8,
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 6) & 0xF) << 1) as u8,
+                ),
+            }));
+        }
+        // SME2 ZA-vector-group FADD/FSUB (FP accumulate, [4]=0). size: [18]=1 -> .h, else [22] picks .d/.s.
+        if word & SME2_ZA_FP_ADDSUB_MASK == SME2_ZA_FP_ADDSUB_BASE {
+            let size = if (word >> 18) & 1 == 1 {
+                Arm64VectorElement::H
+            } else if (word >> 22) & 1 == 1 {
+                Arm64VectorElement::D
+            } else {
+                Arm64VectorElement::S
+            };
+            let four = (word >> 16) & 1 == 1;
+            let wv = ((word >> 13) & 0x3) as u8;
+            let off = (word & 0x7) as u8;
+            let sub = (word >> 3) & 1 == 1;
+            let zn_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8);
+            return Ok(Some(Self::Sme2ZaFpAddSub {
+                sub,
+                size,
+                four,
+                wv,
+                off,
+                zn_base,
+            }));
+        }
+        // SME2 ZA-vector-group FMLA/FMLS (Zn group multiplied by a single Zm into ZA). Shares the frame mask with the
+        // multi-Zm form below ([23] discriminates single 0 vs multi 1). [10]=0 in the mask excludes the FP16 .h form.
+        if word & SME2_ZA_FMLA_MASK == SME2_ZA_FMLA_SINGLE_BASE {
+            let size = if (word >> 22) & 1 == 1 {
+                Arm64VectorElement::D
+            } else {
+                Arm64VectorElement::S
+            };
+            let four = (word >> 20) & 1 == 1;
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+            let wv = ((word >> 13) & 0x3) as u8;
+            let off = (word & 0x7) as u8;
+            let sub = (word >> 3) & 1 == 1;
+            let zn_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8);
+            return Ok(Some(Self::Sme2ZaFmlaSingle {
+                sub,
+                size,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm,
+            }));
+        }
+        // SME2 ZA-vector-group FMLA/FMLS (Zn group multiplied by a Zm group into ZA). [23]=1 multi marker, Zm>>1 [20:17],
+        // vgx [16].
+        if word & SME2_ZA_FMLA_MASK == SME2_ZA_FMLA_MULTI_BASE {
+            let size = if (word >> 22) & 1 == 1 {
+                Arm64VectorElement::D
+            } else {
+                Arm64VectorElement::S
+            };
+            let four = (word >> 16) & 1 == 1;
+            let zm_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 17) & 0xF) << 1) as u8);
+            let wv = ((word >> 13) & 0x3) as u8;
+            let off = (word & 0x7) as u8;
+            let sub = (word >> 3) & 1 == 1;
+            let zn_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8);
+            return Ok(Some(Self::Sme2ZaFmlaMulti {
+                sub,
+                size,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm_base,
+            }));
+        }
+        // SME2 ZA-vector-group FMLA/FMLS single .h (FEAT_SME_F16F16). Distinct base ([10]=1, [22]=0 pinned); op stays at
+        // [3]. The dedicated mask pins [22]=0 so a stray bit22=1 word is not mis-claimed as .h.
+        if word & SME2_ZA_FMLA_HALF_SINGLE_MASK == SME2_ZA_FMLA_SINGLE_HALF_BASE {
+            let four = (word >> 20) & 1 == 1;
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+            let wv = ((word >> 13) & 0x3) as u8;
+            let off = (word & 0x7) as u8;
+            let sub = (word >> 3) & 1 == 1;
+            let zn_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8);
+            return Ok(Some(Self::Sme2ZaFmlaSingle {
+                sub,
+                size: Arm64VectorElement::H,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm,
+            }));
+        }
+        // SME2 BF16 BFMLA/BFMLS single (FEAT_SME_B16B16): the .h FMLA-single with [22]=1 (the FP16 .h form pins [22]=0).
+        if word & SME2_ZA_FMLA_HALF_SINGLE_MASK == SME2_ZA_BFMLA_SINGLE_BASE {
+            return Ok(Some(Self::Sme2ZaBfmlaSingle {
+                sub: (word >> 3) & 1 == 1,
+                four: (word >> 20) & 1 == 1,
+                wv: ((word >> 13) & 0x3) as u8,
+                off: (word & 0x7) as u8,
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 6) & 0xF) << 1) as u8,
+                ),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8),
+            }));
+        }
+        // SME2 ZA-vector-group FMLA/FMLS multi .h (FEAT_SME_F16F16). Genuinely different sub-layout: [12:11]=10, [3]=1
+        // fixed, and the op (FMLS) lives at [4] instead of [3].
+        if word & SME2_ZA_FMLA_HALF_MULTI_MASK == SME2_ZA_FMLA_MULTI_HALF_BASE {
+            let four = (word >> 16) & 1 == 1;
+            let zm_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 17) & 0xF) << 1) as u8);
+            let wv = ((word >> 13) & 0x3) as u8;
+            let off = (word & 0x7) as u8;
+            let sub = (word >> 4) & 1 == 1;
+            let zn_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8);
+            return Ok(Some(Self::Sme2ZaFmlaMulti {
+                sub,
+                size: Arm64VectorElement::H,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm_base,
+            }));
+        }
+        // SME2 BF16 BFMLA/BFMLS multi (FEAT_SME_B16B16): the .h FMLA-multi with [22]=1 (the FP16 .h form pins [22]=0).
+        if word & SME2_ZA_FMLA_HALF_MULTI_MASK == SME2_ZA_BFMLA_MULTI_BASE {
+            return Ok(Some(Self::Sme2ZaBfmlaMulti {
+                sub: (word >> 4) & 1 == 1,
+                four: (word >> 16) & 1 == 1,
+                wv: ((word >> 13) & 0x3) as u8,
+                off: (word & 0x7) as u8,
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 6) & 0xF) << 1) as u8,
+                ),
+                zm_base: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 17) & 0xF) << 1) as u8,
+                ),
+            }));
+        }
+        // SME2 ZA-vector-group dot product (Zn group dotted with a single Zm into ZA). op = ([22],[4],[3]); the frame
+        // ([12:10]=101, [5]=0) keeps it disjoint from FMLA and the indexed ZA dot.
+        if word & SME2_ZA_DOT_MASK == SME2_ZA_DOT_SINGLE_BASE {
+            let op =
+                Arm64Sme2ZaDotOp::from_bits((word >> 22) & 1, (word >> 4) & 1, (word >> 3) & 1);
+            let four = (word >> 20) & 1 == 1;
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+            let wv = ((word >> 13) & 0x3) as u8;
+            let off = (word & 0x7) as u8;
+            let zn_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8);
+            return Ok(Some(Self::Sme2ZaDotSingle {
+                op,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm,
+            }));
+        }
+        // SME2 ZA-vector-group dot product (Zn group dotted with a Zm group into ZA). [23]=1 multi marker, Zm>>1 [20:17],
+        // vgx [16].
+        if word & SME2_ZA_DOT_MASK == SME2_ZA_DOT_MULTI_BASE {
+            let op =
+                Arm64Sme2ZaDotOp::from_bits((word >> 22) & 1, (word >> 4) & 1, (word >> 3) & 1);
+            let four = (word >> 16) & 1 == 1;
+            let zm_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 17) & 0xF) << 1) as u8);
+            let wv = ((word >> 13) & 0x3) as u8;
+            let off = (word & 0x7) as u8;
+            let zn_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8);
+            return Ok(Some(Self::Sme2ZaDotMulti {
+                op,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm_base,
+            }));
+        }
+        // SME2 indexed integer dot into ZA: .s-accumulator ops ([12]=1) then the .d-accumulator ops ([12]=0/[11]=0). Each
+        // op carries its own base (the indexed op mux is irregular). The .d arm sits before VDOT so its [11]=0 words are
+        // claimed here, not mis-read as SVDOT/UVDOT (whose i16i64 forms pin [11]=1).
+        for op in Arm64Sme2ZaDotOp::ALL {
+            if matches!(op.za_element(), Arm64VectorElement::D) {
+                continue; // .d handled by the dedicated [12]=0 arm below
+            }
+            if word & SME2_ZA_DOT_INDEXED_S_MASK == op.indexed_base() {
+                let four = (word >> 15) & 1 == 1;
+                let zn_field = if four {
+                    (((word >> 7) & 0b111) << 2) as u8
+                } else {
+                    (((word >> 6) & 0xF) << 1) as u8
+                };
+                return Ok(Some(Self::Sme2ZaDotIndexed {
+                    op,
+                    four,
+                    wv: ((word >> 13) & 0x3) as u8,
+                    off: (word & 0x7) as u8,
+                    zn_base: Arm64ScalableVectorRegister::from_operand_bits(zn_field),
+                    zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8),
+                    index: ((word >> 10) & 0x3) as u8,
+                }));
+            }
+        }
+        for op in [Arm64Sme2ZaDotOp::SdotHalfToD, Arm64Sme2ZaDotOp::UdotHalfToD] {
+            if word & SME2_ZA_DOT_INDEXED_D_MASK == op.indexed_base() {
+                let four = (word >> 15) & 1 == 1;
+                let zn_field = if four {
+                    (((word >> 7) & 0b111) << 2) as u8
+                } else {
+                    (((word >> 6) & 0xF) << 1) as u8
+                };
+                return Ok(Some(Self::Sme2ZaDotIndexed {
+                    op,
+                    four,
+                    wv: ((word >> 13) & 0x3) as u8,
+                    off: (word & 0x7) as u8,
+                    zn_base: Arm64ScalableVectorRegister::from_operand_bits(zn_field),
+                    zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8),
+                    index: ((word >> 10) & 0x1) as u8,
+                }));
+            }
+        }
+        // SME2 vertical dot product VDOT into ZA (indexed). op from [23] (.d) + [15] (vgx4) + [5:3]; from_bits returns
+        // None for the FP8 indexed FDOT patterns that share this [22:20]=101 region, so they fall through to it below.
+        if word & SME2_ZA_VDOT_MASK == SME2_ZA_VDOT_BASE
+            && let Some(op) = Arm64Sme2ZaVdotOp::from_bits(
+                (word >> 23) & 1,
+                (word >> 15) & 1,
+                (word >> 3) & 0b111,
+            )
+        {
+            let zn_base = if op.four() {
+                ((word >> 7) & 0b111) << 2
+            } else {
+                ((word >> 6) & 0xF) << 1
+            };
+            let index = if op.needs_i16i64() {
+                (word >> 10) & 1
+            } else {
+                (word >> 10) & 0x3
+            };
+            return Ok(Some(Self::Sme2ZaVdot {
+                op,
+                wv: ((word >> 13) & 0x3) as u8,
+                off: (word & 0x7) as u8,
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(zn_base as u8),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8),
+                index: index as u8,
+            }));
+        }
+        // SME2 integer MLAL/MLALL into ZA (single Zn x single/list Zm). Three non-indexed forms, each with its own
+        // FP8-disjoint mask; widen from ([22] h-source, [11] two-way), op from [4:2]. `mlal_decode_common` returns the
+        // shared (widen, op, wv, slice) or None when the combination is non-canonical (e.g. the .b 2-way / SUMLALL cases).
+        if word & SME2_ZA_MLAL_SINGLE_MASK == SME2_ZA_MLAL_SINGLE_BASE
+            && let Some((widen, op, wv, slice)) = mlal_decode_common(word, false)
+        {
+            return Ok(Some(Self::Sme2ZaMlalSingle {
+                op,
+                widen,
+                wv,
+                slice,
+                zn: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8),
+            }));
+        }
+        if word & SME2_ZA_MLAL_MULTI_MASK == SME2_ZA_MLAL_MULTI_BASE
+            && let Some((widen, op, wv, slice)) = mlal_decode_common(word, false)
+        {
+            let four = (word >> 20) & 1 == 1;
+            let zn_field = if four {
+                (((word >> 7) & 0b111) << 2) as u8
+            } else {
+                (((word >> 6) & 0xF) << 1) as u8
+            };
+            return Ok(Some(Self::Sme2ZaMlalMulti {
+                op,
+                widen,
+                four,
+                wv,
+                slice,
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(zn_field),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8),
+            }));
+        }
+        if word & SME2_ZA_MLAL_MULTIZM_MASK == SME2_ZA_MLAL_MULTIZM_BASE
+            && let Some((widen, op, wv, slice)) = mlal_decode_common(word, false)
+        {
+            let four = (word >> 16) & 1 == 1;
+            let zn_field = if four {
+                (((word >> 7) & 0b111) << 2) as u8
+            } else {
+                (((word >> 6) & 0xF) << 1) as u8
+            };
+            return Ok(Some(Self::Sme2ZaMlalMultiZm {
+                op,
+                widen,
+                four,
+                wv,
+                slice,
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(zn_field),
+                zm_base: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 17) & 0xF) << 1) as u8,
+                ),
+            }));
+        }
+        // SME2 integer MLAL/MLALL indexed (single Zn x indexed Zm). Sparse base -> widen from ([23] h, [22] two-way), and
+        // for .h forms [12] must track two_way (this excludes the FP8 FMLAL.h indexed which sits at the same base, [12]=0).
+        if word & SME2_ZA_MLAL_INDEXED_MASK == SME2_ZA_MLAL_INDEXED_BASE
+            && let Some(widen) = mlal_widen((word >> 23) & 1 == 1, (word >> 22) & 1 == 1)
+            && let Some(op) = Arm64Sme2ZaMlalOp::from_op_bits((word >> 2) & 0b111)
+        {
+            let h = widen.h_source();
+            let two = widen.two_way();
+            let consistent = !h || ((word >> 12) & 1 == two as u32);
+            let op_ok = !op.is_mixed() || matches!(widen, Arm64Sme2ZaMlalWiden::BtoS);
+            let off_ok = two || (word & 0x2 == 0);
+            if consistent && op_ok && off_ok {
+                let off_field = if two { word & 0x3 } else { word & 0x1 };
+                let index = if h {
+                    (((word >> 15) & 1) << 2 | ((word >> 11) & 1) << 1 | ((word >> 10) & 1)) as u8
+                } else {
+                    (((word >> 15) & 1) << 3
+                        | ((word >> 12) & 1) << 2
+                        | ((word >> 11) & 1) << 1
+                        | ((word >> 10) & 1)) as u8
+                };
+                return Ok(Some(Self::Sme2ZaMlalIndexed {
+                    op,
+                    widen,
+                    wv: ((word >> 13) & 0x3) as u8,
+                    slice: (off_field * widen.step() as u32) as u8,
+                    zn: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                    zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8),
+                    index,
+                }));
+            }
+        }
+        // SME2 FP16 FMLAL/FMLSL into ZA (.h->.s pair). Four forms; the integer-MLAL HtoS slot with [22]=0 (which the
+        // integer decode above rejects via mlal_widen). slice = (off at [1:0]) * 2; subtract is [3].
+        if word & SME2_ZA_FMLAL_SINGLE_MASK == SME2_ZA_FMLAL_SINGLE_BASE {
+            return Ok(Some(Self::Sme2ZaFmlalSingle {
+                subtract: (word >> 3) & 1 == 1,
+                wv: ((word >> 13) & 0x3) as u8,
+                slice: ((word & 0x3) * 2) as u8,
+                zn: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8),
+            }));
+        }
+        if word & SME2_ZA_FMLAL_MULTI_MASK == SME2_ZA_FMLAL_MULTI_BASE {
+            let four = (word >> 20) & 1 == 1;
+            let zn_field = if four {
+                (((word >> 7) & 0b111) << 2) as u8
+            } else {
+                (((word >> 6) & 0xF) << 1) as u8
+            };
+            return Ok(Some(Self::Sme2ZaFmlalMulti {
+                subtract: (word >> 3) & 1 == 1,
+                four,
+                wv: ((word >> 13) & 0x3) as u8,
+                slice: ((word & 0x3) * 2) as u8,
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(zn_field),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8),
+            }));
+        }
+        if word & SME2_ZA_FMLAL_INDEXED_MASK == SME2_ZA_FMLAL_INDEXED_BASE {
+            let index =
+                (((word >> 15) & 1) << 2 | ((word >> 11) & 1) << 1 | ((word >> 10) & 1)) as u8;
+            return Ok(Some(Self::Sme2ZaFmlalIndexed {
+                subtract: (word >> 3) & 1 == 1,
+                wv: ((word >> 13) & 0x3) as u8,
+                slice: ((word & 0x3) * 2) as u8,
+                zn: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8),
+                index,
+            }));
+        }
+        if word & SME2_ZA_FMLAL_MULTIZM_MASK == SME2_ZA_FMLAL_MULTIZM_BASE {
+            let four = (word >> 16) & 1 == 1;
+            let zn_field = if four {
+                (((word >> 7) & 0b111) << 2) as u8
+            } else {
+                (((word >> 6) & 0xF) << 1) as u8
+            };
+            return Ok(Some(Self::Sme2ZaFmlalMultiZm {
+                subtract: (word >> 3) & 1 == 1,
+                four,
+                wv: ((word >> 13) & 0x3) as u8,
+                slice: ((word & 0x3) * 2) as u8,
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(zn_field),
+                zm_base: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 17) & 0xF) << 1) as u8,
+                ),
+            }));
+        }
+        // SME2 FP16/BF16 FDOT/BFDOT into a .s ZA group. Single (single Zm)/Multi (Zm list, [23]=1)/Indexed; bf16 at [4].
+        if word & SME2_ZA_FDOT_NONIDX_MASK == SME2_ZA_FDOT_SINGLE_BASE {
+            let four = (word >> 20) & 1 == 1;
+            let zn_field = if four {
+                (((word >> 7) & 0b111) << 2) as u8
+            } else {
+                (((word >> 6) & 0xF) << 1) as u8
+            };
+            return Ok(Some(Self::Sme2ZaFdotSingle {
+                bf16: (word >> 4) & 1 == 1,
+                four,
+                wv: ((word >> 13) & 0x3) as u8,
+                off: (word & 0x7) as u8,
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(zn_field),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8),
+            }));
+        }
+        if word & SME2_ZA_FDOT_NONIDX_MASK == SME2_ZA_FDOT_MULTI_BASE {
+            let four = (word >> 16) & 1 == 1;
+            let zn_field = if four {
+                (((word >> 7) & 0b111) << 2) as u8
+            } else {
+                (((word >> 6) & 0xF) << 1) as u8
+            };
+            return Ok(Some(Self::Sme2ZaFdotMulti {
+                bf16: (word >> 4) & 1 == 1,
+                four,
+                wv: ((word >> 13) & 0x3) as u8,
+                off: (word & 0x7) as u8,
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(zn_field),
+                zm_base: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 17) & 0xF) << 1) as u8,
+                ),
+            }));
+        }
+        if word & SME2_ZA_FDOT_INDEXED_MASK == SME2_ZA_FDOT_INDEXED_BASE {
+            let four = (word >> 15) & 1 == 1;
+            let zn_field = if four {
+                (((word >> 7) & 0b111) << 2) as u8
+            } else {
+                (((word >> 6) & 0xF) << 1) as u8
+            };
+            return Ok(Some(Self::Sme2ZaFdotIndexed {
+                bf16: (word >> 4) & 1 == 1,
+                four,
+                wv: ((word >> 13) & 0x3) as u8,
+                off: (word & 0x7) as u8,
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(zn_field),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8),
+                index: ((word >> 10) & 0x3) as u8,
+            }));
+        }
+        // SME2 FP8 FDOT into ZA (single Zm). [12:10]=100, [5]=0, [3]=1; [4]=.s/.h. Shares the FMLA-half mask value but
+        // a disjoint base (single [23]=0). Placed after the integer ZA dot (disjoint by [12:10]/[5]).
+        if word & SME2_ZA_FP8_DOT_MASK == SME2_ZA_FP8_DOT_SINGLE_BASE {
+            let size = if (word >> 4) & 1 == 1 {
+                Arm64VectorElement::S
+            } else {
+                Arm64VectorElement::H
+            };
+            let four = (word >> 20) & 1 == 1;
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+            let wv = ((word >> 13) & 0x3) as u8;
+            let off = (word & 0x7) as u8;
+            let zn_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8);
+            return Ok(Some(Self::Sme2ZaFp8DotSingle {
+                size,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm,
+            }));
+        }
+        // SME2 FP8 FDOT into ZA (Zm group). [23]=1 multi, [5]=1, [3]=0; [4]=.s/.h, Zm>>1[20:17], vgx[16].
+        if word & SME2_ZA_FP8_DOT_MASK == SME2_ZA_FP8_DOT_MULTI_BASE {
+            let size = if (word >> 4) & 1 == 1 {
+                Arm64VectorElement::S
+            } else {
+                Arm64VectorElement::H
+            };
+            let four = (word >> 16) & 1 == 1;
+            let zm_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 17) & 0xF) << 1) as u8);
+            let wv = ((word >> 13) & 0x3) as u8;
+            let off = (word & 0x7) as u8;
+            let zn_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8);
+            return Ok(Some(Self::Sme2ZaFp8DotMulti {
+                size,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm_base,
+            }));
+        }
+        // SME2 FP8 FDOT into ZA, indexed by element. Four distinct frames (vgx2/vgx4 x .h/.s); vgx2 packs Zn>>1 at [9:6],
+        // vgx4 packs Zn>>2 at [9:7]. index = bit11:bit10:bit3 (.h) / bit11:bit10 (.s). Zm is z0-7 at [18:16].
+        let fp8_dotidx = if word & SME2_ZA_FP8_DOTIDX_H_VGX2_MASK == SME2_ZA_FP8_DOTIDX_H_VGX2_BASE
+        {
+            Some((Arm64VectorElement::H, false, false))
+        } else if word & SME2_ZA_FP8_DOTIDX_H_VGX4_MASK == SME2_ZA_FP8_DOTIDX_H_VGX4_BASE {
+            Some((Arm64VectorElement::H, true, false))
+        } else if word & SME2_ZA_FP8_DOTIDX_S_VGX2_MASK == SME2_ZA_FP8_DOTIDX_S_VGX2_BASE {
+            Some((Arm64VectorElement::S, false, true))
+        } else if word & SME2_ZA_FP8_DOTIDX_S_VGX4_MASK == SME2_ZA_FP8_DOTIDX_S_VGX4_BASE {
+            Some((Arm64VectorElement::S, true, true))
+        } else {
+            None
+        };
+        if let Some((size, four, is_s)) = fp8_dotidx {
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0x7) as u8);
+            let wv = ((word >> 13) & 0x3) as u8;
+            let off = (word & 0x7) as u8;
+            let zn_base = if four {
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 7) & 0x7) << 2) as u8)
+            } else {
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8)
+            };
+            let index = if is_s {
+                ((((word >> 11) & 1) << 1) | ((word >> 10) & 1)) as u8
+            } else {
+                ((((word >> 11) & 1) << 2) | (((word >> 10) & 1) << 1) | ((word >> 3) & 1)) as u8
+            };
+            return Ok(Some(Self::Sme2ZaFp8DotIndexed {
+                size,
+                four,
+                wv,
+                off,
+                zn_base,
+                zm,
+                index,
+            }));
+        }
+        // SME2 FP8 FVDOT into a .h ZA group (vertical; the .h-vgx2 indexed FDOT frame with [12]=1).
+        if word & SME2_ZA_FP8_DOTIDX_H_VGX2_MASK == SME2_ZA_FP8_FVDOT_BASE {
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0x7) as u8);
+            let wv = ((word >> 13) & 0x3) as u8;
+            let off = (word & 0x7) as u8;
+            let zn_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8);
+            let index =
+                ((((word >> 11) & 1) << 2) | (((word >> 10) & 1) << 1) | ((word >> 3) & 1)) as u8;
+            return Ok(Some(Self::Sme2ZaFp8VerticalDot {
+                wv,
+                off,
+                zn_base,
+                zm,
+                index,
+            }));
+        }
+        // SME2 FP8 FVDOTB/FVDOTT into a .s ZA vgx4 group (2-register Zn list). [11]=1, [5]=0; top(FVDOTT)=[4].
+        if word & SME2_ZA_FP8_FVDOTBT_MASK == SME2_ZA_FP8_FVDOTBT_BASE {
+            let top = (word >> 4) & 1 == 1;
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0x7) as u8);
+            let wv = ((word >> 13) & 0x3) as u8;
+            let off = (word & 0x7) as u8;
+            let zn_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8);
+            let index = ((((word >> 10) & 1) << 1) | ((word >> 3) & 1)) as u8;
+            return Ok(Some(Self::Sme2ZaFp8VerticalDotBottomTop {
+                top,
+                wv,
+                off,
+                zn_base,
+                zm,
+                index,
+            }));
+        }
+        // SME2 indexed FMLA/FMLS into ZA (.s/.d): Zn group x Zm[index]. [23] picks .d; the mask pins [12]=0/[5]=0/[3]=0.
+        // Placed AFTER the FP8 vertical-dot / indexed-dot forms above (whose denser masks share this [22:20]=101 region --
+        // FVDOTBT pins [11]=1, FP8 indexed FDOT its own vgx bases), so those claim their words first.
+        if word & SME2_ZA_FMLA_INDEXED_MASK == SME2_ZA_FMLA_INDEXED_BASE {
+            let size = if (word >> 23) & 1 == 1 {
+                Arm64VectorElement::D
+            } else {
+                Arm64VectorElement::S
+            };
+            let four = (word >> 15) & 1 == 1;
+            let zn_field = if four {
+                (((word >> 7) & 0b111) << 2) as u8
+            } else {
+                (((word >> 6) & 0xF) << 1) as u8
+            };
+            return Ok(Some(Self::Sme2ZaFmlaIndexed {
+                sub: (word >> 4) & 1 == 1,
+                size,
+                four,
+                wv: ((word >> 13) & 0x3) as u8,
+                off: (word & 0x7) as u8,
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(zn_field),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8),
+                index: ((word >> 10) & 0x3) as u8,
+            }));
+        }
+        // SME2 indexed FMLA/FMLS into ZA (.h, FEAT_SME_F16F16): [22:20]=001, [12]=1; the index (0..=7) is split, high two
+        // bits at [11:10] and low bit at [3].
+        if word & SME2_ZA_FMLA_INDEXED_HALF_MASK == SME2_ZA_FMLA_INDEXED_HALF_BASE {
+            let four = (word >> 15) & 1 == 1;
+            let zn_field = if four {
+                (((word >> 7) & 0b111) << 2) as u8
+            } else {
+                (((word >> 6) & 0xF) << 1) as u8
+            };
+            let index = ((((word >> 10) & 0x3) << 1) | ((word >> 3) & 1)) as u8;
+            return Ok(Some(Self::Sme2ZaFmlaIndexed {
+                sub: (word >> 4) & 1 == 1,
+                size: Arm64VectorElement::H,
+                four,
+                wv: ((word >> 13) & 0x3) as u8,
+                off: (word & 0x7) as u8,
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(zn_field),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8),
+                index,
+            }));
+        }
+        // SME2 BF16 BFMLA/BFMLS indexed (FEAT_SME_B16B16): the .h FMLA-indexed with the BF16 marker [5]=1 (the FP16 .h
+        // form pins [5]=0). Same split index (high [11:10], low [3]) as the .h FMLA-indexed above.
+        if word & SME2_ZA_FMLA_INDEXED_HALF_MASK == SME2_ZA_BFMLA_INDEXED_BASE {
+            let four = (word >> 15) & 1 == 1;
+            let zn_field = if four {
+                (((word >> 7) & 0b111) << 2) as u8
+            } else {
+                (((word >> 6) & 0xF) << 1) as u8
+            };
+            let index = ((((word >> 10) & 0x3) << 1) | ((word >> 3) & 1)) as u8;
+            return Ok(Some(Self::Sme2ZaBfmlaIndexed {
+                sub: (word >> 4) & 1 == 1,
+                four,
+                wv: ((word >> 13) & 0x3) as u8,
+                off: (word & 0x7) as u8,
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(zn_field),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8),
+                index,
+            }));
+        }
+        // SME2 FP8 FMLAL (.h) / FMLALL (.s) into a ZA slice range, scalar Zn/Zm. [11:10]=11 (.h) / 01 (.s). The slice
+        // offset is slice/2 at [1:0] (.h) / slice/4 at [0] (.s).
+        if word & SME2_ZA_FP8_FMLAL_H_SINGLE_MASK == SME2_ZA_FP8_FMLAL_H_SINGLE_BASE {
+            let wv = ((word >> 13) & 0x3) as u8;
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8);
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+            return Ok(Some(Self::Sme2ZaFp8MlalSingle {
+                size: Arm64VectorElement::H,
+                wv,
+                slice: ((word & 0x3) * 2) as u8,
+                zn,
+                zm,
+            }));
+        }
+        if word & SME2_ZA_FP8_FMLALL_S_SINGLE_MASK == SME2_ZA_FP8_FMLALL_S_SINGLE_BASE {
+            let wv = ((word >> 13) & 0x3) as u8;
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8);
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+            return Ok(Some(Self::Sme2ZaFp8MlalSingle {
+                size: Arm64VectorElement::S,
+                wv,
+                slice: ((word & 0x1) * 4) as u8,
+                zn,
+                zm,
+            }));
+        }
+        // SME2 FP8 FMLAL (.h) / FMLALL (.s) into a ZA slice range from a Zn vector group by a single Zm. vgx[20];
+        // vgx2 packs Zn>>1[9:6], vgx4 packs Zn>>2[9:7]; slice-off as the single forms.
+        let fp8_mlal_multi =
+            if word & SME2_ZA_FP8_FMLAL_H_MULTI_MASK == SME2_ZA_FP8_FMLAL_H_MULTI_BASE {
+                Some((Arm64VectorElement::H, ((word & 0x3) * 2) as u8))
+            } else if word & SME2_ZA_FP8_FMLALL_S_MULTI_MASK == SME2_ZA_FP8_FMLALL_S_MULTI_BASE {
+                Some((Arm64VectorElement::S, ((word & 0x1) * 4) as u8))
+            } else {
+                None
+            };
+        if let Some((size, slice)) = fp8_mlal_multi {
+            let four = (word >> 20) & 1 == 1;
+            let wv = ((word >> 13) & 0x3) as u8;
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+            let zn_base = if four {
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 7) & 0x7) << 2) as u8)
+            } else {
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8)
+            };
+            return Ok(Some(Self::Sme2ZaFp8MlalMulti {
+                size,
+                four,
+                wv,
+                slice,
+                zn_base,
+                zm,
+            }));
+        }
+        // SME2 FP8 FMLAL (.h) / FMLALL (.s) into a ZA slice range by an indexed Zm element. .h index = bit15:bit11:bit10:bit3
+        // ([23:22]=11); .s index = bit15:bit12:bit11:bit10 ([23:22]=01). Zm z0-7 at [18:16], Zn z0-31 at [9:5].
+        let fp8_mlal_idx = if word & SME2_ZA_FP8_FMLAL_H_IDX_MASK == SME2_ZA_FP8_FMLAL_H_IDX_BASE {
+            let idx = (((word >> 15) & 1) << 3)
+                | (((word >> 11) & 1) << 2)
+                | (((word >> 10) & 1) << 1)
+                | ((word >> 3) & 1);
+            Some((Arm64VectorElement::H, ((word & 0x3) * 2) as u8, idx as u8))
+        } else if word & SME2_ZA_FP8_FMLALL_S_IDX_MASK == SME2_ZA_FP8_FMLALL_S_IDX_BASE {
+            let idx = (((word >> 15) & 1) << 3)
+                | (((word >> 12) & 1) << 2)
+                | (((word >> 11) & 1) << 1)
+                | ((word >> 10) & 1);
+            Some((Arm64VectorElement::S, ((word & 0x1) * 4) as u8, idx as u8))
+        } else {
+            None
+        };
+        if let Some((size, slice, index)) = fp8_mlal_idx {
+            let wv = ((word >> 13) & 0x3) as u8;
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8);
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0x7) as u8);
+            return Ok(Some(Self::Sme2ZaFp8MlalIndexed {
+                size,
+                wv,
+                slice,
+                zn,
+                zm,
+                index,
+            }));
+        }
+        // SME2 FP8 FMLAL (.h) / FMLALL (.s) into a ZA slice range from a Zn group by a Zm GROUP. [23]=1 multi-Zm;
+        // vgx[16], Zm>>1[20:17]; Zn>>1[9:6] (vgx2) / Zn>>2[9:7] (vgx4); slice-off as the single forms.
+        let fp8_mlal_grp = if word & SME2_ZA_FP8_FMLAL_H_GRP_MASK == SME2_ZA_FP8_FMLAL_H_GRP_BASE {
+            Some((Arm64VectorElement::H, ((word & 0x3) * 2) as u8))
+        } else if word & SME2_ZA_FP8_FMLALL_S_GRP_MASK == SME2_ZA_FP8_FMLALL_S_GRP_BASE {
+            Some((Arm64VectorElement::S, ((word & 0x1) * 4) as u8))
+        } else {
+            None
+        };
+        if let Some((size, slice)) = fp8_mlal_grp {
+            let four = (word >> 16) & 1 == 1;
+            let wv = ((word >> 13) & 0x3) as u8;
+            let zm_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 17) & 0xF) << 1) as u8);
+            let zn_base = if four {
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 7) & 0x7) << 2) as u8)
+            } else {
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8)
+            };
+            return Ok(Some(Self::Sme2ZaFp8MlalMultiZm {
+                size,
+                four,
+                wv,
+                slice,
+                zn_base,
+                zm_base,
+            }));
+        }
+        // SME2 BFMLAL into ZA (BF16 .h -> FP32 .s; [4]=1 BF16-source marker). Single/multi/indexed/Zm-group, all
+        // slice/2 at [1:0]. FEAT_SME2.
+        if word & SME2_ZA_BFMLAL_SINGLE_MASK == SME2_ZA_BFMLAL_SINGLE_BASE {
+            let wv = ((word >> 13) & 0x3) as u8;
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8);
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+            return Ok(Some(Self::Sme2ZaBfmlalSingle {
+                subtract: (word >> 3) & 1 == 1,
+                wv,
+                slice: ((word & 0x3) * 2) as u8,
+                zn,
+                zm,
+            }));
+        }
+        if word & SME2_ZA_BFMLAL_MULTI_MASK == SME2_ZA_BFMLAL_MULTI_BASE {
+            let four = (word >> 20) & 1 == 1;
+            let wv = ((word >> 13) & 0x3) as u8;
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+            let zn_base = if four {
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 7) & 0x7) << 2) as u8)
+            } else {
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8)
+            };
+            return Ok(Some(Self::Sme2ZaBfmlalMulti {
+                subtract: (word >> 3) & 1 == 1,
+                four,
+                wv,
+                slice: ((word & 0x3) * 2) as u8,
+                zn_base,
+                zm,
+            }));
+        }
+        if word & SME2_ZA_BFMLAL_IDX_MASK == SME2_ZA_BFMLAL_IDX_BASE {
+            let wv = ((word >> 13) & 0x3) as u8;
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8);
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0x7) as u8);
+            let index =
+                ((((word >> 15) & 1) << 2) | (((word >> 11) & 1) << 1) | ((word >> 10) & 1)) as u8;
+            return Ok(Some(Self::Sme2ZaBfmlalIndexed {
+                subtract: (word >> 3) & 1 == 1,
+                wv,
+                slice: ((word & 0x3) * 2) as u8,
+                zn,
+                zm,
+                index,
+            }));
+        }
+        if word & SME2_ZA_BFMLAL_GRP_MASK == SME2_ZA_BFMLAL_GRP_BASE {
+            let four = (word >> 16) & 1 == 1;
+            let wv = ((word >> 13) & 0x3) as u8;
+            let zm_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 17) & 0xF) << 1) as u8);
+            let zn_base = if four {
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 7) & 0x7) << 2) as u8)
+            } else {
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8)
+            };
+            return Ok(Some(Self::Sme2ZaBfmlalMultiZm {
+                subtract: (word >> 3) & 1 == 1,
+                four,
+                wv,
+                slice: ((word & 0x3) * 2) as u8,
+                zn_base,
+                zm_base,
+            }));
+        }
+        // SME2 multi-vector array MOVA (ZA array vector group -> Zd group). [17]=1; off[7:5], Zd>>1[4:1], vgx[10].
+        if word & SME2_MOVA_ARRAY_TO_VEC_MASK == SME2_MOVA_ARRAY_TO_VEC_BASE {
+            let four = (word >> 10) & 1 == 1;
+            let wv = ((word >> 13) & 0x3) as u8;
+            let off = ((word >> 5) & 0x7) as u8;
+            let zd_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 1) & 0xF) << 1) as u8);
+            return Ok(Some(Self::Sme2MovaArrayToVec {
+                four,
+                wv,
+                off,
+                zd_base,
+            }));
+        }
+        // SME2 multi-vector array MOVA (Zn group -> ZA array vector group). [17]=0; off[2:0], Zn>>1[9:6], vgx[10].
+        if word & SME2_MOVA_VEC_TO_ARRAY_MASK == SME2_MOVA_VEC_TO_ARRAY_BASE {
+            let four = (word >> 10) & 1 == 1;
+            let wv = ((word >> 13) & 0x3) as u8;
+            let off = (word & 0x7) as u8;
+            let zn_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8);
+            return Ok(Some(Self::Sme2MovaVecToArray {
+                four,
+                wv,
+                off,
+                zn_base,
+            }));
+        }
+        // SME2 multi-vector tile-slice MOVA (ZA tile slice group <-> Z group). [11]=0 separates it from the array MOVA.
+        // The combined (za_tile<<goff)|groff field is 3 bits; for vgx4 (except .d) only the low 2 are used, so a set
+        // reserved high bit is unallocated -> fall through.
+        if word & SME2_MOVA_TILE_TO_VEC_MASK == SME2_MOVA_TILE_BASE | (1 << 17) {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let four = (word >> 10) & 1 == 1;
+            let goff_bits = (4 - size.size_bits()).saturating_sub(if four { 2 } else { 1 });
+            let combined = (word >> 5) & 0x7;
+            if combined < (1u32 << (size.size_bits() + goff_bits)) {
+                let za_tile = (combined >> goff_bits) as u8;
+                let slice_offset = (combined & ((1u32 << goff_bits) - 1)) as u8;
+                let z_base = Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 1) & 0xF) << 1) as u8,
+                );
+                return Ok(Some(Self::Sme2MovaTileSlice {
+                    to_vector: true,
+                    size,
+                    vertical: (word >> 15) & 1 == 1,
+                    four,
+                    za_tile,
+                    slice_reg: ((word >> 13) & 0b11) as u8,
+                    slice_offset,
+                    z_base,
+                }));
+            }
+        }
+        if word & SME2_MOVA_TILE_TO_TILE_MASK == SME2_MOVA_TILE_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let four = (word >> 10) & 1 == 1;
+            let goff_bits = (4 - size.size_bits()).saturating_sub(if four { 2 } else { 1 });
+            let combined = word & 0x7;
+            if combined < (1u32 << (size.size_bits() + goff_bits)) {
+                let za_tile = (combined >> goff_bits) as u8;
+                let slice_offset = (combined & ((1u32 << goff_bits) - 1)) as u8;
+                let z_base = Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 6) & 0xF) << 1) as u8,
+                );
+                return Ok(Some(Self::Sme2MovaTileSlice {
+                    to_vector: false,
+                    size,
+                    vertical: (word >> 15) & 1 == 1,
+                    four,
+                    za_tile,
+                    slice_reg: ((word >> 13) & 0b11) as u8,
+                    slice_offset,
+                    z_base,
+                }));
+            }
+        }
+        // SME2.1 MOVAZ array (ZA array vector group -> Zd group, zeroing). The array MOVA-to-vec with [9]=1.
+        if word & SME2_MOVA_ARRAY_TO_VEC_MASK == SME2_MOVAZ_ARRAY_BASE {
+            let four = (word >> 10) & 1 == 1;
+            let wv = ((word >> 13) & 0x3) as u8;
+            let off = ((word >> 5) & 0x7) as u8;
+            let zd_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 1) & 0xF) << 1) as u8);
+            return Ok(Some(Self::Sme2MovazArray {
+                four,
+                wv,
+                off,
+                zd_base,
+            }));
+        }
+        // SME2.1 MOVAZ multi-vector tile slice (ZA tile-slice group -> Zd group, zeroing). The tile MOVA-to-vec with [9]=1.
+        if word & SME2_MOVA_TILE_TO_VEC_MASK == SME2_MOVAZ_TILE_MULTI_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let four = (word >> 10) & 1 == 1;
+            let goff_bits = (4 - size.size_bits()).saturating_sub(if four { 2 } else { 1 });
+            let combined = (word >> 5) & 0x7;
+            if combined < (1u32 << (size.size_bits() + goff_bits)) {
+                let za_tile = (combined >> goff_bits) as u8;
+                let slice_offset = (combined & ((1u32 << goff_bits) - 1)) as u8;
+                let z_base = Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 1) & 0xF) << 1) as u8,
+                );
+                return Ok(Some(Self::Sme2MovazTileMulti {
+                    size,
+                    vertical: (word >> 15) & 1 == 1,
+                    four,
+                    za_tile,
+                    slice_offset,
+                    slice_reg: ((word >> 13) & 0b11) as u8,
+                    z_base,
+                }));
+            }
+        }
+        // SME2.1 MOVAZ single tile slice (ZA tile slice -> Zd, zeroing; unpredicated). [18]=0, [17]=1, [9]=1; combined
+        // (za_tile<<(4-size)|off) at [8:5], a full 4-bit field with no reserved encodings.
+        if word & SME2_MOVAZ_TILE_SINGLE_MASK == SME2_MOVAZ_TILE_SINGLE_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let goff_bits = 4 - size.size_bits();
+            let combined = (word >> 5) & 0xF;
+            let za_tile = (combined >> goff_bits) as u8;
+            let slice_offset = (combined & ((1u32 << goff_bits) - 1)) as u8;
+            let z = Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8);
+            return Ok(Some(Self::Sme2MovazTileSingle {
+                size,
+                vertical: (word >> 15) & 1 == 1,
+                za_tile,
+                slice_offset,
+                slice_reg: ((word >> 13) & 0b11) as u8,
+                z,
+            }));
+        }
+        // SME2 MOVT (vector -> ZT0 lookup table). off[13:12], Zt[4:0].
+        if word & SME2_MOVT_TABLE_MASK == SME2_MOVT_TABLE_BASE {
+            let offset = ((word >> 12) & 0x3) as u8;
+            let zt = Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8);
+            return Ok(Some(Self::Sme2MovtTable { offset, zt }));
+        }
+        // SME2 multi-vector contiguous LD1/ST1, scalar+imm ([22]=1). [24]=0 + [0]=0 exclude strided + non-temporal.
+        if word & SME2_MULTIVEC_LDST_IMM_MASK == SME2_MULTIVEC_LDST_IMM_BASE {
+            let four = (word >> 15) & 1 == 1;
+            let q = ((word >> 16) & 0xF) as i32;
+            let imm = (if q >= 8 { q - 16 } else { q }) * if four { 4 } else { 2 };
+            return Ok(Some(Self::Sme2MultiVecContiguousImm {
+                store: (word >> 21) & 1 == 1,
+                non_temporal: word & 1 == 1,
+                msz: Arm64VectorElement::from_size_bits((word >> 13) & 0b11),
+                four,
+                png: Arm64PredicateAsCounter::from_index((word >> 10) & 0b111),
+                zt_base: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 1) & 0xF) << 1) as u8,
+                ),
+                rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5)),
+                imm: imm as i8,
+            }));
+        }
+        // SME2 multi-vector contiguous LD1/ST1, scalar+scalar ([22]=0). Rm==XZR is reserved -> fall through.
+        if word & SME2_MULTIVEC_LDST_SCALAR_MASK == SME2_MULTIVEC_LDST_SCALAR_BASE
+            && reg_field(word, 16) != 31
+        {
+            let four = (word >> 15) & 1 == 1;
+            return Ok(Some(Self::Sme2MultiVecContiguousScalar {
+                store: (word >> 21) & 1 == 1,
+                non_temporal: word & 1 == 1,
+                msz: Arm64VectorElement::from_size_bits((word >> 13) & 0b11),
+                four,
+                png: Arm64PredicateAsCounter::from_index((word >> 10) & 0b111),
+                zt_base: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 1) & 0xF) << 1) as u8,
+                ),
+                rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5)),
+                rm: Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16)),
+            }));
+        }
+        // SME2 STRIDED multi-vector load/store, scalar+imm ([24]=1, [22]=1). NT at [3]; vgx4 reserved [2] must be 0.
+        if word & SME2_MULTIVEC_LDST_IMM_MASK == SME2_MULTIVEC_STRIDED_IMM_BASE {
+            let four = (word >> 15) & 1 == 1;
+            if !(four && (word >> 2) & 1 == 1) {
+                let n = word & if four { 0b1_0011 } else { 0b1_0111 };
+                let q = ((word >> 16) & 0xF) as i32;
+                let imm = (if q >= 8 { q - 16 } else { q }) * if four { 4 } else { 2 };
+                return Ok(Some(Self::Sme2MultiVecStridedImm {
+                    store: (word >> 21) & 1 == 1,
+                    non_temporal: (word >> 3) & 1 == 1,
+                    msz: Arm64VectorElement::from_size_bits((word >> 13) & 0b11),
+                    four,
+                    png: Arm64PredicateAsCounter::from_index((word >> 10) & 0b111),
+                    strided_base: Arm64ScalableVectorRegister::from_operand_bits(n as u8),
+                    rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5)),
+                    imm: imm as i8,
+                }));
+            }
+        }
+        // SME2 STRIDED multi-vector load/store, scalar+scalar ([24]=1, [22]=0). Rm==XZR reserved + vgx4 [2] -> fall through.
+        if word & SME2_MULTIVEC_LDST_SCALAR_MASK == SME2_MULTIVEC_STRIDED_SCALAR_BASE
+            && reg_field(word, 16) != 31
+        {
+            let four = (word >> 15) & 1 == 1;
+            if !(four && (word >> 2) & 1 == 1) {
+                let n = word & if four { 0b1_0011 } else { 0b1_0111 };
+                return Ok(Some(Self::Sme2MultiVecStridedScalar {
+                    store: (word >> 21) & 1 == 1,
+                    non_temporal: (word >> 3) & 1 == 1,
+                    msz: Arm64VectorElement::from_size_bits((word >> 13) & 0b11),
+                    four,
+                    png: Arm64PredicateAsCounter::from_index((word >> 10) & 0b111),
+                    strided_base: Arm64ScalableVectorRegister::from_operand_bits(n as u8),
+                    rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5)),
+                    rm: Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16)),
+                }));
+            }
+        }
+        // SME2 LUTI2/LUTI4. Frame-match then dispatch: [18:17]=10 luti2 / 01 luti4 (else fall through); [14]=1 -> 2-vec
+        // (index [16:15]), else [15]=1 -> 4-vec (index [16]); [12] = .h. Re-validate the form + index range via the
+        // form table (rejects the unallocated luti4 .b 4-vec and the reserved high index bits).
+        if word & SME2_LUTI_FRAME_MASK == SME2_LUTI_FRAME_BASE {
+            let lut4 = match ((word >> 18) & 1, (word >> 17) & 1) {
+                (1, 0) => Some(false),
+                (0, 1) => Some(true),
+                _ => None,
+            };
+            let four_index = if (word >> 14) & 1 == 1 {
+                Some((false, ((word >> 15) & 0b11) as u8))
+            } else if (word >> 15) & 1 == 1 {
+                Some((true, ((word >> 16) & 1) as u8))
+            } else {
+                None
+            };
+            if let (Some(lut4), Some((four, index))) = (lut4, four_index) {
+                let half = (word >> 12) & 1 == 1;
+                if luti_form(lut4, four, half).is_some_and(|(_, _, max_index)| index <= max_index) {
+                    let zm =
+                        Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8);
+                    let zd_base = if four {
+                        Arm64ScalableVectorRegister::from_operand_bits(
+                            (((word >> 2) & 0x7) << 2) as u8,
+                        )
+                    } else {
+                        Arm64ScalableVectorRegister::from_operand_bits(
+                            (((word >> 1) & 0xF) << 1) as u8,
+                        )
+                    };
+                    return Ok(Some(Self::Sme2Luti {
+                        lut4,
+                        four,
+                        half,
+                        zd_base,
+                        zm,
+                        index,
+                    }));
+                }
+            }
+        }
+        // SVE2.1 WHILE-to-predicate-as-counter. [4]=1 (pinned in the mask) is the PN-counter dest marker.
+        if word & WHILE_PN_MASK == WHILE_PN_BASE {
+            return Ok(Some(Self::WhileToPredicateCounter {
+                op: Arm64WhileCounterOp::from_bits((word >> 10) & 0b11, (word >> 3) & 1),
+                size: Arm64VectorElement::from_size_bits((word >> 22) & 0b11),
+                four: (word >> 13) & 1 == 1,
+                pn: Arm64PredicateAsCounter::from_index(word & 0b111),
+                rn: Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5)),
+                rm: Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16)),
+            }));
+        }
+        // SVE2.1 quadword permute ZIPQ/UZPQ (3-same, op at [11:10]).
+        if word & SVE_QUAD_PERMUTE_MASK == SVE_QUAD_PERMUTE_BASE {
+            return Ok(Some(Self::SveQuadPermute {
+                op: Arm64SveQuadPermuteOp::from_bits((word >> 10) & 0b11),
+                size: Arm64VectorElement::from_size_bits((word >> 22) & 0b11),
+                zd: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                zn: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0x1F) as u8),
+            }));
+        }
+        // SVE2.1 quadword table lookup TBLQ ([12:10]=110, vs ZIPQ's [12]=0) / TBXQ (0x05 region).
+        if word & SVE_QUAD_TBLQ_MASK == SVE_QUAD_TBLQ_BASE {
+            return Ok(Some(Self::SveQuadTableLookup {
+                size: Arm64VectorElement::from_size_bits((word >> 22) & 0b11),
+                zd: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                zn: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0x1F) as u8),
+            }));
+        }
+        if word & SVE_QUAD_TBXQ_MASK == SVE_QUAD_TBXQ_BASE {
+            return Ok(Some(Self::SveQuadTableExtend {
+                size: Arm64VectorElement::from_size_bits((word >> 22) & 0b11),
+                zd: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                zn: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0x1F) as u8),
+            }));
+        }
+        // SVE2.1 DUPQ (broadcast indexed quadword element). The size+index fold into the tsz field [20:16]; the lowest
+        // set bit is the element size, the bits above it are the index. tsz==0 or a size marker >.d -> fall through.
+        if word & SVE_QUAD_DUPQ_MASK == SVE_QUAD_DUPQ_BASE {
+            let tsz = (word >> 16) & 0x1F;
+            let size_bits = tsz.trailing_zeros();
+            if tsz != 0 && size_bits <= 3 {
+                return Ok(Some(Self::SveQuadDupIndexed {
+                    size: Arm64VectorElement::from_size_bits(size_bits),
+                    zd: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                    zn: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                    index: (tsz >> (size_bits + 1)) as u8,
+                }));
+            }
+        }
+        // SVE2.1 EXTQ ([22]=1 vs DUPQ's 0).
+        if word & SVE_QUAD_EXTQ_MASK == SVE_QUAD_EXTQ_BASE {
+            return Ok(Some(Self::SveQuadExtract {
+                zd: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                zn: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                imm: ((word >> 16) & 0xF) as u8,
+            }));
+        }
+        // SVE2.1 BF16 predicated binary arithmetic (BFADD/BFSUB/BFMUL/BFMAX*/BFMIN*). op[18:16] (3 unallocated).
+        if let Some(op) = (word & SVE_BF16_PRED_BIN_MASK == SVE_BF16_PRED_BIN_BASE)
+            .then(|| Arm64SveBf16BinaryOp::from_bits((word >> 16) & 0b111))
+            .flatten()
+        {
+            return Ok(Some(Self::SveBf16PredicatedBinary {
+                op,
+                pg: Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                zdn: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+            }));
+        }
+        // SVE2.1 BF16 UNPREDICATED three-same binary (BFADD/BFSUB/BFMUL). op[11:10] (value 3 unallocated -> fall through).
+        if let Some(op) = (word & SVE_BF16_UNPRED_BIN_MASK == SVE_BF16_UNPRED_BIN_BASE)
+            .then(|| Arm64SveBf16BinaryOp::from_bits((word >> 10) & 0b11))
+            .flatten()
+        {
+            return Ok(Some(Self::SveBf16UnpredicatedBinary {
+                op,
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0x1F) as u8),
+                zn: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                zd: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+            }));
+        }
+        // SVE2.1 BFCLAMP (the size==00 BF16 slot of FCLAMP; FCLAMP's own decode guards size!=00 and falls through here).
+        if word & SVE_BF16_CLAMP_MASK == SVE_BF16_CLAMP_BASE {
+            return Ok(Some(Self::SveBf16Clamp {
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0x1F) as u8),
+                zn: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                zd: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+            }));
+        }
+        // SVE2.1 BFMLA/BFMLS (predicated fused multiply-add/subtract into Zda). op(mls)[13].
+        if word & SVE_BF16_MLA_MASK == SVE_BF16_MLA_BASE {
+            return Ok(Some(Self::SveBf16MulAdd {
+                sub: (word >> 13) & 1 == 1,
+                pg: Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0x1F) as u8),
+                zn: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                zda: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+            }));
+        }
+        // SVE2.1 BF16 indexed multiply (BFMUL by element). [13]=1 separates it from the MLA-indexed form. idx[22]+[20:19].
+        if word & SVE_BF16_MUL_IDX_MASK == SVE_BF16_MUL_IDX_BASE {
+            return Ok(Some(Self::SveBf16MulIndexed {
+                zd: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                zn: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0b111) as u8),
+                index: ((((word >> 22) & 1) << 2) | ((word >> 19) & 3)) as u8,
+            }));
+        }
+        // SVE2.1 BF16 indexed multiply-add/subtract (BFMLA/BFMLS by element). op(mls)[10].
+        if word & SVE_BF16_MLA_IDX_MASK == SVE_BF16_MLA_IDX_BASE {
+            return Ok(Some(Self::SveBf16MulAddIndexed {
+                sub: (word >> 10) & 1 == 1,
+                zda: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                zn: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0b111) as u8),
+                index: ((((word >> 22) & 1) << 2) | ((word >> 19) & 3)) as u8,
+            }));
+        }
+        // SVE2.1 WHILE-to-predicate-PAIR ([12]=1, vs the PN-counter form's [12]=0). The strict bit is [0] here.
+        if word & WHILE_PAIR_MASK == WHILE_PAIR_BASE {
+            return Ok(Some(Self::WhileToPredicatePair {
+                op: Arm64WhileCounterOp::from_bits((word >> 10) & 0b11, word & 1),
+                size: Arm64VectorElement::from_size_bits((word >> 22) & 0b11),
+                pd_base: Arm64PredicateRegister::from_operand_bits(
+                    (((word >> 1) & 0x7) << 1) as u8,
+                ),
+                rn: Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5)),
+                rm: Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16)),
+            }));
+        }
+        // SVE2.1 PTRUE predicate-as-counter.
+        if word & PTRUE_PN_MASK == PTRUE_PN_BASE {
+            return Ok(Some(Self::PTruePredicateCounter {
+                size: Arm64VectorElement::from_size_bits((word >> 22) & 0b11),
+                pn: Arm64PredicateAsCounter::from_index(word & 0b111),
+            }));
+        }
+        // SVE2.1 CNTP (count active in a predicate-as-counter).
+        if word & CNTP_PN_MASK == CNTP_PN_BASE {
+            return Ok(Some(Self::CountPredicateCounter {
+                size: Arm64VectorElement::from_size_bits((word >> 22) & 0b11),
+                four: (word >> 10) & 1 == 1,
+                pn: Arm64PredicateAsCounter::from_index((word >> 5) & 0b111),
+                rd: Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0)),
+            }));
+        }
+        // SVE2.1 PEXT (extract a predicate from a predicate-as-counter). [10]=0 single, [10]=1 pair.
+        if word & PEXT_SINGLE_MASK == PEXT_SINGLE_BASE {
+            return Ok(Some(Self::PredicateExtractSingle {
+                size: Arm64VectorElement::from_size_bits((word >> 22) & 0b11),
+                pd: Arm64PredicateRegister::from_operand_bits((word & 0xF) as u8),
+                pn: Arm64PredicateAsCounter::from_index((word >> 5) & 0b111),
+                index: ((word >> 8) & 0b11) as u8,
+            }));
+        }
+        if word & PEXT_PAIR_MASK == PEXT_PAIR_BASE {
+            return Ok(Some(Self::PredicateExtractPair {
+                size: Arm64VectorElement::from_size_bits((word >> 22) & 0b11),
+                pd_base: Arm64PredicateRegister::from_operand_bits(
+                    (((word >> 1) & 0x7) << 1) as u8,
+                ),
+                pn: Arm64PredicateAsCounter::from_index((word >> 5) & 0b111),
+                index: ((word >> 8) & 1) as u8,
+            }));
+        }
+        // SME2 PSEL (predicate select). The Pm.<T>[Wv, off] index uses the split tsz size+offset field.
+        if let Some((size, slice_offset)) = (word & SME_PSEL_MASK == SME_PSEL_BASE)
+            .then(|| decode_sme_psel_tsz(word))
+            .flatten()
+        {
+            let pd = Arm64PredicateRegister::from_operand_bits((word & 0xF) as u8);
+            let pn = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0xF) as u8);
+            let pm = Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8);
+            return Ok(Some(Self::SmePredicateSelect {
+                size,
+                pd,
+                pn,
+                pm,
+                slice_reg: ((word >> 16) & 0b11) as u8,
+                slice_offset,
+            }));
+        }
+        if let Some(op) = (word & SVE_INT_BIN_UNPRED_MASK == SVE_INT_BIN_UNPRED_BASE)
+            .then(|| Arm64SveIntBinUnpredOp::from_opcode((word >> 10) & 0b111))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveIntBinaryUnpredicated {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        if word & SVE_WHILE_MASK == SVE_WHILE_BASE {
+            let op = Arm64SveWhileOp::from_bits((word >> 11) & 1, (word >> 4) & 1);
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pd = Arm64PredicateRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveWhile {
+                op,
+                size,
+                compare_64: (word >> 12) & 1 == 1,
+                pd,
+                rn,
+                rm,
+            }));
+        }
+        // SVE2 WHILEGE/GT/HS/HI (while-greater loop predicates): the WHILE frame with [10]=0.
+        if word & SVE2_WHILE_GE_MASK == SVE2_WHILE_GE_BASE {
+            let op = Arm64Sve2WhileCompareOp::from_bits((word >> 11) & 1, (word >> 4) & 1);
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pd = Arm64PredicateRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2WhileGreater {
+                op,
+                size,
+                compare_64: (word >> 12) & 1 == 1,
+                pd,
+                rn,
+                rm,
+            }));
+        }
+        // SVE2 WHILERW/WHILEWR (pointer-hazard predicates): [15:12]=0011, rw at [4].
+        if word & SVE2_WHILE_HAZARD_MASK == SVE2_WHILE_HAZARD_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pd = Arm64PredicateRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2WhilePointerHazard {
+                write_after_read: (word >> 4) & 1 == 0,
+                size,
+                pd,
+                rn,
+                rm,
+            }));
+        }
+        // SVE predicated integer binary (destructive): same mask value as the unpredicated group, but bit21=0.
+        if let Some(op) = (word & SVE_INT_BIN_UNPRED_MASK == SVE_PRED_INT_BIN_BASE)
+            .then(|| Arm64SvePredIntBinOp::from_opcode((word >> 16) & 0x1F))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveIntBinaryPredicated {
+                op,
+                size,
+                pg,
+                zdn,
+                zm,
+            }));
+        }
+        // SVE contiguous load/store (scalar + immediate). Loads ([15:13]=101, `/z`) and stores ([15:13]=111).
+        if word & SVE_LDST1_MASK == SVE_LD1_BASE {
+            let load = Arm64SveContiguousLoadType::from_dtype((word >> 21) & 0xF);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            return Ok(Some(Self::SveContiguousLoad {
+                load,
+                pg,
+                zt,
+                rn,
+                imm4: sign_extend((word >> 16) & 0xF, 4) as i8,
+            }));
+        }
+        if word & SVE_LDST1_MASK == SVE_ST1_BASE {
+            let dtype = (word >> 21) & 0xF;
+            let msize = Arm64VectorElement::from_size_bits(dtype >> 2);
+            let esize = Arm64VectorElement::from_size_bits(dtype & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            return Ok(Some(Self::SveContiguousStore {
+                msize,
+                esize,
+                pg,
+                zt,
+                rn,
+                imm4: sign_extend((word >> 16) & 0xF, 4) as i8,
+            }));
+        }
+        // SVE contiguous load/store, scalar base + scalar index ([Xn, Xm, LSL #log2(access)]). Rm==31 (XZR) is the
+        // reserved "use scalar+imm" encoding and falls through.
+        if word & SVE_LDST1_SS_MASK == SVE_LD1_SS_BASE && reg_field(word, 16) != 31 {
+            let load = Arm64SveContiguousLoadType::from_dtype((word >> 21) & 0xF);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveContiguousLoadScalar {
+                load,
+                pg,
+                zt,
+                rn,
+                rm,
+            }));
+        }
+        if word & SVE_LDST1_SS_MASK == SVE_ST1_SS_BASE && reg_field(word, 16) != 31 {
+            let dtype = (word >> 21) & 0xF;
+            let msize = Arm64VectorElement::from_size_bits(dtype >> 2);
+            let esize = Arm64VectorElement::from_size_bits(dtype & 0b11);
+            // esize >= msize is required for a real store; the dtype values where esize < msize belong to the STR(Z)
+            // fill/spill, which shares [31:25]+[15:13] here -- reject so it falls through to the fill/spill decode.
+            if esize.size_bits() >= msize.size_bits() {
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+                let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+                return Ok(Some(Self::SveContiguousStoreScalar {
+                    msize,
+                    esize,
+                    pg,
+                    zt,
+                    rn,
+                    rm,
+                }));
+            }
+        }
+        // SVE load-and-replicate (LD1R{S}{B,H,W,D}). dtype = dtypeh[24:23]:dtypel[14:13].
+        if word & SVE_LD1R_MASK == SVE_LD1R_BASE {
+            let dtype = (((word >> 23) & 0b11) << 2) | ((word >> 13) & 0b11);
+            let load = Arm64SveContiguousLoadType::from_dtype(dtype);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            return Ok(Some(Self::SveLoadReplicate {
+                load,
+                pg,
+                zt,
+                rn,
+                imm6: ((word >> 16) & 0x3F) as u8,
+            }));
+        }
+        // SVE load-and-replicate quadword (LD1RQ): [15:13]=000 scalar+scalar (Rm!=31), [15:13]=001 scalar+imm.
+        if word & SVE_LD1RQ_MASK == SVE_LD1RQ_SS_BASE && reg_field(word, 16) != 31 {
+            let size = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveLoadReplicateQuadScalar {
+                size,
+                pg,
+                zt,
+                rn,
+                rm,
+            }));
+        }
+        if word & SVE_LD1RQ_MASK == SVE_LD1RQ_IMM_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            return Ok(Some(Self::SveLoadReplicateQuadImm {
+                size,
+                pg,
+                zt,
+                rn,
+                imm4: sign_extend((word >> 16) & 0xF, 4) as i8,
+            }));
+        }
+        // SVE load-and-replicate octword (LD1RO, FEAT_F64MM): like LD1RQ but [21]=1.
+        if word & SVE_LD1RQ_MASK == SVE_LD1RO_SS_BASE && reg_field(word, 16) != 31 {
+            let size = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveLoadReplicateOctScalar {
+                size,
+                pg,
+                zt,
+                rn,
+                rm,
+            }));
+        }
+        if word & SVE_LD1RQ_MASK == SVE_LD1RO_IMM_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            return Ok(Some(Self::SveLoadReplicateOctImm {
+                size,
+                pg,
+                zt,
+                rn,
+                imm4: sign_extend((word >> 16) & 0xF, 4) as i8,
+            }));
+        }
+        // SVE contiguous prefetch (PRFB/H/W/D). scalar+imm: msz at [14:13]; scalar+scalar: msz at [24:23].
+        if word & SVE_PRF_IMM_MASK == SVE_PRF_IMM_BASE {
+            let msz = Arm64VectorElement::from_size_bits((word >> 13) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            return Ok(Some(Self::SvePrefetchImm {
+                msz,
+                prfop: (word & 0xF) as u8,
+                pg,
+                rn,
+                imm6: sign_extend((word >> 16) & 0x3F, 6) as i8,
+            }));
+        }
+        if word & SVE_PRF_SS_MASK == SVE_PRF_SS_BASE && reg_field(word, 16) != 31 {
+            let msz = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SvePrefetchScalar {
+                msz,
+                prfop: (word & 0xF) as u8,
+                pg,
+                rn,
+                rm,
+            }));
+        }
+        // SVE gather prefetch (vector base + immediate). [15:13]=111, [21]=0.
+        if word & SVE_GATHER_PRF_IMM_MASK == SVE_GATHER_PRF_IMM_BASE {
+            let element = if (word >> 30) & 1 == 1 {
+                Arm64VectorElement::D
+            } else {
+                Arm64VectorElement::S
+            };
+            let msz = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveGatherPrefetchVectorImm {
+                msz,
+                element,
+                prfop: (word & 0xF) as u8,
+                pg,
+                zn,
+                imm5: ((word >> 16) & 0x1F) as u8,
+            }));
+        }
+        // SVE gather prefetch (scalar base + vector offset). [24:23]=00, [21]=1; mode xs[22]:lsl[15] (0,1 unallocated).
+        if let Some(mode) = (word & SVE_GATHER_PRF_SV_MASK == SVE_GATHER_PRF_SV_BASE)
+            .then(|| Arm64SveOffsetMode::from_xs_lsl((word >> 22) & 1, (word >> 15) & 1))
+            .flatten()
+        {
+            let element = if (word >> 30) & 1 == 1 {
+                Arm64VectorElement::D
+            } else {
+                Arm64VectorElement::S
+            };
+            let lsl_ok = !matches!(mode, Arm64SveOffsetMode::Lsl)
+                || matches!(element, Arm64VectorElement::D);
+            if lsl_ok {
+                let msz = Arm64VectorElement::from_size_bits((word >> 13) & 0b11);
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+                let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+                return Ok(Some(Self::SveGatherPrefetchScalarVector {
+                    msz,
+                    element,
+                    mode,
+                    prfop: (word & 0xF) as u8,
+                    pg,
+                    rn,
+                    zm,
+                }));
+            }
+        }
+        // SVE contiguous non-temporal (LDNT1/STNT1). scalar+scalar (Rm!=31) and scalar+immediate, load and store.
+        let nt_scalar_store = if word & SVE_NT_SS_MASK == SVE_NT_LOAD_SS_BASE {
+            Some(false)
+        } else if word & SVE_NT_SS_MASK == SVE_NT_STORE_SS_BASE {
+            Some(true)
+        } else {
+            None
+        };
+        if let Some(store) = nt_scalar_store.filter(|_| reg_field(word, 16) != 31) {
+            let size = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveNonTemporalScalar {
+                store,
+                size,
+                pg,
+                zt,
+                rn,
+                rm,
+            }));
+        }
+        let nt_imm_store = if word & SVE_NT_IMM_MASK == SVE_NT_LOAD_IMM_BASE {
+            Some(false)
+        } else if word & SVE_NT_IMM_MASK == SVE_NT_STORE_IMM_BASE {
+            Some(true)
+        } else {
+            None
+        };
+        if let Some(store) = nt_imm_store {
+            let size = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            return Ok(Some(Self::SveNonTemporalImm {
+                store,
+                size,
+                pg,
+                zt,
+                rn,
+                imm4: sign_extend((word >> 16) & 0xF, 4) as i8,
+            }));
+        }
+        // SVE structured LD2/3/4 + ST2/3/4 (FEAT_SVE). Same bases as LDNT1 (above); count[22:21]!=00 distinguishes
+        // (from_bits returns None for 00, so an LDNT1 word -- already claimed -- falls through here harmlessly).
+        let struct_imm_store = if word & SVE_STRUCT_IMM_MASK == SVE_STRUCT_LD_IMM_BASE {
+            Some(false)
+        } else if word & SVE_STRUCT_IMM_MASK == SVE_STRUCT_ST_IMM_BASE {
+            Some(true)
+        } else {
+            None
+        };
+        if let Some(store) = struct_imm_store
+            && let Some(count) = Arm64SveStructureCount::from_bits((word >> 21) & 0b11)
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            return Ok(Some(Self::SveStructuredLoadStoreImm {
+                store,
+                count,
+                size,
+                zt,
+                pg,
+                rn,
+                imm4: sign_extend((word >> 16) & 0xF, 4) as i8,
+            }));
+        }
+        let struct_ss_store = if word & SVE_STRUCT_SS_MASK == SVE_STRUCT_LD_SS_BASE {
+            Some(false)
+        } else if word & SVE_STRUCT_SS_MASK == SVE_STRUCT_ST_SS_BASE {
+            Some(true)
+        } else {
+            None
+        };
+        if let Some(store) = struct_ss_store.filter(|_| reg_field(word, 16) != 31)
+            && let Some(count) = Arm64SveStructureCount::from_bits((word >> 21) & 0b11)
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveStructuredLoadStoreScalar {
+                store,
+                count,
+                size,
+                zt,
+                pg,
+                rn,
+                rm,
+            }));
+        }
+        // SVE contiguous first-fault load (LDFF1, scalar+scalar; Rm may be XZR). [15:13]=011.
+        if word & SVE_LDST1_SS_MASK == SVE_LDFF1_SS_BASE {
+            let load = Arm64SveContiguousLoadType::from_dtype((word >> 21) & 0xF);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveLoadFirstFault {
+                load,
+                pg,
+                zt,
+                rn,
+                rm,
+            }));
+        }
+        // SVE contiguous non-fault load (LDNF1, scalar+imm). [20]=1 keeps it off the contiguous LD1 ([20]=0).
+        if word & SVE_LDST1_MASK == SVE_LDNF1_IMM_BASE {
+            let load = Arm64SveContiguousLoadType::from_dtype((word >> 21) & 0xF);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            return Ok(Some(Self::SveLoadNonFault {
+                load,
+                pg,
+                zt,
+                rn,
+                imm4: sign_extend((word >> 16) & 0xF, 4) as i8,
+            }));
+        }
+        // SVE gather load (vector base + immediate). Only the architecturally-valid (element, msz, sign) triples
+        // decode; an out-of-range access size or a signed full-width access is unallocated and falls through.
+        if word & SVE_GATHER_VEC_IMM_MASK == SVE_GATHER_VEC_IMM_BASE {
+            let element = if (word >> 30) & 1 == 1 {
+                Arm64VectorElement::D
+            } else {
+                Arm64VectorElement::S
+            };
+            let msz = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
+            let signed = (word >> 14) & 1 == 0;
+            if check_sve_gather_element(msz, element, signed).is_ok() {
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                return Ok(Some(Self::SveGatherLoadVectorImm {
+                    msz,
+                    element,
+                    signed,
+                    pg,
+                    zt,
+                    zn,
+                    imm5: ((word >> 16) & 0x1F) as u8,
+                }));
+            }
+        }
+        // SVE scatter store (vector base + immediate). element_s at [21]; only access-size <= element decodes.
+        if word & SVE_SCATTER_VEC_IMM_MASK == SVE_SCATTER_VEC_IMM_BASE {
+            let element = if (word >> 21) & 1 == 1 {
+                Arm64VectorElement::S
+            } else {
+                Arm64VectorElement::D
+            };
+            let msz = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
+            if msz.size_bits() <= element.size_bits() {
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                return Ok(Some(Self::SveScatterStoreVectorImm {
+                    msz,
+                    element,
+                    pg,
+                    zt,
+                    zn,
+                    imm5: ((word >> 16) & 0x1F) as u8,
+                }));
+            }
+        }
+        // SVE scatter store (scalar base + vector offset). Checked after the vec+imm scatter and the contiguous store
+        // (which take the [22]=1&[15:13]=101 and [14:13]=11 cases). mode [14:13]=11 is unallocated and falls through.
+        if let Some(mode) = (word & SVE_SCATTER_SV_MASK == SVE_SCATTER_SV_BASE)
+            .then(|| Arm64SveOffsetMode::from_bits((word >> 14) & 1, (word >> 13) & 1))
+            .flatten()
+        {
+            let element = if (word >> 22) & 1 == 1 {
+                Arm64VectorElement::S
+            } else {
+                Arm64VectorElement::D
+            };
+            let msz = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
+            let lsl_ok = !matches!(mode, Arm64SveOffsetMode::Lsl)
+                || matches!(element, Arm64VectorElement::D);
+            if msz.size_bits() <= element.size_bits() && lsl_ok {
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+                let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+                return Ok(Some(Self::SveScatterStoreScalarVector {
+                    msz,
+                    element,
+                    mode,
+                    scaled: (word >> 21) & 1 == 1,
+                    pg,
+                    zt,
+                    rn,
+                    zm,
+                }));
+            }
+        }
+        // SVE gather load (scalar base + vector offset). Decoded after fill/spill + vec+imm gather + all prefetch + NT
+        // claim their words; the strict validation (legal element/msz/sign, valid mode, NOT byte-scaled) rejects the
+        // SVE2 NT-gather (mode xs=0,lsl=1) and the prefetch (byte+scaled) so non-loads fall through to InvalidOpcode.
+        if let Some(mode) = (word & SVE_GATHER_LOAD_SV_MASK == SVE_GATHER_LOAD_SV_BASE)
+            .then(|| Arm64SveOffsetMode::from_xs_lsl((word >> 22) & 1, (word >> 15) & 1))
+            .flatten()
+        {
+            let element = if (word >> 30) & 1 == 1 {
+                Arm64VectorElement::D
+            } else {
+                Arm64VectorElement::S
+            };
+            let msz = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
+            let signed = (word >> 14) & 1 == 0;
+            let scaled = (word >> 21) & 1 == 1;
+            let lsl_ok = !matches!(mode, Arm64SveOffsetMode::Lsl)
+                || matches!(element, Arm64VectorElement::D);
+            let byte_scaled = matches!(msz, Arm64VectorElement::B) && scaled;
+            if lsl_ok && !byte_scaled && check_sve_gather_element(msz, element, signed).is_ok() {
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+                let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+                return Ok(Some(Self::SveGatherLoadScalarVector {
+                    msz,
+                    element,
+                    signed,
+                    first_fault: (word >> 13) & 1 == 1,
+                    mode,
+                    scaled,
+                    pg,
+                    zt,
+                    rn,
+                    zm,
+                }));
+            }
+        }
+        // SVE2 gather non-temporal load (vector base + scalar offset). .s has U at [13]; .d has U at [14].
+        if word & SVE2_NT_GATHER_S_MASK == SVE2_NT_GATHER_S_BASE {
+            let signed = (word >> 13) & 1 == 0;
+            let msz = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
+            if check_sve_gather_element(msz, Arm64VectorElement::S, signed).is_ok() {
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+                return Ok(Some(Self::Sve2GatherNonTemporalLoad {
+                    msz,
+                    element: Arm64VectorElement::S,
+                    signed,
+                    pg,
+                    zt,
+                    zn,
+                    rm,
+                }));
+            }
+        }
+        if word & SVE2_NT_GATHER_D_MASK == SVE2_NT_GATHER_D_BASE {
+            let signed = (word >> 14) & 1 == 0;
+            let msz = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
+            if check_sve_gather_element(msz, Arm64VectorElement::D, signed).is_ok() {
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+                return Ok(Some(Self::Sve2GatherNonTemporalLoad {
+                    msz,
+                    element: Arm64VectorElement::D,
+                    signed,
+                    pg,
+                    zt,
+                    zn,
+                    rm,
+                }));
+            }
+        }
+        // SVE2 scatter non-temporal store (vector base + scalar offset). element at [22]; no sign-extend.
+        if word & SVE2_NT_SCATTER_MASK == SVE2_NT_SCATTER_BASE {
+            let element = if (word >> 22) & 1 == 1 {
+                Arm64VectorElement::S
+            } else {
+                Arm64VectorElement::D
+            };
+            let msz = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
+            if msz.size_bits() <= element.size_bits() {
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+                return Ok(Some(Self::Sve2ScatterNonTemporalStore {
+                    msz,
+                    element,
+                    pg,
+                    zt,
+                    zn,
+                    rm,
+                }));
+            }
+        }
+        // SVE integer compare (vectors) -> predicate. Only the modeled op-bit combinations decode; others (the
+        // unmodeled compare forms / neighbouring 0x24 groups) fall through.
+        if let Some(op) = (word & SVE_INT_CMP_VEC_MASK == SVE_INT_CMP_VEC_BASE)
+            .then(|| Arm64SveIntCompareOp::from_bits((word >> 13) & 0b111, (word >> 4) & 1))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pd = Arm64PredicateRegister::from_operand_bits(reg_field(word, 0));
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveIntCompareVectors {
+                op,
+                size,
+                pd,
+                pg,
+                zn,
+                zm,
+            }));
+        }
+        // SVE predicated FP binary (destructive). Same mask value; distinguished by the 0x65.. base + [15:13]=100.
+        // SVE BFSCALE (FEAT_SVE_BFSCALE): FSCALE in the BF16 size==00 slot. Checked BEFORE the regular FP pred-bin decode,
+        // which would otherwise read size==00 as a bogus `.b` FSCALE.
+        if word & SVE_BFSCALE_MASK == SVE_BFSCALE_BASE {
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveBfscale { pg, zdn, zm }));
+        }
+        // SVE2.2 FIRSTP/LASTP (predicate-extract to a GPR). [20:16]=1 (firstp) / 2 (lastp); other values fall through.
+        if word & SVE_PRED_EXTRACT_MASK == SVE_PRED_EXTRACT_BASE {
+            let op = (word >> 16) & 0x1F;
+            if op == 1 || op == 2 {
+                let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+                let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let pn = Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8);
+                return Ok(Some(Self::SvePredExtractIndex {
+                    last: op == 2,
+                    size,
+                    rd,
+                    pg,
+                    pn,
+                }));
+            }
+        }
+        // SVE2.2 EXPAND (pack Pg-active elements of Zn into the low lanes of Zd).
+        if word & SVE_EXPAND_MASK == SVE_EXPAND_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveExpand { size, zd, pg, zn }));
+        }
+        if let Some(op) = (word & SVE_INT_BIN_UNPRED_MASK == SVE_FP_PRED_BIN_BASE)
+            .then(|| Arm64SveFpPredBinOp::from_opcode((word >> 16) & 0x1F))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveFpBinaryPredicated {
+                op,
+                size,
+                pg,
+                zdn,
+                zm,
+            }));
+        }
+        // SVE FP compare (vectors) -> predicate. Reuses the int-compare mask value; the 0x65.. base + bit14=1 select it.
+        if let Some(op) = (word & SVE_INT_CMP_VEC_MASK == SVE_FP_CMP_VEC_BASE)
+            .then(|| Arm64SveFpCompareOp::from_bits((word >> 13) & 0b111, (word >> 4) & 1))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pd = Arm64PredicateRegister::from_operand_bits(reg_field(word, 0));
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveFpCompareVectors {
+                op,
+                size,
+                pd,
+                pg,
+                zn,
+                zm,
+            }));
+        }
+        // SVE FADDA (FP strictly-ordered accumulating reduction): pins [31:24]+[21:16]+[15:13]; size/Pg/Zm/Vdn vary.
+        if word & 0xFF3F_E000 == SVE_FADDA_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let vdn = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveFpAddStrictReduction { size, pg, vdn, zm }));
+        }
+        // SVE FTMAD (FP trigonometric multiply-add): pins [31:24]+[21:19]+[15:10]; size/imm3/Zm/Zdn vary.
+        if word & 0xFF38_FC00 == SVE_FTMAD_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let imm3 = ((word >> 16) & 0b111) as u8;
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveFpTrigMulAdd {
+                size,
+                zdn,
+                zm,
+                imm3,
+            }));
+        }
+        // SVE PUNPKHI/PUNPKLO (predicate unpack): pins all but H[16]/Pn[8:5]/Pd[3:0].
+        if word & 0xFFFE_FE10 == SVE_PUNPK_BASE {
+            let high = (word >> 16) & 1 == 1;
+            let pn = Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8);
+            let pd = Arm64PredicateRegister::from_operand_bits((word & 0xF) as u8);
+            return Ok(Some(Self::SvePredicateUnpack { high, pd, pn }));
+        }
+        // SVE2 EORBT/EORTB (interleaving EOR): pins [31:24]+[21]+[15:11]; size/Zm/tb/Zn/Zd vary.
+        if word & 0xFF20_F800 == SVE2_EORBT_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            let top = (word >> 10) & 1 == 1;
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::Sve2InterleavingEor {
+                top,
+                size,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        // SVE INDEX (arithmetic sequence). bit10 = base-is-register, bit11 = step-is-register.
+        if word & SVE_INDEX_MASK == SVE_INDEX_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let decode_field = |field: u32, is_reg: bool| -> Arm64SveIndexOperand {
+                if is_reg {
+                    Arm64SveIndexOperand::Register(Arm64GeneralPurposeRegister::from_operand_bits(
+                        field as u8,
+                    ))
+                } else {
+                    Arm64SveIndexOperand::Immediate(sign_extend(field, 5) as i8)
+                }
+            };
+            let base = decode_field((word >> 5) & 0x1F, (word >> 10) & 1 == 1);
+            let step = decode_field((word >> 16) & 0x1F, (word >> 11) & 1 == 1);
+            return Ok(Some(Self::SveIndex {
+                size,
+                zd,
+                base,
+                step,
+            }));
+        }
+        // SVE RDVL / ADDVL / ADDPL (scaled vector / predicate length). [15:11]=01010, imm6 signed @[10:5].
+        if word & SVE_RDVL_MASK == SVE_RDVL_BASE {
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveReadVectorLength {
+                rd,
+                imm6: sign_extend((word >> 5) & 0x3F, 6) as i8,
+            }));
+        }
+        if word & SVE_ADDVPL_MASK == SVE_ADDVL_BASE {
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 16));
+            return Ok(Some(Self::SveAddVectorLength {
+                rd,
+                rn,
+                imm6: sign_extend((word >> 5) & 0x3F, 6) as i8,
+            }));
+        }
+        if word & SVE_ADDVPL_MASK == SVE_ADDPL_BASE {
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 16));
+            return Ok(Some(Self::SveAddPredicateLength {
+                rd,
+                rn,
+                imm6: sign_extend((word >> 5) & 0x3F, 6) as i8,
+            }));
+        }
+        // SME streaming-length reads (RDSVL/ADDSVL/ADDSPL): like RDVL/ADDVL/ADDPL but with bit11=1.
+        if word & SME_RDSVL_MASK == SME_RDSVL_BASE {
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SmeReadStreamingVectorLength {
+                rd,
+                imm6: sign_extend((word >> 5) & 0x3F, 6) as i8,
+            }));
+        }
+        if word & SME_ADDSVPL_MASK == SME_ADDSVL_BASE {
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 16));
+            return Ok(Some(Self::SmeAddStreamingVectorLength {
+                rd,
+                rn,
+                imm6: sign_extend((word >> 5) & 0x3F, 6) as i8,
+            }));
+        }
+        if word & SME_ADDSVPL_MASK == SME_ADDSPL_BASE {
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 16));
+            return Ok(Some(Self::SmeAddStreamingPredicateLength {
+                rd,
+                rn,
+                imm6: sign_extend((word >> 5) & 0x3F, 6) as i8,
+            }));
+        }
+        // SME floating-point outer product (FMOPA/FMOPS/BFMOPA/BFMOPS). precision from [24] (bf16) and [22] (.d).
+        if let Some(precision) = (word & SME_FP_MOP_MASK == SME_FP_MOP_BASE)
+            .then(|| Arm64SmeFpPrecision::from_bits((word >> 24) & 1, (word >> 22) & 1))
+            .flatten()
+        {
+            let za_tile = (word & 0x7) as u8;
+            if za_tile <= precision.max_tile() {
+                let pm = Arm64PredicateRegister::from_operand_bits(((word >> 13) & 0b111) as u8);
+                let pn = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+                return Ok(Some(Self::SmeFpOuterProduct {
+                    precision,
+                    subtract: (word >> 4) & 1 == 1,
+                    za_tile,
+                    pn,
+                    pm,
+                    zn,
+                    zm,
+                }));
+            }
+        }
+        // SME2 bitwise outer product BMOPA/BMOPS (.s only, [3]=1 marker over the FP-MOP frame).
+        if word & SME_BMOP_MASK == SME_BMOP_BASE {
+            return Ok(Some(Self::SmeBitwiseOuterProduct {
+                subtract: (word >> 4) & 1 == 1,
+                za_tile: (word & 0x3) as u8,
+                pn: Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8),
+                pm: Arm64PredicateRegister::from_operand_bits(((word >> 13) & 0b111) as u8),
+                zn: Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5)),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16)),
+            }));
+        }
+        // SME2 FP8 outer product (FMOPA from .b sources; NO FMOPS). [3]=0 -> .s (F8F32, tiles 0-3); [3]=1 -> .h (F8F16,
+        // tiles 0-1, so [1] must be 0). base 0x80A0_0000 ([21]=1 distinguishes it from the FP32/FP16/BF16 FMOPA).
+        if word & SME_FP8_MOP_MASK == SME_FP8_MOP_BASE {
+            let single = (word >> 3) & 1 == 0;
+            if single || (word >> 1) & 1 == 0 {
+                let za_tile = if single {
+                    (word & 0x3) as u8
+                } else {
+                    (word & 0x1) as u8
+                };
+                let pm = Arm64PredicateRegister::from_operand_bits(((word >> 13) & 0b111) as u8);
+                let pn = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+                return Ok(Some(Self::SmeFp8OuterProduct {
+                    single,
+                    za_tile,
+                    pn,
+                    pm,
+                    zn,
+                    zm,
+                }));
+            }
+        }
+        // SME2 BFloat16 outer product into a .h ZA tile (BFMOPA/BFMOPS, FEAT_SME_B16B16); [21]=1+[3]=1 separate it from
+        // the FEAT_SME .s BFMOPA (whose mask pins [21]=0+[3]=0).
+        if word & SME_16BIT_MOP_H_MASK == SME_16BIT_MOP_H_BASE {
+            return Ok(Some(Self::Sme16BitOuterProductH {
+                bf16: (word >> 21) & 1 == 1,
+                subtract: (word >> 4) & 1 == 1,
+                za_tile: (word & 1) as u8,
+                pm: Arm64PredicateRegister::from_operand_bits(((word >> 13) & 0b111) as u8),
+                pn: Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8),
+                zn: Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5)),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16)),
+            }));
+        }
+        // SME integer outer product (SMOPA/UMOPA/SUMOPA/USMOPA + S forms). size .s (.b sources) / .d (.h sources).
+        if word & SME_INT_MOP_MASK == SME_INT_MOP_BASE {
+            let size = if (word >> 22) & 1 == 1 {
+                Arm64VectorElement::D
+            } else {
+                Arm64VectorElement::S
+            };
+            let za_tile = (word & 0x7) as u8;
+            let max_tile = if matches!(size, Arm64VectorElement::D) {
+                7
+            } else {
+                3
+            };
+            if za_tile <= max_tile {
+                let pm = Arm64PredicateRegister::from_operand_bits(((word >> 13) & 0b111) as u8);
+                let pn = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+                return Ok(Some(Self::SmeIntOuterProduct {
+                    unsigned_first: (word >> 24) & 1 == 1,
+                    unsigned_second: (word >> 21) & 1 == 1,
+                    subtract: (word >> 4) & 1 == 1,
+                    size,
+                    za_tile,
+                    pn,
+                    pm,
+                    zn,
+                    zm,
+                }));
+            }
+        }
+        // FEAT_SME_TMOP sparse outer product (STMOPA/UTMOPA/USTMOPA/SUTMOPA/BFTMOPA/FTMOPA + the FP8 / FP16-dest FTMOPA
+        // forms). [23]=0 + [22]=1 separate it from the predicated *MOPA outer products (all [23]=1, decoded above). The
+        // op selector ([24]/[21]/[15]/[3]) picks one of the 9 ops; an unallocated combination falls through.
+        if let Some(op) = (word & SME_TMOP_MASK == SME_TMOP_BASE)
+            .then(|| Arm64SmeTmopOp::from_op_bits(word & SME_TMOP_OP_MASK))
+            .flatten()
+        {
+            let max_tile = if op.tile_is_h() { 1 } else { 3 };
+            let za_tile = (word & 0x3) as u8;
+            if za_tile <= max_tile {
+                return Ok(Some(Self::SmeTmop {
+                    op,
+                    za_tile,
+                    zm: Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16)),
+                    zk: Arm64ScalableVectorRegister::from_operand_bits(
+                        20 + ((word >> 10) & 0x3) as u8,
+                    ),
+                    zn: Arm64ScalableVectorRegister::from_operand_bits(
+                        (((word >> 6) & 0xF) << 1) as u8,
+                    ),
+                    index: ((word >> 4) & 0x3) as u8,
+                }));
+            }
+        }
+        // FEAT_SME_MOP4 quarter-tile outer product (SMOP4A/.../FMOP4A/BFMOP4A + *S). [23:22]=00 separate it from TMOP
+        // ([22]=1) and the predicated *MOPA ([23]=1). The op selector ([24]/[21]/[15]) picks one of 7 kinds; the .d
+        // (i16i64/f64f64) sub-encoding ([22]=1,[23]=1,[3]=1) is decoded by the .d MOP4 arm below; it falls through this .s mask (which pins [23:22]=00,[3]=0).
+        if let Some(kind) = (word & SME_MOP4_MASK == SME_MOP4_BASE)
+            .then(|| Arm64SmeMop4Kind::from_selector(word & SME_MOP4_OP_MASK))
+            .flatten()
+        {
+            return Ok(Some(Self::SmeMop4 {
+                kind,
+                subtract: (word >> 4) & 1 == 1,
+                za_tile: (word & 0x3) as u8,
+                zn: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 6) & 0x7) << 1) as u8,
+                ),
+                zn_list: (word >> 9) & 1 == 1,
+                zm: Arm64ScalableVectorRegister::from_operand_bits(
+                    (16 + (((word >> 17) & 0x7) << 1)) as u8,
+                ),
+                zm_list: (word >> 20) & 1 == 1,
+            }));
+        }
+        // FEAT_SME_MOP4 .d (64-bit tile) outer product: the i16i64 integer + f64f64 fp forms. [23:22]=11 + [3]=1 +
+        // [29]=int-marker; za_tile is [2:0] (8 tiles). Disjoint from the .s MOP4 (whose mask pins [23:22]=00,[3]=0).
+        if let Some(kind) = (word & SME_MOP4_D_MASK == SME_MOP4_D_BASE)
+            .then(|| Arm64SmeMop4DoubleKind::from_selector(word & SME_MOP4_D_OP_MASK))
+            .flatten()
+        {
+            return Ok(Some(Self::SmeMop4Double {
+                kind,
+                subtract: (word >> 4) & 1 == 1,
+                za_tile: (word & 0x7) as u8,
+                zn: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 6) & 0x7) << 1) as u8,
+                ),
+                zn_list: (word >> 9) & 1 == 1,
+                zm: Arm64ScalableVectorRegister::from_operand_bits(
+                    (16 + (((word >> 17) & 0x7) << 1)) as u8,
+                ),
+                zm_list: (word >> 20) & 1 == 1,
+            }));
+        }
+        // FEAT_SME_MOP4 .h (16-bit tile) FP outer product: f16 (FEAT_SME_F16F16) / bf16 (FEAT_SME_B16B16). The [3]=1
+        // (.h tile) FP sibling of the .s MOP4; [21] selects bf16. Disjoint from .s ([3]=0) and .d ([23:22]=11).
+        if word & SME_MOP4_H_MASK == SME_MOP4_H_BASE {
+            return Ok(Some(Self::SmeMop4Half {
+                bf16: (word >> 21) & 1 == 1,
+                subtract: (word >> 4) & 1 == 1,
+                za_tile: (word & 0x1) as u8,
+                zn: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 6) & 0x7) << 1) as u8,
+                ),
+                zn_list: (word >> 9) & 1 == 1,
+                zm: Arm64ScalableVectorRegister::from_operand_bits(
+                    (16 + (((word >> 17) & 0x7) << 1)) as u8,
+                ),
+                zm_list: (word >> 20) & 1 == 1,
+            }));
+        }
+        // SME MOVA (move ZA tile slice <-> vector). dir[17]: 1=tile->vector (Zd[4:0], tile:offs[8:5], [9]=0);
+        // 0=vector->tile (Zn[9:5], tile:offs[3:0], [4]=0). tile:offs splits by size.
+        if word & SME_MOVA_MASK == SME_MOVA_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let to_vector = (word >> 17) & 1 == 1;
+            let (tile_offs, z_field, spacer_zero) = if to_vector {
+                ((word >> 5) & 0xF, (word & 0x1F) as u8, (word >> 9) & 1 == 0)
+            } else {
+                (word & 0xF, ((word >> 5) & 0x1F) as u8, (word >> 4) & 1 == 0)
+            };
+            if spacer_zero {
+                let offs_bits = sme_tile_offset_bits(size);
+                let za_tile = (tile_offs >> offs_bits) as u8;
+                let slice_offset = (tile_offs & ((1 << offs_bits) - 1)) as u8;
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let z = Arm64ScalableVectorRegister::from_operand_bits(z_field);
+                return Ok(Some(Self::SmeMova {
+                    to_vector,
+                    size,
+                    vertical: (word >> 15) & 1 == 1,
+                    za_tile,
+                    slice_reg: ((word >> 13) & 0b11) as u8,
+                    slice_offset,
+                    pg,
+                    z,
+                }));
+            }
+        }
+        // SME LD1/ST1 to a ZA tile slice. msz[24:22] (B/H/W/D/Q); the tile:offset field [3:0] splits by size.
+        if let Some(size) = (word & SME_TILE_LDST_MASK == SME_TILE_LDST_BASE)
+            .then(|| Arm64SmeTileSize::from_msz((word >> 22) & 0b111))
+            .flatten()
+        {
+            let offs_bits = size.offset_bits();
+            let tile_offs = word & 0xF;
+            let za_tile = (tile_offs >> offs_bits) as u8;
+            let slice_offset = (tile_offs & ((1 << offs_bits) - 1)) as u8;
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SmeTileLoadStore {
+                store: (word >> 21) & 1 == 1,
+                size,
+                vertical: (word >> 15) & 1 == 1,
+                za_tile,
+                slice_reg: ((word >> 13) & 0b11) as u8,
+                slice_offset,
+                pg,
+                rn,
+                rm,
+            }));
+        }
+        // SME ZERO {tiles} -- the 8-bit tile-select mask.
+        if word & SME_ZERO_MASK == SME_ZERO_BASE {
+            return Ok(Some(Self::SmeZero {
+                mask: (word & 0xFF) as u8,
+            }));
+        }
+        if word == 0xC048_0001 {
+            return Ok(Some(Self::SmeZeroZt0));
+        }
+        // SME ADDHA/ADDVA -- accumulate a horizontal/vertical group into a ZA tile. size .s/.d, V at [16].
+        if word & SME_ADDHV_MASK == SME_ADDHV_BASE {
+            let size = if (word >> 22) & 1 == 1 {
+                Arm64VectorElement::D
+            } else {
+                Arm64VectorElement::S
+            };
+            let za_tile = (word & 0x7) as u8;
+            let max_tile = if matches!(size, Arm64VectorElement::D) {
+                7
+            } else {
+                3
+            };
+            if za_tile <= max_tile {
+                let pm = Arm64PredicateRegister::from_operand_bits(((word >> 13) & 0b111) as u8);
+                let pn = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                return Ok(Some(Self::SmeAddHorizVert {
+                    vertical: (word >> 16) & 1 == 1,
+                    size,
+                    za_tile,
+                    pn,
+                    pm,
+                    zn,
+                }));
+            }
+        }
+        // SME ZA-array LDR/STR (whole-vector spill/fill). store at [21]; offset is both the array-select and MUL VL offset.
+        if word & SME_ARRAY_LDST_MASK == SME_ARRAY_LDST_BASE {
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            return Ok(Some(Self::SmeArrayLoadStore {
+                store: (word >> 21) & 1 == 1,
+                slice_reg: ((word >> 13) & 0b11) as u8,
+                offset: (word & 0xF) as u8,
+                rn,
+            }));
+        }
+        // FEAT_MOPS memory copy: CPYF (top 0x19) / CPY (top 0x1d). stage [23:22] (11 is the SET class -> from_code = None).
+        let mops_copy = if word & MOPS_CPY_MASK == MOPS_CPYF_BASE {
+            Arm64MopsStage::from_code((word >> 22) & 0b11).map(|stage| (true, stage))
+        } else if word & MOPS_CPY_MASK == MOPS_CPY_BASE {
+            Arm64MopsStage::from_code((word >> 22) & 0b11).map(|stage| (false, stage))
+        } else {
+            None
+        };
+        if let Some((forward, stage)) = mops_copy {
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let rs = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::MopsCopy {
+                forward,
+                stage,
+                read_nt: (word >> 15) & 1 == 1,
+                write_nt: (word >> 14) & 1 == 1,
+                read_unpriv: (word >> 13) & 1 == 1,
+                write_unpriv: (word >> 12) & 1 == 1,
+                rd,
+                rs,
+                rn,
+            }));
+        }
+        // FEAT_MOPS memory set ([23:22]=11): SET (top 0x19) / SETG (top 0x1d, +MTE). stage [15:14], non-temporal [13].
+        let mops_set_tagged = if word & MOPS_SET_MASK == MOPS_SET_BASE {
+            Arm64MopsStage::from_code((word >> 14) & 0b11).map(|stage| (false, stage))
+        } else if word & MOPS_SET_MASK == MOPS_SETG_BASE {
+            Arm64MopsStage::from_code((word >> 14) & 0b11).map(|stage| (true, stage))
+        } else {
+            None
+        };
+        if let Some((tagged, stage)) = mops_set_tagged {
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::MopsSet {
+                tagged,
+                stage,
+                non_temporal: (word >> 13) & 1 == 1,
+                unpriv: (word >> 12) & 1 == 1,
+                rd,
+                rn,
+                rm,
+            }));
+        }
+        // SVE element count CNTB/H/W/D (the count-into-Xd form).
+        if word & SVE_CNT_MASK == SVE_CNT_BASE {
+            let element = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveElementCount {
+                element,
+                rd,
+                pattern: ((word >> 5) & 0x1F) as u8,
+                mul: (((word >> 16) & 0xF) + 1) as u8,
+            }));
+        }
+        if word & SVE_INCDEC_MASK == SVE_INCDEC_BASE {
+            let element = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let rdn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveIncDecScalar {
+                element,
+                decrement: (word >> 10) & 1 == 1,
+                rdn,
+                pattern: ((word >> 5) & 0x1F) as u8,
+                mul: (((word >> 16) & 0xF) + 1) as u8,
+            }));
+        }
+        if word & SVE_SAT_INCDEC_SCALAR_MASK == SVE_SAT_INCDEC_SCALAR_BASE {
+            let element = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let rdn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveSaturatingIncDecScalar {
+                element,
+                decrement: (word >> 11) & 1 == 1,
+                unsigned: (word >> 10) & 1 == 1,
+                wide: (word >> 20) & 1 == 1,
+                rdn,
+                pattern: ((word >> 5) & 0x1F) as u8,
+                mul: (((word >> 16) & 0xF) + 1) as u8,
+            }));
+        }
+        if word & SVE_SAT_INCDEC_VECTOR_MASK == SVE_SAT_INCDEC_VECTOR_BASE {
+            let element = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveSaturatingIncDecVector {
+                element,
+                decrement: (word >> 11) & 1 == 1,
+                unsigned: (word >> 10) & 1 == 1,
+                zd,
+                pattern: ((word >> 5) & 0x1F) as u8,
+                mul: (((word >> 16) & 0xF) + 1) as u8,
+            }));
+        }
+        if word & SVE_ADR_MASK == SVE_ADR_BASE {
+            let mode = Arm64SveAdrMode::from_sel((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveAddressGeneration {
+                mode,
+                shift: ((word >> 10) & 0b11) as u8,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        if word & SVE_FP_RECIP_EST_MASK == SVE_FP_RECIP_EST_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveFpReciprocalEstimate {
+                sqrt: (word >> 16) & 1 == 1,
+                size,
+                zd,
+                zn,
+            }));
+        }
+        if word & SVE_FEXPA_MASK == SVE_FEXPA_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveFexpa { size, zd, zn }));
+        }
+        if word & SVE_FTSSEL_MASK == SVE_FTSSEL_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveFtssel { size, zd, zn, zm }));
+        }
+        // SVE DUP -- broadcast scalar / immediate / indexed element.
+        if word & SVE_DUP_SCALAR_MASK == SVE_DUP_SCALAR_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            return Ok(Some(Self::SveDupScalar { size, zd, rn }));
+        }
+        if word & SVE_DUP_IMM_MASK == SVE_DUP_IMM_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveDupImmediate {
+                size,
+                zd,
+                imm8: ((word >> 5) & 0xFF) as i8,
+                shift: (word >> 13) & 1 == 1,
+            }));
+        }
+        // SVE FDUP (FMOV Zd.<T>, #imm): distinguished from the integer DUP-immediate above by bit16=1. size=00 (.b)
+        // has no FP form and is unallocated.
+        if word & SVE_FDUP_MASK == SVE_FDUP_BASE {
+            let size_bits = (word >> 22) & 0b11;
+            if size_bits == 0 {
+                return Err(DecodeError::InvalidOpcode); // .b has no FP FDUP
+            }
+            let size = Arm64VectorElement::from_size_bits(size_bits);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveFdup {
+                size,
+                zd,
+                imm8: ((word >> 5) & 0xFF) as u8,
+            }));
+        }
+        if word & SVE_DUP_IDX_MASK == SVE_DUP_IDX_BASE {
+            let lane = (((word >> 22) & 0x3) << 5) | ((word >> 16) & 0x1F); // imm2:tsz
+            if lane != 0 {
+                let size_bits = lane.trailing_zeros();
+                let size = Arm64VectorElement::from_size_bits(size_bits);
+                let index = lane >> (size_bits + 1);
+                let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                return Ok(Some(Self::SveDupIndexed {
+                    size,
+                    zd,
+                    zn,
+                    index,
+                }));
+            }
+        }
+        // SVE predicate logical (AND/BIC/EOR/SEL/ORR/ORN/NOR/NAND + the flag-setting S forms). Only modeled selector
+        // combinations decode; an unmodeled one (e.g. the S=1 high slots) falls through.
+        if let Some(op) = (word & SVE_PRED_LOGICAL_MASK == SVE_PRED_LOGICAL_BASE)
+            .then(|| Arm64SvePredLogicalOp::from_word(word))
+            .flatten()
+        {
+            let pd = Arm64PredicateRegister::from_operand_bits(reg_field(word, 0));
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0xF) as u8);
+            let pn = Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8);
+            let pm = Arm64PredicateRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+            return Ok(Some(Self::SvePredicateLogical { op, pd, pg, pn, pm }));
+        }
+        if word & SVE_CTERM_MASK == SVE_CTERM_BASE {
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveCompareTerminate {
+                ne: (word >> 4) & 1 == 1,
+                wide: (word >> 22) & 1 == 1,
+                rn,
+                rm,
+            }));
+        }
+        // SVE integer dot product (SDOT/UDOT), vector and indexed. Dest element is .s/.d only (bit23=1).
+        if word & SVE_DOT_MASK == SVE_DOT_VEC_BASE && (word >> 23) & 1 == 1 {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveDotProduct {
+                unsigned: (word >> 10) & 1 == 1,
+                size,
+                zda,
+                zn,
+                zm,
+            }));
+        }
+        if word & SVE_DOT_MASK == SVE_DOT_IDX_BASE && (word >> 23) & 1 == 1 {
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let (size, index, zm_bits) = if (word >> 22) & 1 == 0 {
+                (
+                    Arm64VectorElement::S,
+                    ((word >> 19) & 0b11) as u8,
+                    (word >> 16) & 0b111,
+                )
+            } else {
+                (
+                    Arm64VectorElement::D,
+                    ((word >> 20) & 1) as u8,
+                    (word >> 16) & 0b1111,
+                )
+            };
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(zm_bits as u8);
+            return Ok(Some(Self::SveDotProductIndexed {
+                unsigned: (word >> 10) & 1 == 1,
+                size,
+                zda,
+                zn,
+                zm,
+                index,
+            }));
+        }
+        // SVE FP8 FDOT (FEAT_SSVE_FP8DOT2/4): vector + by-element. size bit22 (.s=1/.h=0). The indexed `.s` form has a
+        // 2-bit index ([20:19], bit11 must be 0); the `.h` form a 3-bit index (bit11:[20:19]).
+        if word & SVE_FP8_DOT_VEC_MASK == SVE_FP8_DOT_VEC_BASE {
+            let half = (word >> 22) & 1 == 0;
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveFp8Dot { half, zda, zn, zm }));
+        }
+        if word & SVE_FP8_DOT_IDX_MASK == SVE_FP8_DOT_IDX_BASE {
+            let half = (word >> 22) & 1 == 0;
+            let hi = (word >> 19) & 0b11;
+            let index = if half {
+                ((hi << 1) | ((word >> 11) & 1)) as u8 // .h: index = [20:19]:bit11, bit11 the LSB
+            } else if (word >> 11) & 1 == 0 {
+                hi as u8 // .s: 2-bit index in [20:19]; bit11 must be 0
+            } else {
+                return Err(DecodeError::InvalidOpcode);
+            };
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0b111) as u8);
+            return Ok(Some(Self::SveFp8DotByElement {
+                half,
+                zda,
+                zn,
+                zm,
+                index,
+            }));
+        }
+        // SVE FP8 widening FMLAL into Z (vector). FMLALB/T (.h, bit23=1): B/T = bit12. FMLALL (.s, bit23=0): the two
+        // letters = bit13/bit12.
+        if word & SVE_FP8_MLALB_MASK == SVE_FP8_MLALB_BASE {
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveFp8MlalLong {
+                top: (word >> 12) & 1 == 1,
+                zda,
+                zn,
+                zm,
+            }));
+        }
+        if word & SVE_FP8_MLALL_MASK == SVE_FP8_MLALL_BASE {
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveFp8MlalLongLong {
+                first_top: (word >> 13) & 1 == 1,
+                second_top: (word >> 12) & 1 == 1,
+                zda,
+                zn,
+                zm,
+            }));
+        }
+        // SVE FP8 widening FMLAL into Z, INDEXED. .h FMLALB/T (opcode 0101, B/T = bit23); .s FMLALL (opcode 1100,
+        // first = bit23, second = bit22). index = bit20:bit19:bit11:bit10; Zm Z0-7 [18:16].
+        if word & SVE_FP8_MLALB_IDX_MASK == SVE_FP8_MLALB_IDX_BASE {
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0b111) as u8);
+            return Ok(Some(Self::SveFp8MlalLongByElement {
+                top: (word >> 23) & 1 == 1,
+                zda,
+                zn,
+                zm,
+                index: sve_fp8_idx_unpack(word),
+            }));
+        }
+        if word & SVE_FP8_MLALL_IDX_MASK == SVE_FP8_MLALL_IDX_BASE {
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0b111) as u8);
+            return Ok(Some(Self::SveFp8MlalLongLongByElement {
+                first_top: (word >> 23) & 1 == 1,
+                second_top: (word >> 22) & 1 == 1,
+                zda,
+                zn,
+                zm,
+                index: sve_fp8_idx_unpack(word),
+            }));
+        }
+        // SVE FP8 widening convert (F1/F2/BF1/BF2 CVT(LT)) Zd.h <- Zn.b. format = [11:10]; LT (top lanes) = bit16.
+        if word & SVE_FP8_CONVERT_MASK == SVE_FP8_CONVERT_BASE {
+            let op = Arm64SveFp8ConvertOp::from_format_bits((word >> 10) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveFp8Convert {
+                op,
+                top: (word >> 16) & 1 == 1,
+                zd,
+                zn,
+            }));
+        }
+        if word & SVE_FP8_NARROW_MASK == SVE_FP8_NARROW_BASE
+            && let Some(op) = Arm64SveFp8NarrowOp::from_op_bits((word >> 10) & 0b11)
+        {
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn_base =
+                Arm64ScalableVectorRegister::from_operand_bits((((word >> 6) & 0xF) << 1) as u8);
+            return Ok(Some(Self::SveFp8Narrow { op, zd, zn_base }));
+        }
+        // SVE indexed mixed/bf dot product into .s (BFDOT/USDOT/SUDOT). 2-bit index [20:19], Zm Z0-7 [18:16].
+        let mixed_dot_op = if word & SVE_BFDOT_INDEXED_MASK == Arm64SveDotIndexedOp::Bfdot.base() {
+            Some(Arm64SveDotIndexedOp::Bfdot)
+        } else if word & SVE_USDOT_INDEXED_MASK == SVE_USDOT_INDEXED_BASE {
+            Some(if (word >> 10) & 1 == 1 {
+                Arm64SveDotIndexedOp::Sudot
+            } else {
+                Arm64SveDotIndexedOp::Usdot
+            })
+        } else {
+            None
+        };
+        if let Some(op) = mixed_dot_op {
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0b111) as u8);
+            let index = ((word >> 19) & 0b11) as u8;
+            return Ok(Some(Self::SveDotIndexedMixed {
+                op,
+                zda,
+                zn,
+                zm,
+                index,
+            }));
+        }
+        // SVE2 cryptography. Destructive AESE/AESD/SM4E (Zm[9:5], Zdn[4:0]); unary AESMC/AESIMC (Zdn only);
+        // constructive SM4EKEY/RAX1 (Zm[20:16]/Zn[9:5]/Zd[4:0]). All masks pin the full opcode.
+        let crypto_destructive = if word & SVE2_CRYPTO_DESTRUCTIVE_MASK
+            == Arm64SveCryptoDestructiveOp::Aese.base()
+        {
+            Some(Arm64SveCryptoDestructiveOp::Aese)
+        } else if word & SVE2_CRYPTO_DESTRUCTIVE_MASK == Arm64SveCryptoDestructiveOp::Aesd.base() {
+            Some(Arm64SveCryptoDestructiveOp::Aesd)
+        } else if word & SVE2_CRYPTO_DESTRUCTIVE_MASK == Arm64SveCryptoDestructiveOp::Sm4e.base() {
+            Some(Arm64SveCryptoDestructiveOp::Sm4e)
+        } else {
+            None
+        };
+        if let Some(op) = crypto_destructive {
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::Sve2CryptoDestructive { op, zdn, zm }));
+        }
+        // SVE2.1 multi-vector AESEMC/AESDIMC (FEAT_SVE_AES2). decrypt[10], vgx4[18], index[20:19], Zm[7:5], Zdn[4:0].
+        if word & SVE2_AES2_MULTIVEC_MASK == SVE2_AES2_MULTIVEC_BASE {
+            return Ok(Some(Self::SveAes2MultiVec {
+                decrypt: (word >> 10) & 1 == 1,
+                four: (word >> 18) & 1 == 1,
+                zdn_base: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x7) as u8),
+                index: ((word >> 19) & 0x3) as u8,
+            }));
+        }
+        // FEAT_FPRCVT scalar convert FP <-> int-in-FP-register. opcode-validity keeps it off the regular FP<->GP converts.
+        if word & FPRCVT_MASK == FPRCVT_BASE
+            && let Some(op) = Arm64FprcvtOp::from_opcode((word >> 16) & 0x3F)
+        {
+            let sf = (word >> 31) & 1 == 1; // the integer operand is 64-bit
+            let fp_double = (word >> 22) & 1 == 1; // the FP operand is 64-bit
+            // the destination is the integer for FP-to-int, else the FP value.
+            let wide_dest = if op.is_int_to_fp() { fp_double } else { sf };
+            return Ok(Some(Self::Fprcvt {
+                op,
+                wide_dest,
+                rd: Arm64FloatRegister::from_operand_bits((word & 0x1F) as u8),
+                rn: Arm64FloatRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+            }));
+        }
+        // NEON FP8 matrix multiply FMMLA (.16b sources -> .4s/.8h; [15:10]=111011, [22]=0 vs BFMMLA's [22]=1).
+        if word & VEC_FP8_MMLA_MASK == VEC_FP8_MMLA_BASE {
+            return Ok(Some(Self::VecFp8Matmul {
+                half: (word >> 23) & 1 == 0,
+                rd: Arm64FloatRegister::from_operand_bits((word & 0x1F) as u8),
+                rn: Arm64FloatRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                rm: Arm64FloatRegister::from_operand_bits(((word >> 16) & 0x1F) as u8),
+            }));
+        }
+        // NEON LUTI2/LUTI4 table-vector lookup (FEAT_LUT). Two frames (luti2 [23]=1, luti4 [23:22]=01) keep it off TBL.
+        // The index left-aligns into [14:12] over a 1-marker; a non-canonical [14:12] pattern -> falls through.
+        {
+            let (matched, lut4, half) = if word & VEC_LUTI2_MASK == VEC_LUTI2_BASE {
+                (true, false, (word >> 22) & 1 == 1) // luti2: half from [22]
+            } else if word & VEC_LUTI4_MASK == VEC_LUTI4_BASE {
+                (true, true, (word >> 12) & 1 == 1) // luti4: element from the [12] marker
+            } else {
+                (false, false, false)
+            };
+            if matched {
+                let index_bits = (if lut4 { 1 } else { 2 }) + (half as u32);
+                let low_bits = 3 - index_bits;
+                let field = (word >> 12) & 0b111;
+                let expected_marker = if index_bits < 3 {
+                    1 << (low_bits - 1)
+                } else {
+                    0
+                };
+                if field & ((1 << low_bits) - 1) == expected_marker {
+                    return Ok(Some(Self::VecLuti {
+                        lut4,
+                        half,
+                        rd: Arm64FloatRegister::from_operand_bits((word & 0x1F) as u8),
+                        rn: Arm64FloatRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                        rm: Arm64FloatRegister::from_operand_bits(((word >> 16) & 0x1F) as u8),
+                        index: (field >> low_bits) as u8,
+                    }));
+                }
+            }
+        }
+        // NEON FP8 narrowing convert FCVTN (two FP16/FP32 sources -> .8b/.16b fp8). [15:10]=111101, fp16[22], Q[30].
+        if word & VEC_FP8_NARROW_MASK == VEC_FP8_NARROW_BASE {
+            return Ok(Some(Self::VecFp8Narrow {
+                q: (word >> 30) & 1 == 1,
+                fp32: (word >> 22) & 1 == 0,
+                rd: Arm64FloatRegister::from_operand_bits((word & 0x1F) as u8),
+                rn: Arm64FloatRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                rm: Arm64FloatRegister::from_operand_bits(((word >> 16) & 0x1F) as u8),
+            }));
+        }
+        // SVE FP8 matrix multiply FMMLA (.b sources -> .h/.s accumulator; [15:10]=111000, distinct from the other FMMLA).
+        if word & SVE_FP8_MATMUL_MASK == SVE_FP8_MATMUL_BASE {
+            return Ok(Some(Self::SveFp8Matmul {
+                half: (word >> 22) & 1 == 1,
+                zda: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                zn: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0x1F) as u8),
+            }));
+        }
+        // FEAT_F16MM half-precision FMMLA (Zda.H, Zn.H, Zm.H); [23]=1 distinguishes it from the FP8 FMMLA above.
+        // Experimental: binutils-trunk-only oracle (LLVM-20 lacks FP16 matmul).
+        #[cfg(feature = "experimental")]
+        if word & SVE_FP16_MATMUL_MASK == SVE_FP16_MATMUL_BASE {
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveFp16Matmul { zda, zn, zm }));
+        }
+        // SVE2.1 structured quadword LD2Q-4Q / ST2Q-4Q (scalar base + imm/scalar offset). count-1 is at [24:23] for
+        // loads, [23:22] for stores; mode (imm/scalar) at [21]. Four distinct (load/store x mode) frames.
+        if word & SVE_STRUCTQ_LD_IMM_MASK == SVE_STRUCTQ_LD_IMM_BASE {
+            return Ok(Some(Self::SveStructuredQuadwordImm {
+                store: false,
+                count: (((word >> 23) & 0x3) + 1) as u8,
+                pg: Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0x7) as u8),
+                zt_base: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(((word >> 5) & 0x1F) as u8),
+                imm: sign_extend((word >> 16) & 0xF, 4) as i8,
+            }));
+        }
+        if word & SVE_STRUCTQ_ST_IMM_MASK == SVE_STRUCTQ_ST_IMM_BASE {
+            return Ok(Some(Self::SveStructuredQuadwordImm {
+                store: true,
+                count: (((word >> 22) & 0x3) + 1) as u8,
+                pg: Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0x7) as u8),
+                zt_base: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(((word >> 5) & 0x1F) as u8),
+                imm: sign_extend((word >> 16) & 0xF, 4) as i8,
+            }));
+        }
+        if word & SVE_STRUCTQ_LD_SCALAR_MASK == SVE_STRUCTQ_LD_SCALAR_BASE {
+            return Ok(Some(Self::SveStructuredQuadwordScalar {
+                store: false,
+                count: (((word >> 23) & 0x3) + 1) as u8,
+                pg: Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0x7) as u8),
+                zt_base: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(((word >> 5) & 0x1F) as u8),
+                rm: Arm64GeneralPurposeRegister::from_operand_bits(((word >> 16) & 0x1F) as u8),
+            }));
+        }
+        if word & SVE_STRUCTQ_ST_SCALAR_MASK == SVE_STRUCTQ_ST_SCALAR_BASE {
+            return Ok(Some(Self::SveStructuredQuadwordScalar {
+                store: true,
+                count: (((word >> 22) & 0x3) + 1) as u8,
+                pg: Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0x7) as u8),
+                zt_base: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(((word >> 5) & 0x1F) as u8),
+                rm: Arm64GeneralPurposeRegister::from_operand_bits(((word >> 16) & 0x1F) as u8),
+            }));
+        }
+        // SVE2.1 quadword gather LD1Q / scatter ST1Q (vector .d base + optional scalar offset).
+        if word & SVE_LDST1Q_MASK == SVE_LD1Q_BASE || word & SVE_LDST1Q_MASK == SVE_ST1Q_BASE {
+            return Ok(Some(Self::SveQuadwordGatherScatter {
+                store: word & SVE_LDST1Q_MASK == SVE_ST1Q_BASE,
+                pg: Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0x7) as u8),
+                zt: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                zn: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                rm: Arm64GeneralPurposeRegister::from_operand_bits(((word >> 16) & 0x1F) as u8),
+            }));
+        }
+        // SVE2.1 PMOV (predicate <-> per-element vector view). The [23:17] tsz field selects the element + index; only
+        // the four valid size patterns decode (others fall through). direction[16].
+        if word & SVE_PMOV_MASK == SVE_PMOV_BASE
+            && let Some((size, index)) = pmov_size_index((word >> 17) & 0x7F)
+        {
+            let to_vector = (word >> 16) & 1 == 1;
+            let (reg, pred) = if to_vector {
+                (
+                    Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                    Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8),
+                )
+            } else {
+                (
+                    Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x1F) as u8),
+                    Arm64PredicateRegister::from_operand_bits((word & 0xF) as u8),
+                )
+            };
+            return Ok(Some(Self::SvePredVectorMove {
+                to_vector,
+                size,
+                reg,
+                pred,
+                index,
+            }));
+        }
+        if word & SVE2_AES_MIX_MASK == SVE2_AESMC_BASE {
+            return Ok(Some(Self::Sve2AesMixColumns {
+                inverse: false,
+                zdn: Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0)),
+            }));
+        }
+        if word & SVE2_AES_MIX_MASK == SVE2_AESIMC_BASE {
+            return Ok(Some(Self::Sve2AesMixColumns {
+                inverse: true,
+                zdn: Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0)),
+            }));
+        }
+        let crypto_binary =
+            if word & SVE2_CRYPTO_BINARY_MASK == Arm64SveCryptoBinaryOp::Sm4ekey.base() {
+                Some(Arm64SveCryptoBinaryOp::Sm4ekey)
+            } else if word & SVE2_CRYPTO_BINARY_MASK == Arm64SveCryptoBinaryOp::Rax1.base() {
+                Some(Arm64SveCryptoBinaryOp::Rax1)
+            } else {
+                None
+            };
+        if let Some(op) = crypto_binary {
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2CryptoBinary { op, zd, zn, zm }));
+        }
+        // SVE2 histogram. HISTCNT is predicated .s/.d (size 00/01 unallocated); HISTSEG is unpredicated .b.
+        if word & SVE2_HISTCNT_MASK == SVE2_HISTCNT_BASE && (word >> 23) & 1 == 1 {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2HistCnt {
+                size,
+                pg,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        if word & SVE2_HISTSEG_MASK == SVE2_HISTSEG_BASE {
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2HistSeg { zd, zn, zm }));
+        }
+        // SVE2 128-bit polynomial multiply long (PMULLB/PMULLT .q from .d, FEAT_SVE_AES). size field 00 keeps it
+        // out of the regular widening group (which requires size != 00).
+        if word & SVE2_PMULL128_MASK == SVE2_PMULL128_BASE {
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2PolyMultiply128 {
+                top: (word >> 10) & 1 == 1,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        // SVE2.1 integer clamp (SCLAMP/UCLAMP, .b/.h/.s/.d; U at [10]).
+        if word & SVE_INT_CLAMP_MASK == SVE_INT_CLAMP_BASE {
+            let op = if (word >> 10) & 1 == 1 {
+                Arm64SveClampOp::Uclamp
+            } else {
+                Arm64SveClampOp::Sclamp
+            };
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveClamp {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        // SVE2.1 floating-point clamp (FCLAMP, .h/.s/.d; size 00 unallocated).
+        if word & SVE_FCLAMP_MASK == Arm64SveClampOp::Fclamp.base() && (word >> 22) & 0b11 != 0 {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveClamp {
+                op: Arm64SveClampOp::Fclamp,
+                size,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        // SVE FP by-indexed-element (FMLA/FMLS/FMUL). The size/index/Zm packing is per element width.
+        if let Some(op) = (word & SVE_FP_INDEXED_MASK == SVE_FP_INDEXED_BASE)
+            .then(|| Arm64SveFpIndexedOp::from_bits((word >> 13) & 0b111, (word >> 10) & 1))
+            .flatten()
+        {
+            let (size, index, zm_bits) = decode_sve_indexed_size(word);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(zm_bits);
+            return Ok(Some(Self::SveFpMulAddIndexed {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+                index,
+            }));
+        }
+        // SVE2 integer by-indexed-element (MUL/MLA/MLS). Same per-element index/Zm packing as the FP indexed group.
+        // MUL is one [15:10] opcode (111110); MLA/MLS share [15:11]=00001 and differ in the [10] subtract bit.
+        let int_indexed_op = if word & SVE_INT_MUL_INDEXED_MASK == (SVE_INT_INDEXED_BASE | 0xF800) {
+            Some(Arm64SveIntIndexedOp::Mul)
+        } else if word & SVE_INT_MUL_INDEXED_MASK == (SVE_INT_INDEXED_BASE | 0xF000) {
+            // SQDMULH (indexed): [15:10] = 111100.
+            Some(Arm64SveIntIndexedOp::Sqdmulh)
+        } else if word & SVE_INT_MLA_INDEXED_MASK == (SVE_INT_INDEXED_BASE | 0x0800) {
+            // MLA/MLS: [15:11] = 00001, subtract bit at [10].
+            Arm64SveIntIndexedOp::from_opcode((word >> 10) & 0b111111)
+        } else if word & SVE_INT_MLA_INDEXED_MASK == (SVE_INT_INDEXED_BASE | 0x1000) {
+            // SQRDMLAH/SQRDMLSH: [15:11] = 00010, subtract bit at [10].
+            Arm64SveIntIndexedOp::from_opcode((word >> 10) & 0b111111)
+        } else {
+            None
+        };
+        if let Some(op) = int_indexed_op {
+            let (size, index, zm_bits) = decode_sve_indexed_size(word);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(zm_bits);
+            return Ok(Some(Self::SveIntMulAddIndexed {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+                index,
+            }));
+        }
+        // SVE2 SABA/UABA (accumulate absolute difference).
+        if word & SVE2_ABA_MASK == SVE2_ABA_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2AbsDiffAccumulate {
+                unsigned: (word >> 10) & 1 == 1,
+                size,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        // SVE2 integer unary (predicated, merging): SQABS/SQNEG/URECPE/URSQRTE. [21:20]=00, [18:17]=00, [15:13]=101.
+        if let Some(op) = (word & SVE2_UNARY_PRED_MASK == SVE2_UNARY_PRED_BASE)
+            .then(|| Arm64Sve2UnaryPredOp::from_code((word >> 16) & 0xF))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            // URECPE/URSQRTE only encode the .s element; a non-.s word here is unallocated.
+            if !op.is_single_only() || matches!(size, Arm64VectorElement::S) {
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                return Ok(Some(Self::Sve2UnaryPredicated {
+                    op,
+                    size,
+                    pg,
+                    zd,
+                    zn,
+                }));
+            }
+        }
+        // SVE2.2 zeroing-predicate SQABS/SQNEG/URECPE/URSQRTE (/z): same frame, bit [17] set (clear it to recover op).
+        if let Some(op) = (word & SVE2_UNARY_PRED_MASK == SVE2_UNARY_PRED_ZEROING_BASE)
+            .then(|| Arm64Sve2UnaryPredOp::from_code(((word >> 16) & 0xF) & 0b1101))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            if !op.is_single_only() || matches!(size, Arm64VectorElement::S) {
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                return Ok(Some(Self::Sve2UnaryZeroing {
+                    op,
+                    size,
+                    pg,
+                    zd,
+                    zn,
+                }));
+            }
+        }
+        // SVE2 saturating/rounding bitwise shift left (predicated). [21:20]=00, [15:13]=100, op at [19:16].
+        if let Some(op) = (word & SVE2_SHIFT_LEFT_PRED_MASK == SVE2_SHIFT_LEFT_PRED_BASE)
+            .then(|| Arm64Sve2ShiftLeftPredOp::from_code((word >> 16) & 0xF))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::Sve2ShiftLeftPredicated {
+                op,
+                size,
+                pg,
+                zdn,
+                zm,
+            }));
+        }
+        // SVE2 floating-point pairwise (FADDP/FMAXNMP/FMINNMP/FMAXP/FMINP). [21:19]=010, [15:13]=100, opc[18:16].
+        if let Some(op) = (word & SVE2_FP_PAIRWISE_MASK == SVE2_FP_PAIRWISE_BASE)
+            .then(|| Arm64Sve2FpPairwiseOp::from_opc((word >> 16) & 0b111))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::Sve2FpPairwise {
+                op,
+                size,
+                pg,
+                zdn,
+                zm,
+            }));
+        }
+        // SVE USDOT (vectors). .s from .b; [23:21]=100, [15:10]=011110.
+        if word & SVE_USDOT_MASK == SVE_USDOT_BASE {
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2UnsignedSignedDot { zda, zn, zm }));
+        }
+        // SVE2 CDOT (complex integer dot product). [15:12]=0001, rot[11:10], size .s/.d (bit23=1).
+        if word & SVE2_CDOT_MASK == SVE2_CDOT_BASE && (word >> 23) & 1 == 1 {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let rotation = Arm64ComplexRotation::from_code((word >> 10) & 0b11);
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2ComplexDot {
+                size,
+                rotation,
+                zda,
+                zn,
+                zm,
+            }));
+        }
+        // SVE2 saturating doubling multiply high (SQDMULH/SQRDMULH, unpredicated). [15:11]=01110, R[10].
+        if word & SVE2_SQDMULH_MASK == SVE2_SQDMULH_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2SaturatingDoublingMulHigh {
+                rounding: (word >> 10) & 1 == 1,
+                size,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        // SVE2 saturating doubling multiply-add high (SQRDMLAH/SQRDMLSH). [15:11]=01110, S[10].
+        if word & SVE2_SQRDMLAH_MASK == SVE2_SQRDMLAH_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2SaturatingDoublingMulAddHigh {
+                subtract: (word >> 10) & 1 == 1,
+                size,
+                zda,
+                zn,
+                zm,
+            }));
+        }
+        // SVE2 table lookup (TBL two-register / TBX single-table merge). op[10].
+        if word & SVE2_TBL_MASK == SVE2_TBL_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2TableLookup {
+                extend: (word >> 10) & 1 == 1,
+                size,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        // SVE2 character match (MATCH/NMATCH) -> predicate. sz[22] (.b/.h), op[4].
+        if word & SVE2_MATCH_MASK == SVE2_MATCH_BASE {
+            let pd = Arm64PredicateRegister::from_operand_bits(reg_field(word, 0));
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2Match {
+                negate: (word >> 4) & 1 == 1,
+                half: (word >> 22) & 1 == 1,
+                pd,
+                pg,
+                zn,
+                zm,
+            }));
+        }
+        // SVE2 widening by-indexed-element (SMULLB/SMLALB/SQDMULLB/... indexed). bit15=1, size .s/.d (bit23=1).
+        if let Some(op) = (word & SVE2_WIDEN_INDEXED_MASK == SVE2_WIDEN_INDEXED_BASE
+            && (word >> 23) & 1 == 1)
+            .then(|| Arm64Sve2WidenIndexedOp::from_bits((word >> 12) & 0xF, (word >> 10) & 1 == 1))
+            .flatten()
+        {
+            let il = (word >> 11) & 1;
+            let (size, index, zm_bits) = if (word >> 22) & 1 == 0 {
+                // size 10 -> .s
+                (
+                    Arm64VectorElement::S,
+                    (((word >> 19) & 0b11) << 1) | il,
+                    (word >> 16) & 0b111,
+                )
+            } else {
+                // size 11 -> .d
+                (
+                    Arm64VectorElement::D,
+                    (((word >> 20) & 1) << 1) | il,
+                    (word >> 16) & 0b1111,
+                )
+            };
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(zm_bits as u8);
+            return Ok(Some(Self::Sve2WideningIndexed {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+                index: index as u8,
+            }));
+        }
+        // SVE bit-permute (BEXT/BDEP/BGRP). [15:12]=1011, opc[11:10].
+        if let Some(op) = (word & SVE2_BITPERM_MASK == SVE2_BITPERM_BASE)
+            .then(|| Arm64Sve2BitPermuteOp::from_opc((word >> 10) & 0b11))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2BitwisePermute {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        // SVE2 integer add/subtract long with carry (ADCLB/ADCLT/SBCLB/SBCLT). [15:11]=11010, sub[23], elem[22], T[10].
+        if word & SVE2_ADCL_MASK == SVE2_ADCL_BASE {
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2AddSubLongCarry {
+                subtract: (word >> 23) & 1 == 1,
+                top: (word >> 10) & 1 == 1,
+                element_double: (word >> 22) & 1 == 1,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        // SVE2 bitwise shift right and accumulate (SSRA/USRA/SRSRA/URSRA). [15:12]=1110, R[11], U[10].
+        if let Some((size, esize)) = (word & SVE2_SSRA_MASK == SVE2_SSRA_BASE)
+            .then(|| decode_sve2_tsz(word))
+            .flatten()
+        {
+            let v =
+                (((word >> 22) & 0x3) << 5) | (((word >> 19) & 0x3) << 3) | ((word >> 16) & 0x7);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::Sve2ShiftRightAccumulate {
+                rounding: (word >> 11) & 1 == 1,
+                unsigned: (word >> 10) & 1 == 1,
+                size,
+                zd,
+                zn,
+                shift: (2 * esize - v) as u8,
+            }));
+        }
+        // SVE2 bitwise shift and insert (SRI right / SLI left). [15:11]=11110, op[10]=left.
+        if let Some((size, esize)) = (word & SVE2_SRI_MASK == SVE2_SRI_BASE)
+            .then(|| decode_sve2_tsz(word))
+            .flatten()
+        {
+            let v =
+                (((word >> 22) & 0x3) << 5) | (((word >> 19) & 0x3) << 3) | ((word >> 16) & 0x7);
+            let left = (word >> 10) & 1 == 1;
+            let shift = (if left { v - esize } else { 2 * esize - v }) as u8;
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::Sve2ShiftInsert {
+                left,
+                size,
+                zd,
+                zn,
+                shift,
+            }));
+        }
+        // SVE2 abs-difference and accumulate long (SABALB/T/UABALB/T). [15:12]=1100, U[11], T[10].
+        if word & SVE2_ABALB_MASK == SVE2_ABALB_BASE && (word >> 22) & 0b11 != 0 {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2AbsDiffAccLong {
+                unsigned: (word >> 11) & 1 == 1,
+                top: (word >> 10) & 1 == 1,
+                size,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        // SVE2 pairwise add and accumulate long (SADALP/UADALP). [21:17]=00010, [15:13]=101, U[16].
+        if word & SVE2_ADALP_MASK == SVE2_ADALP_BASE && (word >> 22) & 0b11 != 0 {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::Sve2PairwiseAddAccLong {
+                unsigned: (word >> 16) & 1 == 1,
+                size,
+                pg,
+                zda,
+                zn,
+            }));
+        }
+        // SVE2 predicated saturating add/subtract ([21:19]=011, [15:13]=100).
+        if word & SVE2_HALVING_PAIRWISE_MASK == SVE2_SAT_ADDSUB_BASE {
+            let op = Arm64Sve2SatAddSubOp::from_code((word >> 16) & 0b111);
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::Sve2SaturatingAddSub {
+                op,
+                size,
+                pg,
+                zdn,
+                zm,
+            }));
+        }
+        // SVE2 predicated halving add/subtract ([15:13]=100) and pairwise arithmetic ([15:13]=101).
+        if word & SVE2_HALVING_PAIRWISE_MASK == SVE2_HALVING_BASE {
+            let op = Arm64Sve2HalvingOp::from_code((word >> 16) & 0b111);
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::Sve2HalvingAddSub {
+                op,
+                size,
+                pg,
+                zdn,
+                zm,
+            }));
+        }
+        if let Some(op) = (word & SVE2_HALVING_PAIRWISE_MASK == SVE2_PAIRWISE_BASE)
+            .then(|| Arm64Sve2PairwiseOp::from_code((word >> 16) & 0b111))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::Sve2PairwiseArith {
+                op,
+                size,
+                pg,
+                zdn,
+                zm,
+            }));
+        }
+        // SVE2 shift right narrow by immediate (SHRN/SQSHRN/... families). shift = 2*esize - v (narrow esize).
+        if word & SVE2_NARROW_SHIFT_MASK == SVE2_NARROW_SHIFT_BASE {
+            let v =
+                (((word >> 22) & 0x1) << 5) | (((word >> 19) & 0x3) << 3) | ((word >> 16) & 0x7);
+            let size_bits = (31 - v.leading_zeros()).wrapping_sub(3);
+            if v >= 8 && size_bits <= 2 {
+                let esize = 8u32 << size_bits;
+                let result_size = Arm64VectorElement::from_size_bits(size_bits);
+                let op = Arm64Sve2NarrowShiftOp::from_code((word >> 11) & 0b111);
+                let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                return Ok(Some(Self::Sve2NarrowingShiftRight {
+                    op,
+                    top: (word >> 10) & 1 == 1,
+                    result_size,
+                    zd,
+                    zn,
+                    shift: (2 * esize - v) as u8,
+                }));
+            }
+        }
+        // SVE2 SSHLL/USHLL (shift left long). The shift is v - esize from the tszh:tszl:imm3 field.
+        if word & SVE2_SHLL_MASK == SVE2_SHLL_BASE {
+            let v =
+                (((word >> 22) & 0x1) << 5) | (((word >> 19) & 0x3) << 3) | ((word >> 16) & 0x7);
+            let size_bits = (31 - v.leading_zeros()).wrapping_sub(3);
+            if v >= 8 && size_bits <= 2 {
+                let esize = 8u32 << size_bits;
+                let src_size = Arm64VectorElement::from_size_bits(size_bits);
+                let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                return Ok(Some(Self::Sve2WideningShiftLeft {
+                    unsigned: (word >> 11) & 1 == 1,
+                    top: (word >> 10) & 1 == 1,
+                    src_size,
+                    zd,
+                    zn,
+                    shift: (v - esize) as u8,
+                }));
+            }
+        }
+        // SVE2 saturating extract narrow (SQXTN/UQXTN/SQXTUN). Result size is tsz-encoded at bits {22,20,19}.
+        if word & SVE2_EXTRACT_NARROW_MASK == SVE2_EXTRACT_NARROW_BASE {
+            let tsz = (((word >> 22) & 1) << 2) | (((word >> 20) & 1) << 1) | ((word >> 19) & 1);
+            let result_size = match tsz {
+                0b001 => Some(Arm64VectorElement::B),
+                0b010 => Some(Arm64VectorElement::H),
+                0b100 => Some(Arm64VectorElement::S),
+                _ => None,
+            };
+            if let (Some(result_size), Some(op)) = (
+                result_size,
+                Arm64Sve2ExtractNarrowOp::from_opcode((word >> 11) & 0b11),
+            ) {
+                let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                return Ok(Some(Self::Sve2SaturatingExtractNarrow {
+                    op,
+                    top: (word >> 10) & 1 == 1,
+                    result_size,
+                    zd,
+                    zn,
+                }));
+            }
+        }
+        // SVE2 add/subtract narrow high (ADDHN/SUBHN/RADDHN/RSUBHN). size[23:22] is the wide source element.
+        if word & SVE2_NARROW_HIGH_MASK == SVE2_NARROW_HIGH_BASE && (word >> 22) & 0b11 != 0 {
+            let op = Arm64Sve2NarrowHighOp::from_opcode((word >> 10) & 0b111);
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2NarrowHigh {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        // SVE2 complex integer add (CADD/SQCADD) and multiply-accumulate (CMLA/SQRDCMLAH).
+        if word & SVE2_CADD_MASK == SVE2_CADD_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let rotation = if (word >> 10) & 1 == 1 {
+                Arm64ComplexRotation::R270
+            } else {
+                Arm64ComplexRotation::R90
+            };
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::Sve2ComplexAdd {
+                saturating: (word >> 16) & 1 == 1,
+                size,
+                rotation,
+                zdn,
+                zm,
+            }));
+        }
+        if word & SVE2_CMLA_MASK == SVE2_CMLA_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let rotation = Arm64ComplexRotation::from_code((word >> 10) & 0b11);
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2ComplexMulAdd {
+                rounding: (word >> 12) & 1 == 1,
+                size,
+                rotation,
+                zda,
+                zn,
+                zm,
+            }));
+        }
+        // SVE2 XAR (rotate-and-XOR). The rotate is recovered from the tszh:tszl:imm3 value like the shift-imms.
+        if word & SVE2_XAR_MASK == SVE2_XAR_BASE {
+            let v =
+                (((word >> 22) & 0x3) << 5) | (((word >> 19) & 0x3) << 3) | ((word >> 16) & 0x7);
+            let size_bits = (31 - v.leading_zeros()).wrapping_sub(3);
+            if v >= 8 && size_bits <= 3 {
+                let esize = 8u32 << size_bits;
+                let rotate = (2 * esize - v) as u8;
+                let size = Arm64VectorElement::from_size_bits(size_bits);
+                let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                return Ok(Some(Self::Sve2Xar {
+                    size,
+                    zdn,
+                    zm,
+                    rotate,
+                }));
+            }
+        }
+        // SVE2 unpredicated integer multiply (MUL/PMUL/SMULH/UMULH). Shares the int-bin-unpred frame ([15:13]=011).
+        if let Some(op) = (word & SVE2_MUL_MASK == SVE2_MUL_BASE)
+            .then(|| Arm64Sve2MulOp::from_opcode((word >> 10) & 0b111))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2MultiplyUnpredicated {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        // SVE2 bitwise ternary (EOR3/BCAX/BSL/BSL1N/BSL2N/NBSL). All .d; op from opc[23:22] + group bit [10].
+        if let Some(op) = (word & SVE2_TERNARY_LOGICAL_MASK == SVE2_TERNARY_LOGICAL_BASE)
+            .then(|| Arm64Sve2TernaryLogicalOp::from_bits((word >> 22) & 0b11, (word >> 10) & 1))
+            .flatten()
+        {
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zk = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2TernaryLogical { op, zdn, zm, zk }));
+        }
+        // SVE2 widening integer (0x45 non-accumulating, 0x44 multiply-accumulate-long). Result element is .h/.s/.d.
+        let widen_group = if word & SVE2_WIDEN_MASK == SVE2_WIDEN_ARITH_BASE {
+            Some(false)
+        } else if word & SVE2_WIDEN_MASK == SVE2_WIDEN_MLAL_BASE {
+            Some(true)
+        } else {
+            None
+        };
+        if let Some(op) = widen_group
+            .filter(|_| (word >> 22) & 0b11 != 0)
+            .and_then(|accumulate| Arm64Sve2WideningOp::from_bits(accumulate, (word >> 10) & 0x3F))
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Sve2Widening {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        // SVE predicated complex FP (FCADD/FCMLA). Element must be .h/.s/.d (size 00 is a different, BF16 group).
+        if word & SVE_FCADD_MASK == SVE_FCADD_BASE && (word >> 22) & 0b11 != 0 {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let rotation = if (word >> 16) & 1 == 1 {
+                Arm64ComplexRotation::R270
+            } else {
+                Arm64ComplexRotation::R90
+            };
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveFpComplexAdd {
+                size,
+                rotation,
+                pg,
+                zdn,
+                zm,
+            }));
+        }
+        if word & SVE_FCMLA_MASK == SVE_FCMLA_BASE && (word >> 22) & 0b11 != 0 {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let rotation = Arm64ComplexRotation::from_code((word >> 13) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveFpComplexMulAdd {
+                size,
+                rotation,
+                pg,
+                zda,
+                zn,
+                zm,
+            }));
+        }
+        // SVE complex multiply-accumulate by indexed element (CMLA integer / FCMLA float). [21]=1 separates these
+        // from the predicated vector forms above (which pin [21]=0). size[22]: 0=.h (index2 [20:19], Zm Z0-7), 1=.s
+        // (index1 [20], Zm Z0-15).
+        let complex_indexed_fp = if word & SVE_COMPLEX_INDEXED_MASK == SVE_CMLA_INDEXED_BASE {
+            Some(false)
+        } else if word & SVE_COMPLEX_INDEXED_MASK == SVE_FCMLA_INDEXED_BASE {
+            Some(true)
+        } else {
+            None
+        };
+        if let Some(fp) = complex_indexed_fp {
+            let (size, index, zm_bits) = if (word >> 22) & 1 == 0 {
+                (
+                    Arm64VectorElement::H,
+                    ((word >> 19) & 0b11) as u8,
+                    ((word >> 16) & 0b111) as u8,
+                )
+            } else {
+                (
+                    Arm64VectorElement::S,
+                    ((word >> 20) & 1) as u8,
+                    ((word >> 16) & 0b1111) as u8,
+                )
+            };
+            let rotation = Arm64ComplexRotation::from_code((word >> 10) & 0b11);
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(zm_bits);
+            return Ok(Some(Self::SveComplexMulAddIndexed {
+                fp,
+                size,
+                rotation,
+                zda,
+                zn,
+                zm,
+                index,
+            }));
+        }
+        // SVE predicate break (BRKA/BRKB, BRKN propagate, BRKPA/BRKPB pair). All P0-P15 (4-bit predicate fields).
+        if word & SVE_BRK_UNARY_MASK == SVE_BRK_UNARY_BASE {
+            let pd = Arm64PredicateRegister::from_operand_bits(reg_field(word, 0));
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0xF) as u8);
+            let pn = Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8);
+            return Ok(Some(Self::SveBreak {
+                before: (word >> 23) & 1 == 1,
+                set_flags: (word >> 22) & 1 == 1,
+                merging: (word >> 4) & 1 == 1,
+                pd,
+                pg,
+                pn,
+            }));
+        }
+        if word & SVE_BRKN_MASK == SVE_BRKN_BASE {
+            let pdm = Arm64PredicateRegister::from_operand_bits(reg_field(word, 0));
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0xF) as u8);
+            let pn = Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8);
+            return Ok(Some(Self::SveBreakPropagate {
+                set_flags: (word >> 22) & 1 == 1,
+                pdm,
+                pg,
+                pn,
+            }));
+        }
+        if word & SVE_BRK_PAIR_MASK == SVE_BRK_PAIR_BASE {
+            let pd = Arm64PredicateRegister::from_operand_bits(reg_field(word, 0));
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0xF) as u8);
+            let pn = Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8);
+            let pm = Arm64PredicateRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+            return Ok(Some(Self::SveBreakPair {
+                before: (word >> 4) & 1 == 1,
+                set_flags: (word >> 22) & 1 == 1,
+                pd,
+                pg,
+                pn,
+                pm,
+            }));
+        }
+        // SVE predicated integer unary (same mask value as the predicated-binary group; [15:13]=101 vs 000).
+        if let Some(op) = (word & SVE_INT_BIN_UNPRED_MASK == SVE_PRED_UNARY_BASE)
+            .then(|| Arm64SvePredUnaryOp::from_opcode((word >> 16) & 0x3F))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveIntUnaryPredicated {
+                op,
+                size,
+                pg,
+                zd,
+                zn,
+            }));
+        }
+        // SVE2.2 zeroing-predicate integer unary (/z): same 0x04 frame as the /m group, but bit [20]=0. The /m
+        // opcodes 0x10..0x1E carry bit [20]=1; the /z forms clear it (0x00..0x0E, previously unallocated).
+        if let Some(op) = (word & SVE_INT_BIN_UNPRED_MASK == SVE_PRED_UNARY_BASE
+            && (word >> 20) & 1 == 0)
+            .then(|| Arm64SvePredUnaryOp::from_opcode(((word >> 16) & 0x3F) | 0x10))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveIntUnaryZeroing {
+                op,
+                size,
+                pg,
+                zd,
+                zn,
+            }));
+        }
+        // SVE reductions (integer base 0x0400_2000 / FP base 0x6500_2000; [15:13]=001).
+        if let Some(op) = (word & SVE_REDUCE_MASK == SVE_INT_REDUCE_BASE)
+            .then(|| Arm64SveIntReductionOp::from_opcode((word >> 16) & 0x1F))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let vd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveIntReduction {
+                op,
+                size,
+                vd,
+                pg,
+                zn,
+            }));
+        }
+        // SVE2.1 across-lanes QUADWORD integer reduction (ADDQV/.../ANDQV) -- same frame as the int reduction above but
+        // a disjoint [20:16] opcode set, so the regular decode already fell through on these.
+        if let Some(op) = (word & SVE_REDUCE_MASK == SVE_INT_REDUCE_BASE)
+            .then(|| Arm64SveQuadReduceIntOp::from_opcode((word >> 16) & 0x1F))
+            .flatten()
+        {
+            return Ok(Some(Self::SveQuadReduceInt {
+                op,
+                size: Arm64VectorElement::from_size_bits((word >> 22) & 0b11),
+                vd: Arm64FloatRegister::from_operand_bits(reg_field(word, 0)),
+                pg: Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8),
+                zn: Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5)),
+            }));
+        }
+        // SVE2.1 FP quadword reduction (FMAXNMQV/FMINNMQV/FMAXQV/FMINQV) -- same SVE_REDUCE_MASK frame, base 0x6400_a000
+        // ([15]=1, region 0x64); valid for .h/.s/.d only so size==00 falls through.
+        if let Some(op) = (word & SVE_REDUCE_MASK == SVE_FP_QUAD_REDUCE_BASE
+            && (word >> 22) & 0b11 != 0)
+            .then(|| Arm64SveQuadReduceFpOp::from_opcode((word >> 16) & 0x1F))
+            .flatten()
+        {
+            return Ok(Some(Self::SveQuadReduceFp {
+                op,
+                size: Arm64VectorElement::from_size_bits((word >> 22) & 0b11),
+                vd: Arm64FloatRegister::from_operand_bits(reg_field(word, 0)),
+                pg: Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8),
+                zn: Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5)),
+            }));
+        }
+        // SVE2.1 two-vector saturating narrowing convert (SQCVTN/UQCVTN/SQCVTUN, .s pair -> .h). op[12:11] (3 unallocated).
+        if let Some(op) = (word & SVE_NARROW_CONVERT_MASK == SVE_NARROW_CONVERT_BASE)
+            .then(|| Arm64SveNarrowConvertOp::from_code((word >> 11) & 0b11))
+            .flatten()
+        {
+            return Ok(Some(Self::SveNarrowConvert {
+                op,
+                zd: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 6) & 0xF) << 1) as u8,
+                ),
+            }));
+        }
+        // SVE2.1 two-vector saturating rounding shift-right narrow (SQRSHRN/UQRSHRN/SQRSHRUN, .s pair -> .h, #1..16).
+        // The imm field [20:16] = 32-shift, so a valid .h shift lands in 16..=31; op[13:12] (0b01 unallocated).
+        if let Some(op) = (word & SVE_SHIFT_NARROW_MASK == SVE_SHIFT_NARROW_BASE
+            && (16..=31).contains(&((word >> 16) & 0x1F)))
+        .then(|| Arm64SveShiftNarrowOp::from_code((word >> 12) & 0b11))
+        .flatten()
+        {
+            return Ok(Some(Self::SveShiftNarrow {
+                op,
+                zd: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 6) & 0xF) << 1) as u8,
+                ),
+                shift: (32 - ((word >> 16) & 0x1F)) as u8,
+            }));
+        }
+        // SME2 four-vector saturating rounding shift-right narrow (SQRSHRN/UQRSHRN/SQRSHRUN). The [23:16] byte encodes
+        // result element + shift (.b: 96..127 -> shift 128-V; .h: 224..255 -> 256-V, 160..191 -> 224-V). [15:10]=110111.
+        if word & SME2_QUAD_SHIFT_NARROW_MASK == SME2_QUAD_SHIFT_NARROW_BASE {
+            let v = (word >> 16) & 0xFF;
+            let dest_shift = if (96..=127).contains(&v) {
+                Some((Arm64VectorElement::B, (128 - v) as u8))
+            } else if (224..=255).contains(&v) {
+                Some((Arm64VectorElement::H, (256 - v) as u8))
+            } else if (160..=191).contains(&v) {
+                Some((Arm64VectorElement::H, (224 - v) as u8))
+            } else {
+                None
+            };
+            if let (Some((dest, shift)), Some(op)) = (
+                dest_shift,
+                Arm64SveShiftNarrowOp::from_quad_code((word >> 5) & 0b11),
+            ) {
+                return Ok(Some(Self::Sme2QuadShiftNarrow {
+                    op,
+                    dest,
+                    shift,
+                    zd: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                    zn_base: Arm64ScalableVectorRegister::from_operand_bits(
+                        (((word >> 7) & 0b111) << 2) as u8,
+                    ),
+                }));
+            }
+        }
+        // SME2 four-vector shift-right narrow WITHOUT N ([10]=0, vs the N form above at [10]=1).
+        if word & SME2_QUAD_SHIFT_NARROW_MASK == SME2_SHIFT_NARROW_NON4_BASE {
+            let v = (word >> 16) & 0xFF;
+            let dest_shift = if (96..=127).contains(&v) {
+                Some((Arm64VectorElement::B, (128 - v) as u8))
+            } else if (224..=255).contains(&v) {
+                Some((Arm64VectorElement::H, (256 - v) as u8))
+            } else if (160..=191).contains(&v) {
+                Some((Arm64VectorElement::H, (224 - v) as u8))
+            } else {
+                None
+            };
+            if let (Some((dest, shift)), Some(op)) = (
+                dest_shift,
+                Arm64SveShiftNarrowOp::from_quad_code((word >> 5) & 0b11),
+            ) {
+                return Ok(Some(Self::Sme2ShiftNarrowNoN {
+                    op,
+                    four: true,
+                    dest,
+                    shift,
+                    zd: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                    zn_base: Arm64ScalableVectorRegister::from_operand_bits(
+                        (((word >> 7) & 0b111) << 2) as u8,
+                    ),
+                }));
+            }
+        }
+        // SME2 two-vector shift-right narrow (no-N, .s pair -> .h). op split: to-unsigned[20] + unsigned-source[5].
+        if word & SME2_SHIFT_NARROW_NON2_MASK == SME2_SHIFT_NARROW_NON2_BASE {
+            let op = match (((word >> 20) & 1), ((word >> 5) & 1)) {
+                (0, 0) => Some(Arm64SveShiftNarrowOp::Sqrshrn),
+                (0, 1) => Some(Arm64SveShiftNarrowOp::Uqrshrn),
+                (1, 0) => Some(Arm64SveShiftNarrowOp::Sqrshrun),
+                _ => None,
+            };
+            if let Some(op) = op {
+                return Ok(Some(Self::Sme2ShiftNarrowNoN {
+                    op,
+                    four: false,
+                    dest: Arm64VectorElement::H,
+                    shift: (16 - ((word >> 16) & 0xF)) as u8,
+                    zd: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                    zn_base: Arm64ScalableVectorRegister::from_operand_bits(
+                        (((word >> 6) & 0xF) << 1) as u8,
+                    ),
+                }));
+            }
+        }
+        // SME2 multi-vector unpack SUNPK/UUNPK (widening sign/zero extend). size+1 at [23:22], vgx4[20], U[0].
+        if word & SME2_UNPACK_WIDEN_MASK == SME2_UNPACK_WIDEN_BASE {
+            let src_size = match (word >> 22) & 0b11 {
+                1 => Some(Arm64VectorElement::B),
+                2 => Some(Arm64VectorElement::H),
+                3 => Some(Arm64VectorElement::S),
+                _ => None,
+            };
+            if let Some(src_size) = src_size {
+                return Ok(Some(Self::Sme2UnpackWiden {
+                    unsigned: word & 1 == 1,
+                    four: (word >> 20) & 1 == 1,
+                    src_size,
+                    zd_base: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1E) as u8),
+                    zn_base: Arm64ScalableVectorRegister::from_operand_bits(
+                        ((word >> 5) & 0x1F) as u8,
+                    ),
+                }));
+            }
+        }
+        // SME2 multi-vector SEL (predicate-as-counter governed select of Zn/Zm groups into Zd).
+        if word & SME2_VEC_SELECT_MASK == SME2_VEC_SELECT_BASE {
+            return Ok(Some(Self::Sme2VectorSelect {
+                size: Arm64VectorElement::from_size_bits((word >> 22) & 0b11),
+                four: (word >> 16) & 1 == 1,
+                png: Arm64PredicateAsCounter::from_index((word >> 10) & 0b111),
+                zd_base: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 1) & 0xF) << 1) as u8,
+                ),
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 6) & 0xF) << 1) as u8,
+                ),
+                zm_base: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 17) & 0xF) << 1) as u8,
+                ),
+            }));
+        }
+        // SME2 four-vector saturating narrowing convert (SQCVTN/UQCVTN/SQCVTUN). op is split: to-unsigned[22] +
+        // unsigned-source[5] (the (1,1) combo is unallocated); dest size[23] (0 -> .b, 1 -> .h).
+        if let Some(op) = (word & SME2_NARROW_CONVERT_MASK == SME2_NARROW_CONVERT_BASE)
+            .then(|| Arm64SveNarrowConvertOp::from_sme2_op_bits((word >> 22) & 1, (word >> 5) & 1))
+            .flatten()
+        {
+            return Ok(Some(Self::Sme2NarrowConvert {
+                op,
+                dest: if (word >> 23) & 1 == 1 {
+                    Arm64VectorElement::H
+                } else {
+                    Arm64VectorElement::B
+                },
+                zd: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 7) & 0b111) << 2) as u8,
+                ),
+            }));
+        }
+        // SME2 four-vector saturating narrowing convert WITHOUT N ([6]=0, vs the N form above at [6]=1).
+        if let Some(op) = (word & SME2_NARROW_CONVERT_MASK == SME2_NARROW_CVT_NON4_BASE)
+            .then(|| Arm64SveNarrowConvertOp::from_sme2_op_bits((word >> 22) & 1, (word >> 5) & 1))
+            .flatten()
+        {
+            return Ok(Some(Self::Sme2NarrowConvertNoN {
+                op,
+                four: true,
+                dest: if (word >> 23) & 1 == 1 {
+                    Arm64VectorElement::H
+                } else {
+                    Arm64VectorElement::B
+                },
+                zd: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 7) & 0b111) << 2) as u8,
+                ),
+            }));
+        }
+        // SME2 two-vector saturating narrowing convert (no-N, .s pair -> .h). Shares the FCVTN frame mask but [17:16]=11.
+        if let Some(op) = (word & SME2_FP_CVT_NARROW_MASK == SME2_NARROW_CVT_NON2_BASE)
+            .then(|| Arm64SveNarrowConvertOp::from_sme2_op_bits((word >> 22) & 1, (word >> 5) & 1))
+            .flatten()
+        {
+            return Ok(Some(Self::Sme2NarrowConvertNoN {
+                op,
+                four: false,
+                dest: Arm64VectorElement::H,
+                zd: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 6) & 0xF) << 1) as u8,
+                ),
+            }));
+        }
+        // SME2 two-vector FP narrowing convert (FCVTN/BFCVT/BFCVTN). op split: to-BFloat16[22] + narrow[5]; (0,0) is
+        // the widening FCVT (excluded) -> falls through.
+        if let Some(op) = (word & SME2_FP_CVT_NARROW_MASK == SME2_FP_CVT_NARROW_BASE)
+            .then(|| Arm64Sme2FpCvtNarrowOp::from_op_bits((word >> 22) & 1, (word >> 5) & 1))
+            .flatten()
+        {
+            return Ok(Some(Self::Sme2FpCvtNarrow {
+                op,
+                zd: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                zn_base: Arm64ScalableVectorRegister::from_operand_bits(
+                    (((word >> 6) & 0xF) << 1) as u8,
+                ),
+            }));
+        }
+        if let Some(op) = (word & SVE_REDUCE_MASK == SVE_FP_REDUCE_BASE)
+            .then(|| Arm64SveFpReductionOp::from_opcode((word >> 16) & 0x1F))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let vd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveFpReduction {
+                op,
+                size,
+                vd,
+                pg,
+                zn,
+            }));
+        }
+        // SVE predicated shift by immediate. The element size is the position of the highest set bit of the 7-bit
+        // tszh:tszl:imm3 value (minus 3); the shift is recovered from that and the op direction.
+        if let Some(op) = (word & SVE_SHIFT_IMM_MASK == SVE_SHIFT_IMM_BASE)
+            .then(|| Arm64SveShiftImmOp::from_opc((word >> 16) & 0x7))
+            .flatten()
+        {
+            let v = (((word >> 22) & 0x3) << 5) | (((word >> 8) & 0x3) << 3) | ((word >> 5) & 0x7); // tszh:tszl:imm3
+            if v >= 8 {
+                let size_bits = (31 - v.leading_zeros()) - 3;
+                let esize = 8u32 << size_bits;
+                let shift = if op.is_left() {
+                    v - esize
+                } else {
+                    2 * esize - v
+                };
+                let size = Arm64VectorElement::from_size_bits(size_bits);
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                return Ok(Some(Self::SveShiftImmediatePredicated {
+                    op,
+                    size,
+                    pg,
+                    zdn,
+                    shift: shift as u8,
+                }));
+            }
+        }
+        // SVE predicated shift by vector (ASR/LSR/LSL + reversed ASRR/LSRR/LSLR): same mask value as shift-by-imm
+        // but the base has [21:19]=010 (distinct masked key, so the two never collide). op is the 3-bit [18:16].
+        if let Some(op) = (word & SVE_SHIFT_VEC_MASK == SVE_SHIFT_VEC_BASE)
+            .then(|| Arm64SvePredShiftVectorOp::from_opc((word >> 16) & 0x7))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveShiftVectorPredicated {
+                op,
+                size,
+                pg,
+                zdn,
+                zm,
+            }));
+        }
+        // SVE inc/dec by active-predicate-count (INCP/DECP/SQINCP/SQDECP/UQINCP/UQDECP). Four sub-encodings, kept
+        // disjoint by [18] (non-sat=1/sat=0) and [11] (scalar=1/vector=0); the inc/dec + signed bits move position.
+        if word & SVE_INCP_SCALAR_MASK == SVE_INCP_SCALAR_BASE {
+            let op = Arm64SvePredCountOp::from_bits(false, (word >> 16) & 1 == 1, false);
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pm = Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8);
+            let rdn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SvePredicateCountScalar {
+                op,
+                size,
+                width: Arm64RegisterWidth::X,
+                pm,
+                rdn,
+            }));
+        }
+        if word & SVE_QINCP_SCALAR_MASK == SVE_QINCP_SCALAR_BASE {
+            let op =
+                Arm64SvePredCountOp::from_bits(true, (word >> 17) & 1 == 1, (word >> 16) & 1 == 1);
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let width = if (word >> 10) & 1 == 1 {
+                Arm64RegisterWidth::X
+            } else {
+                Arm64RegisterWidth::W
+            };
+            let pm = Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8);
+            let rdn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SvePredicateCountScalar {
+                op,
+                size,
+                width,
+                pm,
+                rdn,
+            }));
+        }
+        if word & SVE_INCP_VECTOR_MASK == SVE_INCP_VECTOR_BASE {
+            let op = Arm64SvePredCountOp::from_bits(false, (word >> 16) & 1 == 1, false);
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pm = Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8);
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SvePredicateCountVector { op, size, pm, zdn }));
+        }
+        if word & SVE_QINCP_VECTOR_MASK == SVE_QINCP_VECTOR_BASE {
+            let op =
+                Arm64SvePredCountOp::from_bits(true, (word >> 17) & 1 == 1, (word >> 16) & 1 == 1);
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pm = Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8);
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SvePredicateCountVector { op, size, pm, zdn }));
+        }
+        // SVE LDR/STR (whole Z or P register). The 9-bit MUL VL offset is imm9h[21:16]:imm9l[12:10].
+        if word & SVE_FILLSPILL_MASK == SVE_LDR_Z_BASE
+            || word & SVE_FILLSPILL_MASK == SVE_STR_Z_BASE
+            || word & SVE_FILLSPILL_MASK == SVE_LDR_P_BASE
+            || word & SVE_FILLSPILL_MASK == SVE_STR_P_BASE
+        {
+            let imm9 = sign_extend((((word >> 16) & 0x3F) << 3) | ((word >> 10) & 0x7), 9);
+            let store = (word >> 30) & 1 == 1;
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            if (word >> 13) & 0b111 == 0b010 {
+                let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                return Ok(Some(Self::SveFillSpillVector {
+                    store,
+                    zt,
+                    rn,
+                    imm9,
+                }));
+            }
+            let pt = Arm64PredicateRegister::from_operand_bits((word & 0xF) as u8);
+            return Ok(Some(Self::SveFillSpillPredicate {
+                store,
+                pt,
+                rn,
+                imm9,
+            }));
+        }
+        // SVE predicated FP fused multiply-add (the indexed forms are 0x64.., the bit21=0 FP groups are above).
+        if word & SVE_FP_FMA_MASK == SVE_FP_FMA_BASE {
+            let op = Arm64SveFpFmaOp::from_opcode((word >> 13) & 0x7);
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveFpFma {
+                op,
+                size,
+                pg,
+                zda,
+                zn,
+                zm,
+            }));
+        }
+        // SVE unpredicated bitwise logical (whole register, always .d).
+        if word & SVE_BITWISE_LOGICAL_MASK == SVE_BITWISE_LOGICAL_BASE {
+            let op = Arm64SveBitwiseLogicalOp::from_opc((word >> 22) & 0x3);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveBitwiseLogicalUnpredicated { op, zd, zn, zm }));
+        }
+        // SVE predicated integer multiply-accumulate (MLA/MLS/MAD/MSB).
+        if let Some(op) = (word & SVE_INT_MAC_MASK == SVE_INT_MAC_BASE)
+            .then(|| Arm64SveIntMacOp::from_word(word))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let dst = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let reg16 = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            let reg5 = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveIntMac {
+                op,
+                size,
+                pg,
+                dst,
+                reg16,
+                reg5,
+            }));
+        }
+        // SVE integer compare with signed immediate. Non-compare [15:13] (PTRUE 111, pred-logical 01x) fall through.
+        if let Some(op) = (word & SVE_CMP_IMM_SIGNED_MASK == SVE_CMP_IMM_SIGNED_BASE)
+            .then(|| Arm64SveCmpImmSignedOp::from_word(word))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pd = Arm64PredicateRegister::from_operand_bits(reg_field(word, 0));
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveIntCompareImmSigned {
+                op,
+                size,
+                pd,
+                pg,
+                zn,
+                imm5: sign_extend((word >> 16) & 0x1F, 5) as i8,
+            }));
+        }
+        // SVE integer compare with unsigned immediate (bit21=1, distinct from the vector compares).
+        if word & SVE_CMP_IMM_UNSIGNED_MASK == SVE_CMP_IMM_UNSIGNED_BASE {
+            let op = Arm64SveCmpImmUnsignedOp::from_word(word);
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pd = Arm64PredicateRegister::from_operand_bits(reg_field(word, 0));
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveIntCompareImmUnsigned {
+                op,
+                size,
+                pd,
+                pg,
+                zn,
+                imm7: ((word >> 14) & 0x7F) as u8,
+            }));
+        }
+        // SVE MOVPRFX (unpredicated + predicated). The predicated form's [21:17]=01000 keeps it off the reductions.
+        if word & SVE_MOVPRFX_UNPRED_MASK == SVE_MOVPRFX_UNPRED_BASE {
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveMovprfxUnpredicated { zd, zn }));
+        }
+        if word & SVE_MOVPRFX_PRED_MASK == SVE_MOVPRFX_PRED_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveMovprfxPredicated {
+                merge: (word >> 16) & 1 == 1,
+                size,
+                pg,
+                zd,
+                zn,
+            }));
+        }
+        // SVE permute vectors (ZIP/UZP/TRN).
+        if let Some(op) = (word & SVE_PERMUTE_MASK == SVE_PERMUTE_BASE)
+            .then(|| Arm64VectorPermuteOp::from_sve_opcode((word >> 10) & 0x7))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SvePermute {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        // SVE unpredicated FP binary ([15:13]=000, bit21=0; the FMA group is bit21=1).
+        if let Some(op) = (word & SVE_INT_BIN_UNPRED_MASK == SVE_FP_BIN_UNPRED_BASE)
+            .then(|| Arm64SveFpBinUnpredOp::from_opcode((word >> 10) & 0x7))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveFpBinaryUnpredicated {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        // SVE CPY (copy immediate / scalar into active lanes).
+        if word & SVE_CPY_IMM_MASK == SVE_CPY_IMM_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveCopyImmediate {
+                merge: (word >> 14) & 1 == 1,
+                size,
+                pg,
+                zd,
+                imm8: ((word >> 5) & 0xFF) as i8,
+                shift: (word >> 13) & 1 == 1,
+            }));
+        }
+        // SVE FCPY (FMOV Zd.<T>, Pg/M, #imm): distinguished from the integer CPY-immediate above by bit15=1 (the
+        // fixed 110). Merge-only. size=00 (.b) has no FP form and is unallocated.
+        if word & SVE_FCPY_MASK == SVE_FCPY_BASE {
+            let size_bits = (word >> 22) & 0b11;
+            if size_bits == 0 {
+                return Err(DecodeError::InvalidOpcode); // .b has no FP FCPY
+            }
+            let size = Arm64VectorElement::from_size_bits(size_bits);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveFcpy {
+                size,
+                pg,
+                zd,
+                imm8: ((word >> 5) & 0xFF) as u8,
+            }));
+        }
+        if word & SVE_CPY_SCALAR_MASK == SVE_CPY_SCALAR_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            return Ok(Some(Self::SveCopyScalar { size, pg, zd, rn }));
+        }
+        // SVE REV (unpredicated element reverse) + REVB/REVH/REVW (predicated byte/half/word reverse).
+        if word & SVE_REV_MASK == SVE_REV_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveReverseElements { size, zd, zn }));
+        }
+        if let Some(width) = (word & SVE_REVB_MASK == SVE_REVB_BASE)
+            .then(|| Arm64SveReverseWidth::from_opc((word >> 16) & 0b11))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveReverseBytes {
+                width,
+                size,
+                pg,
+                zd,
+                zn,
+            }));
+        }
+        // SVE2.2 zeroing-predicate REVB/REVH/REVW (/z): same frame, bit [13] set.
+        if let Some(width) = (word & SVE_REVB_MASK == SVE_REVB_ZEROING_BASE)
+            .then(|| Arm64SveReverseWidth::from_opc((word >> 16) & 0b11))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveReverseBytesZeroing {
+                width,
+                size,
+                pg,
+                zd,
+                zn,
+            }));
+        }
+        if word & SVE_REVD_MASK == SVE_REVD_BASE {
+            return Ok(Some(Self::SveReverseDoublewords {
+                pg: Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8),
+                zd: Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0)),
+                zn: Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5)),
+            }));
+        }
+        // FEAT_CPA SVE checked pointer add/subtract: predicated (Zdn,Pg/m,Zdn,Zm) + unpredicated (Zd,Zn,Zm). `.d` only.
+        if word & SVE_ADDPT_PRED_MASK == SVE_ADDPT_PRED_BASE {
+            return Ok(Some(Self::SveCheckedPointerAddSubPred {
+                sub: (word >> 16) & 1 == 1,
+                pg: Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5)),
+                zdn: Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0)),
+            }));
+        }
+        if word & SVE_ADDPT_MASK == SVE_ADDPT_BASE {
+            return Ok(Some(Self::SveCheckedPointerAddSub {
+                sub: (word >> 10) & 1 == 1,
+                zm: Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16)),
+                zn: Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5)),
+                zd: Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0)),
+            }));
+        }
+        // FEAT_CPA SVE checked pointer multiply-add MADPT/MLAPT (`.d` only). bit[11]=madpt; madpt/mlapt swap [20:16]<->[9:5].
+        if word & SVE_MADPT_MASK == SVE_MADPT_BASE {
+            let mlapt = (word >> 11) & 1 == 0;
+            let hi = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            let lo = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let (op_a, op_b) = if mlapt { (lo, hi) } else { (hi, lo) };
+            return Ok(Some(Self::SveCheckedPointerMulAdd {
+                mlapt,
+                zda: Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0)),
+                op_a,
+                op_b,
+            }));
+        }
+        if word & SVE_TBL_MASK == SVE_TBL_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveTableLookup { size, zd, zn, zm }));
+        }
+        // SVE predicated FP unary (same-size round/recpx/sqrt; [15:13]=101). Convert opcodes fall through.
+        // SVE predicated FP converts share the FP-unary frame; resolve them first by their opcode discriminant.
+        if word & SVE_FP_CONVERT_FRAME_MASK == SVE_FP_CONVERT_BASE {
+            let disc = (word >> 16) & 0xFF;
+            if let Some((_, kind, dest_size, src_size)) =
+                SVE_FP_CONVERTS.iter().find(|(d, _, _, _)| *d == disc)
+            {
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                return Ok(Some(Self::SveFpConvert {
+                    kind: *kind,
+                    dest_size: *dest_size,
+                    src_size: *src_size,
+                    pg,
+                    zd,
+                    zn,
+                }));
+            }
+        }
+        // SVE2.2 zeroing-predicate FP converts (/z): relocated 0x64.. frame, each (kind, dest, src) a fully-fixed
+        // [31:13] base.
+        if let Some((_, kind, dest_size, src_size)) = SVE_FP_CONVERTS_ZEROING
+            .iter()
+            .find(|(base, _, _, _)| *base == (word & SVE_FP_CONVERT_ZEROING_MASK))
+        {
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveFpConvertZeroing {
+                kind: *kind,
+                dest_size: *dest_size,
+                src_size: *src_size,
+                pg,
+                zd,
+                zn,
+            }));
+        }
+        // SVE2 FLOGB (FP base-2 logarithm). size_fp at [18:17]. Checked before the wider FP-convert frame.
+        if word & SVE2_FLOGB_MASK == SVE2_FLOGB_BASE {
+            let size_bits = (word >> 17) & 0b11;
+            if size_bits != 0 {
+                let size = Arm64VectorElement::from_size_bits(size_bits);
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                return Ok(Some(Self::Sve2FpLogb { size, pg, zd, zn }));
+            }
+        }
+        // SVE2.2 zeroing-predicate FLOGB (/z): relocated 0x641E_8000 frame, size in [14:13] (00 unallocated).
+        if word & SVE2_FLOGB_ZEROING_MASK == SVE2_FLOGB_ZEROING_BASE {
+            let size_bits = (word >> 13) & 0b11;
+            if size_bits != 0 {
+                let size = Arm64VectorElement::from_size_bits(size_bits);
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                return Ok(Some(Self::Sve2FpLogbZeroing { size, pg, zd, zn }));
+            }
+        }
+        // SVE2 FP16/BF16 widening multiply-add long (FMLALB/T, FMLSLB/T, BFMLALB/T). .s from .h.
+        if word & SVE2_FMLAL_MASK == SVE2_FMLAL_BASE {
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            // BF16 forms have no subtract; a bf16+subtract bit pattern is unallocated here.
+            if !((word >> 22) & 1 == 1 && (word >> 13) & 1 == 1) {
+                return Ok(Some(Self::Sve2FpWidenMulAddLong {
+                    bf16: (word >> 22) & 1 == 1,
+                    subtract: (word >> 13) & 1 == 1,
+                    top: (word >> 10) & 1 == 1,
+                    zda,
+                    zn,
+                    zm,
+                }));
+            }
+        }
+        // SVE2 FP16/BF16 widening multiply-add long by indexed element. 3-bit index split i2[20]:i1[19]:i0[11].
+        if word & SVE2_FMLAL_INDEXED_MASK == SVE2_FMLAL_INDEXED_BASE {
+            // bf16 + subtract = BFMLSLB/T indexed (FEAT_SVE2p1); the rest are FMLAL/FMLSL/BFMLAL indexed.
+            let index =
+                ((((word >> 20) & 1) << 2) | (((word >> 19) & 1) << 1) | ((word >> 11) & 1)) as u8;
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(((word >> 16) & 0b111) as u8);
+            return Ok(Some(Self::Sve2FpWidenMulAddLongIndexed {
+                bf16: (word >> 22) & 1 == 1,
+                subtract: (word >> 13) & 1 == 1,
+                top: (word >> 10) & 1 == 1,
+                zda,
+                zn,
+                zm,
+                index,
+            }));
+        }
+        // SVE/SVE2 integer matrix multiply (SMMLA/USMMLA/UMMLA): uns at [23:22], 01 unallocated.
+        if word & SVE_MATMUL_MASK == SVE_INT_MATMUL_BASE {
+            let op = match (word >> 22) & 0b11 {
+                0b00 => Some(Arm64SveMatmulOp::Smmla),
+                0b10 => Some(Arm64SveMatmulOp::Usmmla),
+                0b11 => Some(Arm64SveMatmulOp::Ummla),
+                _ => None,
+            };
+            if let Some(op) = op {
+                let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+                return Ok(Some(Self::SveMatrixMul { op, zda, zn, zm }));
+            }
+        }
+        // SVE/SVE2 floating-point matrix multiply: size at [23:22] = 01(BFMMLA)/10(FMMLA .s)/11(FMMLA .d), 00 unallocated.
+        if word & SVE_MATMUL_MASK == SVE_FP_MATMUL_BASE {
+            let op = match (word >> 22) & 0b11 {
+                0b01 => Some(Arm64SveMatmulOp::Bfmmla),
+                0b10 => Some(Arm64SveMatmulOp::FmmlaS),
+                0b11 => Some(Arm64SveMatmulOp::FmmlaD),
+                _ => None,
+            };
+            if let Some(op) = op {
+                let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+                return Ok(Some(Self::SveMatrixMul { op, zda, zn, zm }));
+            }
+        }
+        // SVE BFloat16 dot product (BFDOT).
+        if word & SVE_BFDOT_MASK == SVE_BFDOT_BASE {
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveMatrixMul {
+                op: Arm64SveMatmulOp::Bfdot,
+                zda,
+                zn,
+                zm,
+            }));
+        }
+        // SVE2 FP precision up/down convert (FCVTLT/FCVTNT/FCVTX/...). The 9-bit [24:16] selector is disjoint from
+        // the SVE1 FP-convert table above (checked first).
+        if let Some(op) = (word & SVE2_FP_UPDOWN_MASK == SVE2_FP_UPDOWN_BASE)
+            .then(|| Arm64Sve2FpUpdownOp::from_discriminant((word >> 16) & 0x1FF))
+            .flatten()
+        {
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::Sve2FpConvertUpdown { op, pg, zd, zn }));
+        }
+        // SVE2.2 zeroing-predicate FP up/down converts (/z): relocated 0x64.. frame, each op a fully-fixed [31:13] base.
+        if let Some(op) = Arm64Sve2FpUpdownOp::from_zeroing_base(word & SVE_FP_CONVERT_ZEROING_MASK)
+        {
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::Sve2FpConvertUpdownZeroing { op, pg, zd, zn }));
+        }
+        if let Some(op) = (word & SVE_INT_BIN_UNPRED_MASK == SVE_FP_UNARY_BASE)
+            .then(|| Arm64SveFpUnaryOp::from_opcode((word >> 16) & 0x3F))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveFpUnaryPredicated {
+                op,
+                size,
+                pg,
+                zd,
+                zn,
+            }));
+        }
+        // SVE2.2 zeroing-predicate FP same-size unary (/z): relocated 0x64../[15]=1 frame, op spread over
+        // [21:16]+[14:13]. A strict (opcode6, sub2) lookup rejects the convert opcodes (handled just below).
+        if let Some(op) = (word & SVE_FP_ZEROING_FRAME_MASK == SVE_FP_UNARY_ZEROING_BASE)
+            .then(|| {
+                Arm64SveFpUnaryOp::from_zeroing_fields((word >> 16) & 0x3F, (word >> 13) & 0b11)
+            })
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveFpUnaryZeroing {
+                op,
+                size,
+                pg,
+                zd,
+                zn,
+            }));
+        }
+        // SVE2.2 SVE FRINT32/64 X/Z: merging /M (0x65.. frame, op2/size in [18:16]) or zeroing /Z (0x64.. frame,
+        // is64 in [16], size in [14], is_x in [13]). [23:22]=00 in both, which keeps them clear of the FP converts.
+        {
+            let is_m = word & SVE_FRINTTS_M_MASK == SVE_FRINTTS_M_BASE;
+            let is_z = word & SVE_FRINTTS_Z_MASK == SVE_FRINTTS_Z_BASE;
+            if is_m || is_z {
+                let (is64, is_d, is_x) = if is_z {
+                    (
+                        (word >> 16) & 1 == 1,
+                        (word >> 14) & 1 == 1,
+                        (word >> 13) & 1 == 1,
+                    )
+                } else {
+                    (
+                        (word >> 18) & 1 == 1,
+                        (word >> 17) & 1 == 1,
+                        (word >> 16) & 1 == 1,
+                    )
+                };
+                let op = Arm64ScalarFrintTsOp::from_flags(is64, is_x);
+                let size = if is_d {
+                    Arm64VectorElement::D
+                } else {
+                    Arm64VectorElement::S
+                };
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                return Ok(Some(Self::SveFrintTs {
+                    op,
+                    zeroing: is_z,
+                    size,
+                    pg,
+                    zd,
+                    zn,
+                }));
+            }
+        }
+        // SVE predicate ops (PFALSE/PTEST/RDFFR/WRFFR/SETFFR/PFIRST/PNEXT). Each has a specific fixed frame.
+        if word == SVE_SETFFR_WORD {
+            return Ok(Some(Self::SveSetffr));
+        }
+        if word & 0xFFFF_FFF0 == SVE_PFALSE_BASE {
+            return Ok(Some(Self::SvePfalse(
+                Arm64PredicateRegister::from_operand_bits((word & 0xF) as u8),
+            )));
+        }
+        if word & 0xFFFF_FFF0 == SVE_RDFFR_BASE {
+            return Ok(Some(Self::SveRdffr(
+                Arm64PredicateRegister::from_operand_bits((word & 0xF) as u8),
+            )));
+        }
+        if word & SVE_PTEST_MASK == SVE_PTEST_BASE {
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0xF) as u8);
+            let pn = Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8);
+            return Ok(Some(Self::SvePtest { pg, pn }));
+        }
+        if word & SVE_RDFFR_PRED_MASK == SVE_RDFFRS_PRED_BASE {
+            let pd = Arm64PredicateRegister::from_operand_bits((word & 0xF) as u8);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8);
+            return Ok(Some(Self::SveRdffrSetFlags { pd, pg }));
+        }
+        if word & SVE_RDFFR_PRED_MASK == SVE_RDFFR_PRED_BASE {
+            let pd = Arm64PredicateRegister::from_operand_bits((word & 0xF) as u8);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8);
+            return Ok(Some(Self::SveRdffrPredicated { pd, pg }));
+        }
+        if word & SVE_WRFFR_MASK == SVE_WRFFR_BASE {
+            return Ok(Some(Self::SveWrffr(
+                Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8),
+            )));
+        }
+        if word & SVE_PFIRST_MASK == SVE_PFIRST_BASE {
+            let pdn = Arm64PredicateRegister::from_operand_bits((word & 0xF) as u8);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8);
+            return Ok(Some(Self::SvePfirst { pdn, pg }));
+        }
+        if word & SVE_PNEXT_MASK == SVE_PNEXT_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pdn = Arm64PredicateRegister::from_operand_bits((word & 0xF) as u8);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8);
+            return Ok(Some(Self::SvePnext { size, pdn, pg }));
+        }
+        if word & SVE_INSR_MASK == SVE_INSR_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveInsr { size, zdn, rn }));
+        }
+        if word & SVE_LAST_GP_MASK == SVE_LAST_GP_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveExtractLast {
+                last_b: (word >> 16) & 1 == 1,
+                size,
+                rd,
+                pg,
+                zn,
+            }));
+        }
+        // SVE extract-last to SIMD&FP, and conditional-extract (CLASTA/CLASTB) to vector / GP / SIMD. Same mask
+        // shape as the GP extract-last; distinct [21:17]:[15:13] keys.
+        if word & SVE_LAST_GP_MASK == SVE_LAST_SIMD_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let vd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveExtractLastSimd {
+                last_b: (word >> 16) & 1 == 1,
+                size,
+                vd,
+                pg,
+                zn,
+            }));
+        }
+        if word & SVE_LAST_GP_MASK == SVE_CLAST_VEC_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveConditionalExtractVector {
+                last_b: (word >> 16) & 1 == 1,
+                size,
+                pg,
+                zdn,
+                zm,
+            }));
+        }
+        if word & SVE_LAST_GP_MASK == SVE_CLAST_GP_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let rdn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveConditionalExtractGpr {
+                last_b: (word >> 16) & 1 == 1,
+                size,
+                pg,
+                rdn,
+                zm,
+            }));
+        }
+        if word & SVE_LAST_GP_MASK == SVE_CLAST_SIMD_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let vd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveConditionalExtractSimd {
+                last_b: (word >> 16) & 1 == 1,
+                size,
+                pg,
+                vd,
+                zm,
+            }));
+        }
+        if word & SVE_EXT_MASK == SVE_EXT_BASE {
+            let imm8 = ((((word >> 16) & 0x1F) << 3) | ((word >> 10) & 0x7)) as u8;
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveExt { zdn, zm, imm8 }));
+        }
+        if word & SVE_SPLICE_MASK == SVE_SPLICE_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveSplice { size, pg, zdn, zm }));
+        }
+        if word & SVE_SPLICE_MASK == SVE_COMPACT_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveCompact { size, pg, zd, zn }));
+        }
+        if word & SVE_SPLICE_MASK == SVE_RBIT_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveRbit { size, pg, zd, zn }));
+        }
+        // SVE2.2 zeroing-predicate RBIT (/z): same frame, bit [13] set.
+        if word & SVE_SPLICE_MASK == SVE_RBIT_ZEROING_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveRbitZeroing { size, pg, zd, zn }));
+        }
+        if word & SVE_SEL_MASK == SVE_SEL_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0xF) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveSelect {
+                size,
+                pg,
+                zd,
+                zn,
+                zm,
+            }));
+        }
+        if word & SVE_UNPK_MASK == SVE_UNPK_BASE {
+            let dest_size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveUnpack {
+                signed: (word >> 17) & 1 == 0,
+                high: (word >> 16) & 1 == 1,
+                dest_size,
+                zd,
+                zn,
+            }));
+        }
+        if word & SVE_BITWISE_IMM_MASK == SVE_BITWISE_IMM_BASE {
+            // The 13-bit immediate must be a valid repeating bitmask; a malformed field is not this instruction.
+            let imm13 = (word >> 5) & 0x1FFF;
+            let n = (imm13 >> 12) & 1;
+            let immr = (imm13 >> 6) & 0x3F;
+            let imms = imm13 & 0x3F;
+            if let Some(imm) = decode_bitmask(n, immr, imms, 64) {
+                let op = Arm64SveBitwiseImmOp::from_opc((word >> 22) & 0b11);
+                let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                return Ok(Some(Self::SveBitwiseImmediate { op, zdn, imm }));
+            }
+        }
+
+        // Exact-match singletons first.
+        if word == NOP_WORD {
+            return Ok(Some(Self::Nop));
+        }
+        if word == ISB_WORD {
+            return Ok(Some(Self::InstructionSyncBarrier));
+        }
+        if word == SB_WORD {
+            return Ok(Some(Self::SpeculationBarrier));
+        }
+        if word == SSBB_WORD || word == PSSBB_WORD {
+            return Ok(Some(Self::SpeculativeStoreBypassBarrier {
+                physical: word == PSSBB_WORD,
+            }));
+        }
+        // FEAT_PCDPHINT STSHH cache-stash hint + FEAT_PAuth_LR label forms (experimental: LLVM-20-only oracle).
+        #[cfg(feature = "experimental")]
+        if word == STSHH_KEEP_WORD || word == STSHH_STRM_WORD {
+            return Ok(Some(Self::Stshh {
+                strm: word == STSHH_STRM_WORD,
+            }));
+        }
+        // FEAT_LSFE atomic floating-point memory ops (experimental). size[31:30] -> precision; store[15] -> rt = None.
+        #[cfg(feature = "experimental")]
+        if word & LSFE_ATOMIC_MASK == LSFE_ATOMIC_BASE
+            && let Some(op) = Arm64LsfeOp::from_code((word >> 12) & 0b111)
+            && let Some(precision) = match word >> 30 {
+                1 => Some(Arm64FloatPrecision::Half),
+                2 => Some(Arm64FloatPrecision::Single),
+                3 => Some(Arm64FloatPrecision::Double),
+                _ => None,
+            }
+        {
+            let store = (word >> 15) & 1 == 1;
+            return Ok(Some(Self::LsfeAtomicFloat {
+                op,
+                precision,
+                acquire: (word >> 23) & 1 == 1,
+                release: (word >> 22) & 1 == 1,
+                rs: Arm64FloatRegister::from_operand_bits(((word >> 16) & 0x1F) as u8),
+                rt: if store {
+                    None
+                } else {
+                    Some(Arm64FloatRegister::from_operand_bits((word & 0x1F) as u8))
+                },
+                rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(((word >> 5) & 0x1F) as u8),
+            }));
+        }
+        #[cfg(feature = "experimental")]
+        if let Some(op) = Arm64PointerAuthLrLabelOp::from_base(word & PAUTH_LR_LABEL_MASK) {
+            // imm16 is the unsigned backward distance; the PC-relative offset is its negation.
+            let offset_bytes = -(((word >> 5) & 0xFFFF) as i32) * 4;
+            return Ok(Some(Self::PointerAuthLrLabel { op, offset_bytes }));
+        }
+        // UDF (permanently undefined): the whole top 16 bits are zero; imm16 is the low half. No allocated
+        // instruction has [31:16] = 0, so this is an isolated, unambiguous encoding.
+        if word & 0xFFFF_0000 == 0 {
+            return Ok(Some(Self::Udf((word & 0xFFFF) as u16)));
+        }
+        // pointer-auth hints + BTI -- fixed words in the hint (NOP) space (FEAT_PAuth / FEAT_BTI).
+        if let Some(op) = Arm64PacHintOp::from_word(word) {
+            return Ok(Some(Self::PointerAuthHint(op)));
+        }
+        if let Some(target) = Arm64BtiTarget::from_word(word) {
+            return Ok(Some(Self::Bti(target)));
+        }
+        // operand-free hints (WFI/WFE/SEV/SEVL/YIELD/DGH/ESB/PSB/TSB/CSDB/CLRBHB) -- exact words in the hint space.
+        if let Some(op) = Arm64SystemHintOp::from_word(word) {
+            return Ok(Some(Self::SystemHint(op)));
+        }
+        // FEAT_PAuth_LR operand-free PAC ops (fixed words; pacm is HINT #39, not in the baseline hint set, so it falls
+        // through the SystemHint decode above). GNU 2.44 cannot assemble these -- validated against LLVM 19 + DDI0487.
+        if let Some(op) = Arm64PointerAuthLrOp::from_word(word) {
+            return Ok(Some(Self::PointerAuthLr(op)));
+        }
+        // WFET/WFIT (FEAT_WFxT) -- the hint-space CRm=0001 slot, but with a register operand in Rt[4:0].
+        if word & WFXT_MASK == WFXT_BASE {
+            let xt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(if (word >> 5) & 1 == 1 {
+                Self::WaitForInterruptTimeout(xt)
+            } else {
+                Self::WaitForEventTimeout(xt)
+            }));
+        }
+
+        // system: memory barriers (DMB/DSB), exception-generating (BRK/SVC), and MRS/MSR. These sit in the
+        // 0xD4../0xD5.. system space and are checked before the branches. The barrier opcode field [15:12]=0011
+        // keeps DMB/DSB distinct from the [15:12]=0010 hint space (NOP/YIELD/SEV/...), so they never alias.
+        if word & BARRIER_MASK == DMB_BASE {
+            let option = Arm64BarrierOption::from_crm_bits((word >> 8) & 0xF)
+                .ok_or(DecodeError::InvalidOpcode)?;
+            return Ok(Some(Self::DataMemoryBarrier(option)));
+        }
+        if word & BARRIER_MASK == DSB_BASE {
+            let option = Arm64BarrierOption::from_crm_bits((word >> 8) & 0xF)
+                .ok_or(DecodeError::InvalidOpcode)?;
+            return Ok(Some(Self::DataSyncBarrier(option)));
+        }
+        if word & BARRIER_MASK == CLREX_BASE {
+            return Ok(Some(Self::ClearExclusive(((word >> 8) & 0xF) as u8)));
+        }
+        if word & EXCEPTION_MASK == BRK_BASE {
+            return Ok(Some(Self::Brk(((word >> 5) & 0xFFFF) as u16)));
+        }
+        if word & EXCEPTION_MASK == SVC_BASE {
+            return Ok(Some(Self::Svc(((word >> 5) & 0xFFFF) as u16)));
+        }
+        if word & EXCEPTION_MASK == HVC_BASE {
+            return Ok(Some(Self::Hvc(((word >> 5) & 0xFFFF) as u16)));
+        }
+        if word & EXCEPTION_MASK == SMC_BASE {
+            return Ok(Some(Self::Smc(((word >> 5) & 0xFFFF) as u16)));
+        }
+        if word & EXCEPTION_MASK == HLT_BASE {
+            return Ok(Some(Self::Hlt(((word >> 5) & 0xFFFF) as u16)));
+        }
+        // DCPS1/2/3: opc=101 (base 0xD4A0_0000), LL[1:0] = level (1/2/3); LL=00 is unallocated.
+        if word & EXCEPTION_MASK & !0b11 == (DCPS1_BASE & !0b11) {
+            let level = (word & 0b11) as u8;
+            if (1..=3).contains(&level) {
+                return Ok(Some(Self::Dcps {
+                    level,
+                    imm16: ((word >> 5) & 0xFFFF) as u16,
+                }));
+            }
+        }
+        if word == ERET_WORD {
+            return Ok(Some(Self::Eret));
+        }
+        if word == DRPS_WORD {
+            return Ok(Some(Self::Drps));
+        }
+        // FlagM/FlagM2: CFINV/XAFLAG/AXFLAG are fixed words in the MSR-immediate frame (op1=0, CRm=0, op2=0/1/2),
+        // matched before the generic MSR-immediate decode. RMIF/SETF8/SETF16 live in the data-processing space
+        // (0xBA../0x3A..); their masks are specific enough to match here without aliasing the earlier checks.
+        if word == CFINV_WORD {
+            return Ok(Some(Self::Cfinv));
+        }
+        if word == XAFLAG_WORD {
+            return Ok(Some(Self::Xaflag));
+        }
+        if word == AXFLAG_WORD {
+            return Ok(Some(Self::Axflag));
+        }
+        if word & RMIF_MASK == RMIF_BASE {
+            let shift = ((word >> 15) & 0x3F) as u8;
+            let mask = (word & 0xF) as u8;
+            let xn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::Rmif { xn, shift, mask }));
+        }
+        if word & SETF_MASK == SETF_BASE {
+            let wn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(if (word >> 14) & 1 == 1 {
+                Self::Setf16(wn)
+            } else {
+                Self::Setf8(wn)
+            }));
+        }
+        // SME SMSTART/SMSTOP (MSR to the SVCR PSTATE field). Decoded before the generic MSR-immediate (whose mask also
+        // matches these) so the dedicated mnemonic wins. CRm = (target << 1) | start; target 0 is unallocated.
+        if word & SME_SMSTART_MASK == SME_SMSTART_BASE {
+            let crm = (word >> 8) & 0xF;
+            if let Some(target) = Arm64SmeStateTarget::from_code(crm >> 1) {
+                return Ok(Some(Self::SmeStartStop {
+                    start: crm & 1 == 1,
+                    target,
+                }));
+            }
+        }
+        // MSR (immediate) -- PSTATE field write. Only modeled (op1,op2) pairs decode; an unmodeled pair (e.g. the
+        // CFINV/XAFLAG/AXFLAG fixed words, which share this frame) falls through to its own exact-match decode.
+        if word & MSR_IMM_MASK == MSR_IMM_BASE {
+            let op1 = (word >> 16) & 0b111;
+            let op2 = (word >> 5) & 0b111;
+            if let Some(field) = Arm64PstateField::from_op1_op2(op1, op2) {
+                let imm = ((word >> 8) & 0xF) as u8;
+                return Ok(Some(Self::MsrImmediate(field, imm)));
+            }
+        }
+        if word & SYSREG_MOVE_MASK == MRS_BASE || word & SYSREG_MOVE_MASK == MSR_BASE {
+            // MRS/MSR (register): the 15-bit [19:5] specifier selects the register; the modeled ones decode by
+            // name, any other as `Raw(bits)` -- a dedicated MRS/MSR-register encoding, so this never misclassifies.
+            let sysreg = Arm64SystemRegister::from_field_bits((word >> 5) & 0x7FFF);
+            let xt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(if word & SYSREG_MOVE_MASK == MRS_BASE {
+                Self::Mrs(sysreg, xt)
+            } else {
+                Self::Msr(sysreg, xt)
+            }));
+        }
+        // FEAT_SYSREG128 MRRS/MSRR (128-bit system-register pair access): same [19:5] specifier as MRS/MSR but [22]=1.
+        if word & SYSREG_MOVE_MASK == MRRS_BASE || word & SYSREG_MOVE_MASK == MSRR_BASE {
+            let sysreg = ((word >> 5) & 0x7FFF) as u16;
+            let rt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SystemRegisterPair {
+                read: word & SYSREG_MOVE_MASK == MRRS_BASE,
+                sysreg,
+                rt,
+            }));
+        }
+        // FEAT_GCS register operations (GCSPUSHM/GCSPOPM/GCSSS1/GCSSS2) -- the named op1=3,CRn=7,CRm=7 SYS/SYSL
+        // slots, decoded before the generic SYS/SYSL so the dedicated mnemonic wins (the SYS-alias pattern, as
+        // for the DC/IC/TLBI maintenance ops a disassembler recovers). Rt[4:0] is the operand.
+        if let Some(op) = Arm64GcsRegisterOp::from_word_without_rt(word & SYS_ALIAS_RT_MASK) {
+            let rt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::GcsRegister { op, rt }));
+        }
+        // FEAT_GCS exception push/pop (GCSPUSHX/GCSPOPX/GCSPOPCX) -- operand-free SYS aliases (Rt fixed 0b11111),
+        // matched as exact words (op2=4/5/6, distinct from the GcsRegister op2=0..3 above).
+        if let Some(op) = Arm64GcsExceptionOp::from_word(word) {
+            return Ok(Some(Self::GcsException(op)));
+        }
+        // FEAT_BRBE BRB IALL / BRB INJ -- operand-free SYS aliases (Rt fixed 0b11111); matched as exact words so a
+        // SYS at the same op1/CRn/CRm with any other Rt falls through to the generic form.
+        if let Some(op) = Arm64BranchRecordBufferOp::from_word(word) {
+            return Ok(Some(Self::BranchRecordBuffer(op)));
+        }
+        // FEAT_ITE TRCIT Xt -- SYS #3,C7,C2,#7 with the operand in Rt[4:0].
+        if word & SYS_ALIAS_RT_MASK == TRCIT_BASE {
+            let rt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::TraceInstrumentation(rt)));
+        }
+        // SYS / SYSL -- the generic system instruction (op0=01); L[21] picks SYSL (1, result into Rt) vs SYS (0).
+        // op1[18:16], CRn[15:12], CRm[11:8], op2[7:5], Rt[4:0]. (bit19=1 keeps these distinct from MSR-immediate.)
+        if word & SYS_MASK == SYS_BASE || word & SYS_MASK == SYSL_BASE {
+            let op1 = ((word >> 16) & 0b111) as u8;
+            let crn = ((word >> 12) & 0xF) as u8;
+            let crm = ((word >> 8) & 0xF) as u8;
+            let op2 = ((word >> 5) & 0b111) as u8;
+            let rt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(if word & SYS_MASK == SYSL_BASE {
+                Self::Sysl {
+                    rt,
+                    op1,
+                    crn,
+                    crm,
+                    op2,
+                }
+            } else {
+                Self::Sys {
+                    op1,
+                    crn,
+                    crm,
+                    op2,
+                    rt,
+                }
+            }));
+        }
+
+        // pointer-authenticated returns (RETAA/RETAB/ERETAA/ERETAB) -- fixed words, before the plain RET (their
+        // op4 field differs, so they never alias).
+        if let Some(op) = Arm64PacReturnOp::from_word(word) {
+            return Ok(Some(Self::PacReturn(op)));
+        }
+        // pointer-authenticated branches (BRAA/BRAB/BLRAA/BLRAB + the *Z zero-modifier forms). bit24 selects
+        // modifier vs zero; the *Z forms require Rm=11111.
+        if let Some((op, zero)) = Arm64PacBranchOp::from_base(word & 0xFFFF_FC00) {
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            let modifier = if zero {
+                if reg_field(word, 0) != 0b11111 {
+                    return Err(DecodeError::InvalidOpcode);
+                }
+                None
+            } else {
+                Some(Arm64GeneralPurposeRegister::from_operand_bits(reg_field(
+                    word, 0,
+                )))
+            };
+            return Ok(Some(Self::PacBranch { op, rn, modifier }));
+        }
+
+        // Unconditional branch (register): RET / BR / BLR -- only Rn varies.
+        if word & UNCOND_BRANCH_REG_MASK == RET_BASE {
+            let xn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::Ret(xn)));
+        }
+        if word & UNCOND_BRANCH_REG_MASK == BR_BASE {
+            let xn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::Br(xn)));
+        }
+        if word & UNCOND_BRANCH_REG_MASK == BLR_BASE {
+            let xn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::Blr(xn)));
+        }
+
+        // add/subtract (immediate), W or X (the mask drops sf; width comes from bit 31). The Rn/Rd of these
+        // forms use the SP encoding at 31.
+        if word & ADDSUB_IMM_MASK == ADD_IMM_BASE {
+            let (xd, xn, imm12, shift12) = decode_addsub_immediate(word);
+            return Ok(Some(Self::AddImmediate(
+                width_from_word(word),
+                xd,
+                xn,
+                imm12,
+                shift12,
+            )));
+        }
+        if word & ADDSUB_IMM_MASK == SUB_IMM_BASE {
+            let (xd, xn, imm12, shift12) = decode_addsub_immediate(word);
+            return Ok(Some(Self::SubImmediate(
+                width_from_word(word),
+                xd,
+                xn,
+                imm12,
+                shift12,
+            )));
+        }
+        // ADDS/SUBS (immediate) -- flag-setting; Rd uses ZR at 31 (CMN/CMP are the Rd==ZR aliases).
+        if word & ADDSUB_IMM_MASK == ADDS_IMM_BASE {
+            let (xd, xn, imm12, shift12) = decode_addsub_immediate_flagset(word);
+            return Ok(Some(Self::AddsImmediate(
+                width_from_word(word),
+                xd,
+                xn,
+                imm12,
+                shift12,
+            )));
+        }
+        if word & ADDSUB_IMM_MASK == SUBS_IMM_BASE {
+            let (xd, xn, imm12, shift12) = decode_addsub_immediate_flagset(word);
+            return Ok(Some(Self::SubsImmediate(
+                width_from_word(word),
+                xd,
+                xn,
+                imm12,
+                shift12,
+            )));
+        }
+
+        // move wide (immediate), W or X: MOVZ / MOVK. Rd uses the ZR encoding at 31. (A W-form with hw=2|3
+        // would be UNALLOCATED, but the decoder is permissive on hw here -- the encoder is the gate.)
+        if word & MOVE_WIDE_MASK == MOVZ_BASE {
+            let (xd, imm16, hw) = decode_move_wide(word);
+            return Ok(Some(Self::Movz(width_from_word(word), xd, imm16, hw)));
+        }
+        if word & MOVE_WIDE_MASK == MOVK_BASE {
+            let (xd, imm16, hw) = decode_move_wide(word);
+            return Ok(Some(Self::Movk(width_from_word(word), xd, imm16, hw)));
+        }
+        if word & MOVE_WIDE_MASK == MOVN_BASE {
+            let (xd, imm16, hw) = decode_move_wide(word);
+            return Ok(Some(Self::Movn(width_from_word(word), xd, imm16, hw)));
+        }
+
+        // PC-relative addressing: ADR / ADRP. op[31] selects the two; the 21-bit imm (immhi:immlo) is the
+        // operand. ADR's imm is a byte offset; ADRP's is a page count, so its byte offset is imm << 12.
+        if word & PCREL_MASK == ADR_BASE {
+            let xd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::Adr(xd, decode_pcrel_imm21(word))));
+        }
+        if word & PCREL_MASK == ADRP_BASE {
+            let xd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::Adrp(
+                xd,
+                (decode_pcrel_imm21(word) as i64) << 12,
+            )));
+        }
+
+        // add/subtract (shifted register), W or X, LSL (the mask drops sf; width comes from bit 31). (LSR/ASR
+        // shift-types have the same mask but a non-zero shift field, so they fall through to InvalidOpcode
+        // here.)
+        if word & ADDSUB_SHIFT_REG_MASK == ADD_REG_BASE {
+            let (xd, xn, xm, amount) = decode_shifted_register(word);
+            return Ok(Some(Self::AddRegister(
+                width_from_word(word),
+                xd,
+                xn,
+                xm,
+                amount,
+            )));
+        }
+        if word & ADDSUB_SHIFT_REG_MASK == SUB_REG_BASE {
+            let (xd, xn, xm, amount) = decode_shifted_register(word);
+            return Ok(Some(Self::SubRegister(
+                width_from_word(word),
+                xd,
+                xn,
+                xm,
+                amount,
+            )));
+        }
+        if word & ADDSUB_SHIFT_REG_MASK == ADDS_REG_BASE {
+            let (xd, xn, xm, amount) = decode_shifted_register(word);
+            return Ok(Some(Self::AddsRegister(
+                width_from_word(word),
+                xd,
+                xn,
+                xm,
+                amount,
+            )));
+        }
+        if word & ADDSUB_SHIFT_REG_MASK == SUBS_REG_BASE {
+            let (xd, xn, xm, amount) = decode_shifted_register(word);
+            return Ok(Some(Self::SubsRegister(
+                width_from_word(word),
+                xd,
+                xn,
+                xm,
+                amount,
+            )));
+        }
+        // add/subtract (extended register): same mask as the shifted forms, but bit[21]=1 + bits[23:22]=00 make
+        // the bases distinct, so these never alias the shifted decode above. Rd/Rn decode in the SP view for
+        // ADD/SUB (field 31 = SP); the flag-setting ADDS/SUBS use the ZR view for Rd (the CMN/CMP alias).
+        if word & ADDSUB_SHIFT_REG_MASK == ADD_EXT_BASE {
+            let (rd, rn, rm, option, amount) =
+                decode_extended_register(word, /* rd_is_sp */ true);
+            return Ok(Some(Self::AddExtended(
+                width_from_word(word),
+                rd,
+                rn,
+                rm,
+                option,
+                amount,
+            )));
+        }
+        if word & ADDSUB_SHIFT_REG_MASK == SUB_EXT_BASE {
+            let (rd, rn, rm, option, amount) =
+                decode_extended_register(word, /* rd_is_sp */ true);
+            return Ok(Some(Self::SubExtended(
+                width_from_word(word),
+                rd,
+                rn,
+                rm,
+                option,
+                amount,
+            )));
+        }
+        if word & ADDSUB_SHIFT_REG_MASK == ADDS_EXT_BASE {
+            let (rd, rn, rm, option, amount) =
+                decode_extended_register(word, /* rd_is_sp */ false);
+            return Ok(Some(Self::AddsExtended(
+                width_from_word(word),
+                rd,
+                rn,
+                rm,
+                option,
+                amount,
+            )));
+        }
+        if word & ADDSUB_SHIFT_REG_MASK == SUBS_EXT_BASE {
+            let (rd, rn, rm, option, amount) =
+                decode_extended_register(word, /* rd_is_sp */ false);
+            return Ok(Some(Self::SubsExtended(
+                width_from_word(word),
+                rd,
+                rn,
+                rm,
+                option,
+                amount,
+            )));
+        }
+        // logical (immediate). The opc + 100100 pattern is unique to this class, so a None from the bitmask
+        // decoder (a reserved N/imms combination, e.g. N=1 in a W-form word) means the word is a malformed
+        // logical-immediate -- InvalidOpcode, not a fall-through to some other family.
+        if word & LOGICAL_IMM_MASK == AND_IMM_BASE {
+            let (rd, rn, value) = decode_logical_immediate(word, /* rd_is_sp */ true)
+                .ok_or(DecodeError::InvalidOpcode)?;
+            return Ok(Some(Self::AndImmediate(
+                width_from_word(word),
+                rd,
+                rn,
+                value,
+            )));
+        }
+        if word & LOGICAL_IMM_MASK == ORR_IMM_BASE {
+            let (rd, rn, value) = decode_logical_immediate(word, /* rd_is_sp */ true)
+                .ok_or(DecodeError::InvalidOpcode)?;
+            return Ok(Some(Self::OrrImmediate(
+                width_from_word(word),
+                rd,
+                rn,
+                value,
+            )));
+        }
+        if word & LOGICAL_IMM_MASK == EOR_IMM_BASE {
+            let (rd, rn, value) = decode_logical_immediate(word, /* rd_is_sp */ true)
+                .ok_or(DecodeError::InvalidOpcode)?;
+            return Ok(Some(Self::EorImmediate(
+                width_from_word(word),
+                rd,
+                rn,
+                value,
+            )));
+        }
+        if word & LOGICAL_IMM_MASK == ANDS_IMM_BASE {
+            let (rd, rn, value) = decode_logical_immediate(word, /* rd_is_sp */ false)
+                .ok_or(DecodeError::InvalidOpcode)?;
+            return Ok(Some(Self::AndsImmediate(
+                width_from_word(word),
+                rd,
+                rn,
+                value,
+            )));
+        }
+        // logical (shifted register), W or X, LSL #amount: opc[30:29] + N[21] select the operation. The mask
+        // drops sf (matched against the sf=0 bases) and includes the shift-type bits, so a non-LSL shift falls
+        // through to InvalidOpcode below; width comes from bit 31.
+        let logical = word & LOGICAL_SHIFT_REG_MASK;
+        if [
+            AND_REG_BASE,
+            BIC_REG_BASE,
+            ORR_REG_BASE,
+            ORN_REG_BASE,
+            EOR_REG_BASE,
+            EON_REG_BASE,
+            ANDS_REG_BASE,
+            BICS_REG_BASE,
+        ]
+        .contains(&logical)
+        {
+            let width = width_from_word(word);
+            let (xd, xn, xm, amount) = decode_shifted_register(word);
+            return Ok(Some(match logical {
+                AND_REG_BASE => Self::AndRegister(width, xd, xn, xm, amount),
+                BIC_REG_BASE => Self::BicRegister(width, xd, xn, xm, amount),
+                ORR_REG_BASE => Self::OrrRegister(width, xd, xn, xm, amount),
+                ORN_REG_BASE => Self::OrnRegister(width, xd, xn, xm, amount),
+                EOR_REG_BASE => Self::EorRegister(width, xd, xn, xm, amount),
+                EON_REG_BASE => Self::EonRegister(width, xd, xn, xm, amount),
+                ANDS_REG_BASE => Self::AndsRegister(width, xd, xn, xm, amount),
+                _ => Self::BicsRegister(width, xd, xn, xm, amount), // BICS_REG_BASE
+            }));
+        }
+
+        // data-processing (2 source), W or X: UDIV / SDIV / LSLV / LSRV / ASRV / RORV. The mask drops sf (so
+        // both widths match the sf=0 bases; width comes from bit 31) and covers the opcode[15:10] field so each
+        // opcode resolves to exactly one operation (no inter-op mis-decode); the extension-gated members of
+        // this group (CRC32*, PACGA, MTE, CSSC, ...) are decoded by their own arms below, so their words fall
+        // through this UDIV/SDIV/... check.
+        let two_source = word & DP_TWO_SOURCE_MASK;
+        if [
+            UDIV_REG_BASE,
+            SDIV_REG_BASE,
+            LSLV_REG_BASE,
+            LSRV_REG_BASE,
+            ASRV_REG_BASE,
+            RORV_REG_BASE,
+        ]
+        .contains(&two_source)
+        {
+            let width = width_from_word(word);
+            let (xd, xn, xm) = decode_two_source(word);
+            return Ok(Some(match two_source {
+                UDIV_REG_BASE => Self::UdivRegister(width, xd, xn, xm),
+                SDIV_REG_BASE => Self::SdivRegister(width, xd, xn, xm),
+                LSLV_REG_BASE => Self::LslvRegister(width, xd, xn, xm),
+                LSRV_REG_BASE => Self::LsrvRegister(width, xd, xn, xm),
+                ASRV_REG_BASE => Self::AsrvRegister(width, xd, xn, xm),
+                _ => Self::RorvRegister(width, xd, xn, xm), // RORV_REG_BASE
+            }));
+        }
+        // FEAT_CSSC integer min/max register form (SMAX/SMIN/UMAX/UMIN): additional two-source opcodes.
+        for op in Arm64CsscMinMaxOp::ALL {
+            if two_source == op.reg_base() {
+                let (rd, rn, rm) = decode_two_source(word);
+                return Ok(Some(Self::CsscMinMaxReg {
+                    op,
+                    width: width_from_word(word),
+                    rd,
+                    rn,
+                    rm,
+                }));
+            }
+        }
+        // FEAT_CSSC integer min/max immediate form (data-processing-immediate group, [23:22]=11): opcode[19:18],
+        // signed/unsigned imm8[17:10]. Disjoint from add/sub-immediate ([23:22]=0x) and the register group ([28:25]).
+        if word & CSSC_MINMAX_IMM_MASK == CSSC_MINMAX_IMM_BASE {
+            let op = Arm64CsscMinMaxOp::from_imm_opcode((word >> 18) & 0b11);
+            let raw = ((word >> 10) & 0xFF) as u8;
+            let imm = if op.imm_is_signed() {
+                raw as i8 as i32
+            } else {
+                raw as i32
+            };
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::CsscMinMaxImm {
+                op,
+                width: width_from_word(word),
+                rd,
+                rn,
+                imm,
+            }));
+        }
+        // PACGA (FEAT_PAuth): the 2-source frame with opcode 001100, sf=1.
+        if word & CRC32_MASK == 0x9AC0_3000 {
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Pacga { rd, rn, rm }));
+        }
+        // CRC32* (FEAT_CRC32): the 2-source frame with opcode 0100:sz:C. sf is part of op.base() (set for the *x
+        // ops), so the full mask `0xFFE0_FC00` (bit31 kept) distinguishes the 32- and 64-bit-data forms.
+        if let Some(op) = Arm64Crc32Op::from_base(word & CRC32_MASK) {
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::Crc32 { op, rd, rn, rm }));
+        }
+        // MTE data-processing (IRG/GMI/SUBP/SUBPS, FEAT_MTE): the 2-source frame (opcode 000000/000100/000101).
+        if let Some(op) = Arm64MteDataOp::from_base(word & CRC32_MASK) {
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::MteDataProc { op, rd, rn, rm }));
+        }
+        // ADDG/SUBG (FEAT_MTE): add/subtract immediate with tag. bits[28:23]=100100011 (vs the plain add/sub-imm's
+        // 10001), so the masks never alias. uimm6[21:16] = offset/16, uimm4[13:10] = tag.
+        if word & 0xFF80_C000 == 0x9180_0000 || word & 0xFF80_C000 == 0xD180_0000 {
+            let sub = (word >> 30) & 1 == 1;
+            let offset = ((word >> 16) & 0x3F) * 16;
+            let tag = ((word >> 10) & 0xF) as u8;
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            return Ok(Some(Self::MteAddSubImmTag {
+                sub,
+                rd,
+                rn,
+                offset,
+                tag,
+            }));
+        }
+
+        // data-processing (3 source): MADD / MSUB (W or X) / SMULH / UMULH (64-bit only). The masks pin
+        // op31[23:21] + o0[15] so each resolves uniquely; the W-mixed long forms (SMADDL/UMADDL/...) and the
+        // FEAT_CPA MADDPT/MSUBPT are decoded below, while UNALLOCATED slots fall through to InvalidOpcode. Neither mask
+        // covers Ra[14:10] (it is an operand for MADD/MSUB).
+        //
+        // MADD/MSUB are W-capable: matched against DP_THREE_SOURCE_MASK (sf cleared), so both widths match the
+        // sf=0 bases; width comes from bit 31. SMULH/UMULH are 64-bit only: matched against the FULL
+        // DP_THREE_SOURCE_X_MASK (sf kept) so a sf=0 word in their op31 slot does NOT mis-decode as a phantom
+        // W-form. For SMULH/UMULH the unmasked base carries the fixed Ra=11111 (the X-mask strips it), so they
+        // additionally require the actual Ra field == 11111; a non-11111 Ra there is not a modeled instruction.
+        let three_source = word & DP_THREE_SOURCE_MASK;
+        let three_source_x = word & DP_THREE_SOURCE_X_MASK;
+        let ra = reg_field(word, 10);
+        if three_source == MADD_REG_BASE & DP_THREE_SOURCE_MASK {
+            let (xd, xn, xm, xa) = decode_three_source(word);
+            return Ok(Some(Self::MaddRegister(
+                width_from_word(word),
+                xd,
+                xn,
+                xm,
+                xa,
+            )));
+        }
+        if three_source == MSUB_REG_BASE & DP_THREE_SOURCE_MASK {
+            let (xd, xn, xm, xa) = decode_three_source(word);
+            return Ok(Some(Self::MsubRegister(
+                width_from_word(word),
+                xd,
+                xn,
+                xm,
+                xa,
+            )));
+        }
+        if three_source_x == SMULH_REG_BASE & DP_THREE_SOURCE_X_MASK && ra == 0b1_1111 {
+            let (xd, xn, xm, _) = decode_three_source(word);
+            return Ok(Some(Self::SmulhRegister(xd, xn, xm)));
+        }
+        if three_source_x == UMULH_REG_BASE & DP_THREE_SOURCE_X_MASK && ra == 0b1_1111 {
+            let (xd, xn, xm, _) = decode_three_source(word);
+            return Ok(Some(Self::UmulhRegister(xd, xn, xm)));
+        }
+        // long multiply (sf=1 fixed, Ra is the accumulator operand): op31=001/101 + o0 select the op. The sf-kept
+        // X-mask means a sf=0 word does NOT phantom-decode, and there is NO Ra==11111 guard (unlike SMULH/UMULH).
+        if three_source_x == SMADDL_REG_BASE & DP_THREE_SOURCE_X_MASK {
+            let (xd, xn, xm, xa) = decode_three_source(word);
+            return Ok(Some(Self::SmaddlRegister(xd, xn, xm, xa)));
+        }
+        if three_source_x == UMADDL_REG_BASE & DP_THREE_SOURCE_X_MASK {
+            let (xd, xn, xm, xa) = decode_three_source(word);
+            return Ok(Some(Self::UmaddlRegister(xd, xn, xm, xa)));
+        }
+        if three_source_x == SMSUBL_REG_BASE & DP_THREE_SOURCE_X_MASK {
+            let (xd, xn, xm, xa) = decode_three_source(word);
+            return Ok(Some(Self::SmsublRegister(xd, xn, xm, xa)));
+        }
+        if three_source_x == UMSUBL_REG_BASE & DP_THREE_SOURCE_X_MASK {
+            let (xd, xn, xm, xa) = decode_three_source(word);
+            return Ok(Some(Self::UmsublRegister(xd, xn, xm, xa)));
+        }
+        // FEAT_CPA MADDPT/MSUBPT (3-source op31=011, 64-bit; the slot the loop above leaves unmodeled). o0[15]=sub.
+        if word & 0xFFE0_0000 == MADDPT_BASE {
+            let (xd, xn, xm, xa) = decode_three_source(word);
+            return Ok(Some(Self::MaddSubCheckedPointer {
+                sub: (word >> 15) & 1 == 1,
+                rd: xd,
+                rn: xn,
+                rm: xm,
+                ra: xa,
+            }));
+        }
+        // FEAT_CPA ADDPT/SUBPT (2-source-style sub-encoding [28:21]=11010000). sub=bit30. Rd/Rn are SP-capable
+        // (pointer base, like ADD extended-register); Rm uses the ZR view.
+        if word & ADDPT_MASK == ADDPT_BASE {
+            let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 0));
+            return Ok(Some(Self::AddSubCheckedPointer {
+                sub: (word >> 30) & 1 == 1,
+                rd,
+                rn,
+                rm,
+            }));
+        }
+
+        // conditional select, W or X: CSEL / CSINC / CSINV / CSNEG. The mask drops sf (both widths match the
+        // sf=0 bases; width comes from bit 31) and pins op[30] + o2[11:10] so each resolves uniquely; the
+        // op2=1x UNALLOCATED slots fall through to InvalidOpcode. cond[15:12] + Rm[20:16]/Rn[9:5]/Rd[4:0] vary.
+        // (Placed after the 2/3-source groups: a CSEL word has [28:21]=11010100, distinct from the 2-source
+        // 11010110 and the 3-source 11011, so it cannot mis-match an earlier group's mask.)
+        let conditional_select = word & COND_SELECT_MASK;
+        if [CSEL_BASE, CSINC_BASE, CSINV_BASE, CSNEG_BASE].contains(&conditional_select) {
+            let width = width_from_word(word);
+            let (xd, xn, xm, cond) = decode_conditional_select(word);
+            return Ok(Some(match conditional_select {
+                CSEL_BASE => Self::CselRegister(width, xd, xn, xm, cond),
+                CSINC_BASE => Self::CsincRegister(width, xd, xn, xm, cond),
+                CSINV_BASE => Self::CsinvRegister(width, xd, xn, xm, cond),
+                _ => Self::CsnegRegister(width, xd, xn, xm, cond), // CSNEG_BASE
+            }));
+        }
+
+        // conditional compare (register + immediate): CCMP / CCMN, W/X. op(bit30) + reg/imm(bit11) are both
+        // inside the mask, so the four variants resolve uniquely; width = bit 31; reserved o2/o3 = 1 words fall
+        // through to InvalidOpcode. Rn/Rm use ZR at 31; the [20:16] field is Rm (register) or imm5 (immediate).
+        let cond_compare = word & COND_COMPARE_MASK;
+        if [CCMP_REG_BASE, CCMN_REG_BASE, CCMP_IMM_BASE, CCMN_IMM_BASE].contains(&cond_compare) {
+            let width = width_from_word(word);
+            let xn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            let nzcv = (word & 0b1111) as u8;
+            let cond = Arm64Condition::from_operand_bits(((word >> 12) & 0b1111) as u8);
+            let field5 = reg_field(word, 16);
+            return Ok(Some(match cond_compare {
+                CCMP_REG_BASE => Self::CcmpRegister(
+                    width,
+                    xn,
+                    Arm64GeneralPurposeRegister::from_operand_bits(field5),
+                    nzcv,
+                    cond,
+                ),
+                CCMN_REG_BASE => Self::CcmnRegister(
+                    width,
+                    xn,
+                    Arm64GeneralPurposeRegister::from_operand_bits(field5),
+                    nzcv,
+                    cond,
+                ),
+                CCMP_IMM_BASE => Self::CcmpImmediate(width, xn, field5, nzcv, cond),
+                _ => Self::CcmnImmediate(width, xn, field5, nzcv, cond), // CCMN_IMM_BASE
+            }));
+        }
+
+        // bitfield: SBFM / BFM / UBFM, W/X. opc[30:29] (in the mask) selects the op; width = bit 31; N (bit 22)
+        // MUST equal sf and immr/imms must be in range (<=31 for W / <=63 for X) -- else the encoding is reserved and
+        // falls through to InvalidOpcode (a discriminant tied to width, validated explicitly -- the LDPSW lesson).
+        let bitfield = word & BITFIELD_MASK;
+        if [SBFM_BASE, BFM_BASE, UBFM_BASE].contains(&bitfield) {
+            let width = width_from_word(word);
+            let immr = ((word >> 16) & 0x3F) as u8;
+            let imms = ((word >> 10) & 0x3F) as u8;
+            let max = if matches!(width, Arm64RegisterWidth::W) {
+                31
+            } else {
+                63
+            };
+            if ((word >> 22) & 1) == width.sf() && immr <= max && imms <= max {
+                let xd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+                let xn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+                return Ok(Some(match bitfield {
+                    SBFM_BASE => Self::SbfmRegister(width, xd, xn, immr, imms),
+                    BFM_BASE => Self::BfmRegister(width, xd, xn, immr, imms),
+                    _ => Self::UbfmRegister(width, xd, xn, immr, imms), // UBFM_BASE
+                }));
+            }
+        }
+
+        // unconditional branch (immediate): B / BL.
+        if word & UNCOND_BRANCH_IMM_MASK == B_BASE {
+            let offset = sign_extend(word & 0x03FF_FFFF, 26) * 4;
+            return Ok(Some(Self::B(offset)));
+        }
+        if word & UNCOND_BRANCH_IMM_MASK == BL_BASE {
+            let offset = sign_extend(word & 0x03FF_FFFF, 26) * 4;
+            return Ok(Some(Self::Bl(offset)));
+        }
+
+        // conditional branch (immediate): B.cond.
+        if word & COND_BRANCH_MASK == BCOND_BASE {
+            let imm19 = (word >> 5) & 0x7_FFFF;
+            let offset = sign_extend(imm19, 19) * 4;
+            let cond = Arm64Condition::from_operand_bits((word & 0b1111) as u8);
+            return Ok(Some(Self::BCond(cond, offset)));
+        }
+        // FEAT_HBC hinted conditional branch BC.cond ([4]=1, vs B.cond's [4]=0 pinned by COND_BRANCH_MASK).
+        if word & COND_BRANCH_MASK == BCCOND_BASE {
+            let imm19 = (word >> 5) & 0x7_FFFF;
+            let offset = sign_extend(imm19, 19) * 4;
+            let cond = Arm64Condition::from_operand_bits((word & 0b1111) as u8);
+            return Ok(Some(Self::BcCond(cond, offset)));
+        }
+
+        // compare and branch (immediate): CBZ / CBNZ, W or X (the mask drops sf; width comes from bit 31). op[24]
+        // selects the two. (TBZ/TBNZ share [30:25] with a 1 at bit 25, so they fall through to the test-branch arm below.)
+        if word & COMPARE_BRANCH_MASK == CBZ_BASE {
+            let xt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let offset = sign_extend((word >> 5) & 0x7_FFFF, 19) * 4;
+            return Ok(Some(Self::Cbz(width_from_word(word), xt, offset)));
+        }
+        if word & COMPARE_BRANCH_MASK == CBNZ_BASE {
+            let xt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let offset = sign_extend((word >> 5) & 0x7_FFFF, 19) * 4;
+            return Ok(Some(Self::Cbnz(width_from_word(word), xt, offset)));
+        }
+        // test and branch (immediate): TBZ / TBNZ. [30:25]=011011 (bit 25 = 1) separates these from CBZ/CBNZ;
+        // op[24] picks the two. The bit position is reassembled from b5[31] + b40[23:19].
+        if word & TEST_BRANCH_MASK == TBZ_BASE {
+            let (xt, bit, offset) = decode_test_branch(word);
+            return Ok(Some(Self::TestBitZero(xt, bit, offset)));
+        }
+        if word & TEST_BRANCH_MASK == TBNZ_BASE {
+            let (xt, bit, offset) = decode_test_branch(word);
+            return Ok(Some(Self::TestBitNonzero(xt, bit, offset)));
+        }
+        // FEAT_CMPBR compare and branch: [30:25]=111010 (distinct from CBZ 011010 / TBZ 011011). op[24] picks the
+        // register (0) vs immediate (1) form. The 9-bit imm9 at [13:5] is the scaled (x4) signed branch offset.
+        if word & CMPBR_GROUP_MASK == CMPBR_REG_BASE {
+            let cc = (word >> 21) & 0b111;
+            let offset = sign_extend((word >> 5) & 0x1FF, 9) * 4;
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let rm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            // size[15:14]: 00 = register (W/X via sf), 10 = byte, 11 = half; 01 reserved. byte/half require sf=0.
+            let sf = (word >> 31) & 1 == 1;
+            let size = match (word >> 14) & 0b11 {
+                0b00 => {
+                    if sf {
+                        Arm64LoadStoreSize::Double
+                    } else {
+                        Arm64LoadStoreSize::Word
+                    }
+                }
+                0b10 if !sf => Arm64LoadStoreSize::Byte,
+                0b11 if !sf => Arm64LoadStoreSize::Half,
+                _ => return Err(DecodeError::InvalidOpcode), // reserved size / sf=1 byte-or-half
+            };
+            return match Arm64CmpBranchCond::from_bits(cc) {
+                Some(cond) => Ok(Some(Self::CompareBranchRegister {
+                    cond,
+                    size,
+                    rn,
+                    rm,
+                    offset_bytes: offset,
+                })),
+                None => Err(DecodeError::InvalidOpcode), // unallocated cc (0b100/0b101)
+            };
+        }
+        if word & CMPBR_GROUP_MASK == CMPBR_IMM_BASE {
+            let cc = (word >> 21) & 0b111;
+            let offset = sign_extend((word >> 5) & 0x1FF, 9) * 4;
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let imm6 = ((((word >> 16) & 0x1F) << 1) | ((word >> 15) & 1)) as u8; // imm6[5:1] at [20:16], imm6[0] at [15]
+            return match Arm64CmpBranchImmCond::from_bits(cc) {
+                Some(cond) => Ok(Some(Self::CompareBranchImmediate {
+                    cond,
+                    width: width_from_word(word),
+                    rn,
+                    imm6,
+                    offset_bytes: offset,
+                })),
+                None => Err(DecodeError::InvalidOpcode),
+            };
+        }
+
+        // load/store register (unsigned immediate), all four sizes: LDR(B/H/W/X) / STR(B/H/W/X). The mask drops
+        // size[31:30] (recovered here from the same bits) and pins [29:22]; bit 22 (L) selects load vs store.
+        // `Rt` width follows size (W for Byte/Half/Word, X for Double); `Rn` uses SP at 31. The neighbor
+        // forms (LDUR/STUR unscaled, register-offset, pre/post-index, signed loads, SIMD/FP) sit outside
+        // this mask and are decoded by their own arms below. (Placed before the pair group: a register-uimm word
+        // has bit 28 = 1, a pair word bit 28 = 0, so the two never cross-match even though the masks are equal.)
+        if word & LDST_UIMM_MASK == LDR_UIMM_BASE {
+            let (size, xt, xn, offset_bytes) = decode_ldst_register(word);
+            return Ok(Some(Self::LoadRegister(size, xt, xn, offset_bytes)));
+        }
+        if word & LDST_UIMM_MASK == STR_UIMM_BASE {
+            let (size, xt, xn, offset_bytes) = decode_ldst_register(word);
+            return Ok(Some(Self::StoreRegister(size, xt, xn, offset_bytes)));
+        }
+        // signed loads: LDRSB/LDRSH (to W or X) + LDRSW (X only). opc[23:22] = 10 (->X) / 11 (->W) gives a
+        // distinct masked key from LDR/STR; size[31:30] (OUTSIDE the mask) selects byte/half/word and is
+        // validated here -- opc=10 size=Double is PRFM, and opc=11 size in {Word,Double} are UNALLOCATED, so those
+        // fall through to InvalidOpcode rather than mis-decoding (the discriminant-outside-the-mask rule).
+        if word & LDST_UIMM_MASK == LDRS_X_BASE {
+            let (size, xt, xn, offset_bytes) = decode_ldst_register(word);
+            match size {
+                Arm64LoadStoreSize::Byte => {
+                    return Ok(Some(Self::LoadSignedByte(
+                        Arm64RegisterWidth::X,
+                        xt,
+                        xn,
+                        offset_bytes,
+                    )));
+                }
+                Arm64LoadStoreSize::Half => {
+                    return Ok(Some(Self::LoadSignedHalf(
+                        Arm64RegisterWidth::X,
+                        xt,
+                        xn,
+                        offset_bytes,
+                    )));
+                }
+                Arm64LoadStoreSize::Word => {
+                    return Ok(Some(Self::LoadSignedWord(xt, xn, offset_bytes)));
+                }
+                Arm64LoadStoreSize::Double => {
+                    // opc=10, size=11 is PRFM (prefetch), unsigned scaled offset: Rt carries the 5-bit prfop.
+                    let prfop = reg_field(word, 0);
+                    let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+                    return Ok(Some(Self::PrefetchImmediate {
+                        prfop,
+                        rn,
+                        offset_bytes: ((word >> 10) & 0xFFF) * 8,
+                    }));
+                }
+            }
+        }
+        if word & LDST_UIMM_MASK == LDRS_W_BASE {
+            let (size, xt, xn, offset_bytes) = decode_ldst_register(word);
+            match size {
+                Arm64LoadStoreSize::Byte => {
+                    return Ok(Some(Self::LoadSignedByte(
+                        Arm64RegisterWidth::W,
+                        xt,
+                        xn,
+                        offset_bytes,
+                    )));
+                }
+                Arm64LoadStoreSize::Half => {
+                    return Ok(Some(Self::LoadSignedHalf(
+                        Arm64RegisterWidth::W,
+                        xt,
+                        xn,
+                        offset_bytes,
+                    )));
+                }
+                _ => {} // LDRSW-W (Word) / Double with opc=11 are UNALLOCATED -- fall through
+            }
+        }
+
+        // SIMD&FP single-register load/store, unsigned-offset (LDR/STR Bt/Ht/St/Dt/Qt): the V bit (26) = 1.
+        // size[31:30] + opc<1>(bit 23) select the access width (None = the opc<1>=1, size!=00 unallocated holes);
+        // the L bit (22) picks load vs store. The offset is `imm12` scaled by the access size.
+        if word & VEC_LDST_UIMM_MASK == VEC_LDST_UIMM_BASE {
+            let size = Arm64VectorLoadStoreSize::from_size_and_opc_high(
+                (word >> 30) & 0b11,
+                (word >> 23) & 1,
+            )
+            .ok_or(DecodeError::InvalidOpcode)?;
+            let imm12 = (word >> 10) & 0xFFF;
+            let offset_bytes = imm12 << size.scale();
+            let vt = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let xn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            if (word >> 22) & 1 == 1 {
+                return Ok(Some(Self::VecLoadRegister(size, vt, xn, offset_bytes)));
+            }
+            return Ok(Some(Self::VecStoreRegister(size, vt, xn, offset_bytes)));
+        }
+
+        // SIMD&FP load/store register-offset [Xn, Rm{, <ext> #amount}]: V(bit26)=1 + bit21=1 + bits[11:10]=10. The
+        // mask drops size[31:30] + opc<1>[23] (folded into the access width) and pins L[22]; a reserved option code
+        // -> InvalidOpcode, and the opc<1>=1/size!=00 holes are rejected by `from_size_and_opc_high`. V=1 keeps this
+        // disjoint from the GP register-offset group below; bits[11:10]=10 from the experimental LSFE atomic float.
+        if word & VEC_LDST_REG_OFF_MASK == VEC_LDR_REG_OFF_BASE {
+            let size = Arm64VectorLoadStoreSize::from_size_and_opc_high(
+                (word >> 30) & 0b11,
+                (word >> 23) & 1,
+            )
+            .ok_or(DecodeError::InvalidOpcode)?;
+            let (vt, xn, xm, ext, scaled) = decode_vec_register_offset(word)?;
+            return Ok(Some(Self::VecLoadRegisterOffset(
+                size, vt, xn, xm, ext, scaled,
+            )));
+        }
+        if word & VEC_LDST_REG_OFF_MASK == VEC_STR_REG_OFF_BASE {
+            let size = Arm64VectorLoadStoreSize::from_size_and_opc_high(
+                (word >> 30) & 0b11,
+                (word >> 23) & 1,
+            )
+            .ok_or(DecodeError::InvalidOpcode)?;
+            let (vt, xn, xm, ext, scaled) = decode_vec_register_offset(word)?;
+            return Ok(Some(Self::VecStoreRegisterOffset(
+                size, vt, xn, xm, ext, scaled,
+            )));
+        }
+
+        // SIMD&FP load/store, 9-bit unscaled immediate (LDUR/STUR + pre/post-index): V(bit26)=1 + bit21=0. idx[11:10]
+        // = 10 (the GP unprivileged slot) is unallocated for SIMD&FP -> InvalidOpcode. size[31:30] + opc<1>[23] pick
+        // the access width; the L bit (22) picks load vs store.
+        if word & VEC_LDST_IMM9_MASK == VEC_LDUR_BASE {
+            let size = Arm64VectorLoadStoreSize::from_size_and_opc_high(
+                (word >> 30) & 0b11,
+                (word >> 23) & 1,
+            )
+            .ok_or(DecodeError::InvalidOpcode)?;
+            let (mode, vt, xn, offset) = decode_vec_imm9(word)?;
+            return Ok(Some(Self::VecLoadRegisterImm9(size, mode, vt, xn, offset)));
+        }
+        if word & VEC_LDST_IMM9_MASK == VEC_STUR_BASE {
+            let size = Arm64VectorLoadStoreSize::from_size_and_opc_high(
+                (word >> 30) & 0b11,
+                (word >> 23) & 1,
+            )
+            .ok_or(DecodeError::InvalidOpcode)?;
+            let (mode, vt, xn, offset) = decode_vec_imm9(word)?;
+            return Ok(Some(Self::VecStoreRegisterImm9(size, mode, vt, xn, offset)));
+        }
+
+        // SIMD&FP load-literal (LDR St/Dt/Qt, <label>): V(bit26)=1 in the literal group. opc[31:30] = 00/01/10 ->
+        // S/D/Q; opc=11 is unallocated (falls through). Load-only. Disjoint from the GP literal group by V=1.
+        if word & LDST_LITERAL_MASK == VEC_LDR_LIT_S_BASE {
+            return Ok(Some(Self::VecLoadLiteral(
+                Arm64VectorLoadStoreSize::Single,
+                Arm64FloatRegister::from_operand_bits(reg_field(word, 0)),
+                decode_literal_offset(word),
+            )));
+        }
+        if word & LDST_LITERAL_MASK == VEC_LDR_LIT_D_BASE {
+            return Ok(Some(Self::VecLoadLiteral(
+                Arm64VectorLoadStoreSize::Double,
+                Arm64FloatRegister::from_operand_bits(reg_field(word, 0)),
+                decode_literal_offset(word),
+            )));
+        }
+        if word & LDST_LITERAL_MASK == VEC_LDR_LIT_Q_BASE {
+            return Ok(Some(Self::VecLoadLiteral(
+                Arm64VectorLoadStoreSize::Quad,
+                Arm64FloatRegister::from_operand_bits(reg_field(word, 0)),
+                decode_literal_offset(word),
+            )));
+        }
+
+        // Advanced SIMD load/store multiple structures (no-offset): LDN/STN {Vt..}, [Xn]. The frame pins
+        // [29:23]=0011000 + [21:16]=000000; opcode[15:12] selects structure/count (an unallocated opcode ->
+        // InvalidOpcode), L[22] is load/store, and size[11:10] + Q give the per-register arrangement.
+        if word & VEC_LDST_MULTI_MASK == VEC_LDST_MULTI_BASE {
+            let kind = Arm64VectorStructureKind::from_opcode((word >> 12) & 0xF)
+                .ok_or(DecodeError::InvalidOpcode)?;
+            let load = (word >> 22) & 1 == 1;
+            let arrangement =
+                Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, (word >> 10) & 0b11);
+            let rt_first = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let xn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            return Ok(Some(Self::VecLoadStoreMultiple {
+                kind,
+                load,
+                arrangement,
+                rt_first,
+                xn,
+            }));
+        }
+
+        // Advanced SIMD load/store SINGLE structure (no-offset): LDn/STn single-lane + LDnR replicate. bit24=1 (vs
+        // the multiple-structure bit24=0); opcode[15:13] gives the size class + low count bit, R(bit21) the other
+        // count bit, and the lane index packs into Q:S:size. opcode[15:14]=11 is the replicate (load-only).
+        if word & VEC_LDST_SINGLE_MASK == VEC_LDST_SINGLE_BASE {
+            let q = (word >> 30) & 1;
+            let l = (word >> 22) & 1;
+            let r = (word >> 21) & 1;
+            let opcode = (word >> 13) & 0b111;
+            let size = (word >> 10) & 0b11;
+            let rt_first = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let xn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            let count = (((opcode & 1) << 1 | r) + 1) as u8;
+            if opcode >= 0b110 {
+                if l == 0 {
+                    return Err(DecodeError::InvalidOpcode); // replicate is load-only
+                }
+                let arrangement = Arm64VectorArrangement::from_q_and_size(q, size);
+                return Ok(Some(Self::VecLoadStoreReplicate {
+                    count,
+                    arrangement,
+                    rt_first,
+                    xn,
+                }));
+            }
+            let s = (word >> 12) & 1;
+            let (element, index) = match opcode >> 1 {
+                0b00 => (Arm64VectorElement::B, ((q << 3) | (s << 2) | size) as u8),
+                0b01 => {
+                    if size & 1 != 0 {
+                        return Err(DecodeError::InvalidOpcode); // .h requires size[10]=0
+                    }
+                    (
+                        Arm64VectorElement::H,
+                        ((q << 2) | (s << 1) | (size >> 1)) as u8,
+                    )
+                }
+                _ => {
+                    if size == 0b00 {
+                        (Arm64VectorElement::S, ((q << 1) | s) as u8)
+                    } else if size == 0b01 && s == 0 {
+                        (Arm64VectorElement::D, q as u8)
+                    } else {
+                        return Err(DecodeError::InvalidOpcode); // .s/.d reserved size/S combinations
+                    }
+                }
+            };
+            return Ok(Some(Self::VecLoadStoreSingleLane {
+                load: l == 1,
+                count,
+                element,
+                index,
+                rt_first,
+                xn,
+            }));
+        }
+
+        // Advanced SIMD load/store MULTIPLE structures, POST-INDEX (bit23=1). Rm = 11111 is the immediate form
+        // (implicit increment), else the register-offset form [Xn], Xm.
+        if word & VEC_LDST_STRUCT_POST_MASK == VEC_LDST_MULTI_POST_BASE {
+            let kind = Arm64VectorStructureKind::from_opcode((word >> 12) & 0xF)
+                .ok_or(DecodeError::InvalidOpcode)?;
+            let load = (word >> 22) & 1 == 1;
+            let arrangement =
+                Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, (word >> 10) & 0b11);
+            let rt_first = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let xn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            let xm = decode_post_index_xm(word);
+            return Ok(Some(Self::VecLoadStoreMultiplePostIndex {
+                kind,
+                load,
+                arrangement,
+                rt_first,
+                xn,
+                xm,
+            }));
+        }
+        // Advanced SIMD load/store SINGLE structure, POST-INDEX (bit23=1). Same lane/replicate unpacking as the
+        // no-offset form, plus the Rm post-index field.
+        if word & VEC_LDST_STRUCT_POST_MASK == VEC_LDST_SINGLE_POST_BASE {
+            let q = (word >> 30) & 1;
+            let l = (word >> 22) & 1;
+            let r = (word >> 21) & 1;
+            let opcode = (word >> 13) & 0b111;
+            let size = (word >> 10) & 0b11;
+            let rt_first = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let xn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            let xm = decode_post_index_xm(word);
+            let count = (((opcode & 1) << 1 | r) + 1) as u8;
+            if opcode >= 0b110 {
+                if l == 0 {
+                    return Err(DecodeError::InvalidOpcode);
+                }
+                let arrangement = Arm64VectorArrangement::from_q_and_size(q, size);
+                return Ok(Some(Self::VecLoadStoreReplicatePostIndex {
+                    count,
+                    arrangement,
+                    rt_first,
+                    xn,
+                    xm,
+                }));
+            }
+            let s = (word >> 12) & 1;
+            let (element, index) = match opcode >> 1 {
+                0b00 => (Arm64VectorElement::B, ((q << 3) | (s << 2) | size) as u8),
+                0b01 => {
+                    if size & 1 != 0 {
+                        return Err(DecodeError::InvalidOpcode);
+                    }
+                    (
+                        Arm64VectorElement::H,
+                        ((q << 2) | (s << 1) | (size >> 1)) as u8,
+                    )
+                }
+                _ => {
+                    if size == 0b00 {
+                        (Arm64VectorElement::S, ((q << 1) | s) as u8)
+                    } else if size == 0b01 && s == 0 {
+                        (Arm64VectorElement::D, q as u8)
+                    } else {
+                        return Err(DecodeError::InvalidOpcode);
+                    }
+                }
+            };
+            return Ok(Some(Self::VecLoadStoreSingleLanePostIndex {
+                load: l == 1,
+                count,
+                element,
+                index,
+                rt_first,
+                xn,
+                xm,
+            }));
+        }
+
+        // LDRAA/LDRAB (FEAT_PAuth): load with pointer authentication. bit21=1 distinguishes it from the unscaled
+        // immediate (LDUR/pre/post) forms (bit21=0); the 10-bit simm10 (S:imm9) is scaled by 8, bit11 = writeback.
+        if word & 0xFF20_0400 == 0xF820_0400 {
+            let key_b = (word >> 23) & 1 == 1;
+            let pre_index = (word >> 11) & 1 == 1;
+            let bits10 = (((word >> 22) & 1) << 9) | ((word >> 12) & 0x1FF);
+            let simm10 = if bits10 >= 512 {
+                bits10 as i32 - 1024
+            } else {
+                bits10 as i32
+            };
+            let rt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            return Ok(Some(Self::LoadPac {
+                key_b,
+                pre_index,
+                rt,
+                rn,
+                offset_bytes: simm10 * 8,
+            }));
+        }
+
+        // store/load allocation tag (STG/STZG/ST2G/STZ2G/LDG, FEAT_MTE): the 0xD9.. group with bit21=1. opc[23:22]
+        // picks the op, op2[11:10] the index (10 offset / 01 post / 11 pre); LDG is opc=01,op2=00 (offset-only).
+        if word & 0xFF20_0000 == 0xD920_0000 {
+            let opc = (word >> 22) & 0b11;
+            let op2 = (word >> 10) & 0b11;
+            let imm9 = (word >> 12) & 0x1FF;
+            let simm9 = if imm9 >= 256 {
+                imm9 as i32 - 512
+            } else {
+                imm9 as i32
+            };
+            let offset_bytes = simm9 * 16;
+            let rt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            if opc == 0b01 && op2 == 0b00 {
+                return Ok(Some(Self::LoadTag {
+                    rt,
+                    rn,
+                    offset_bytes,
+                }));
+            }
+            let index = match op2 {
+                0b10 => Arm64LoadStoreIndex::Offset,
+                0b01 => Arm64LoadStoreIndex::PostIndex,
+                0b11 => Arm64LoadStoreIndex::PreIndex,
+                _ => {
+                    // op2=00 (LDG opc=01 handled above): the FEAT_MTE2 block-tag ops STGM/LDGM/STZGM, which require
+                    // imm9 = 0; any other imm9 / opc is unallocated.
+                    let block = if imm9 == 0 {
+                        match opc {
+                            0b00 => Some(Arm64MteBlockOp::Stzgm),
+                            0b10 => Some(Arm64MteBlockOp::Stgm),
+                            0b11 => Some(Arm64MteBlockOp::Ldgm),
+                            _ => None,
+                        }
+                    } else {
+                        None
+                    };
+                    return block
+                        .map(|op| Some(Self::MteBlockTag { op, rt, rn }))
+                        .ok_or(DecodeError::InvalidOpcode);
+                }
+            };
+            return Ok(Some(Self::StoreTag {
+                op: Arm64StoreTagOp::from_opc(opc),
+                index,
+                rt,
+                rn,
+                offset_bytes,
+            }));
+        }
+
+        // load/store register-offset `[Xn, Rm{, <ext> #amount}]`: bit24=0 + bits[11:10]=10 select this mode
+        // (the uimm group has bit24=1, so the two never alias). A reserved option code -> InvalidOpcode.
+        // size[31:30] picks the access width / signed-load destination, exactly like the uimm group.
+        if word & LDST_REG_OFF_MASK == LDR_REG_OFF_BASE {
+            let (xt, xn, xm, ext, scaled) =
+                decode_register_offset(word).ok_or(DecodeError::InvalidOpcode)?;
+            return Ok(Some(Self::LoadRegisterOffset(
+                Arm64LoadStoreSize::from_size_bits(word >> 30),
+                xt,
+                xn,
+                xm,
+                ext,
+                scaled,
+            )));
+        }
+        if word & LDST_REG_OFF_MASK == STR_REG_OFF_BASE {
+            let (xt, xn, xm, ext, scaled) =
+                decode_register_offset(word).ok_or(DecodeError::InvalidOpcode)?;
+            return Ok(Some(Self::StoreRegisterOffset(
+                Arm64LoadStoreSize::from_size_bits(word >> 30),
+                xt,
+                xn,
+                xm,
+                ext,
+                scaled,
+            )));
+        }
+        if word & LDST_REG_OFF_MASK == LDRS_X_REG_OFF_BASE {
+            let (xt, xn, xm, ext, scaled) =
+                decode_register_offset(word).ok_or(DecodeError::InvalidOpcode)?;
+            match Arm64LoadStoreSize::from_size_bits(word >> 30) {
+                Arm64LoadStoreSize::Byte => {
+                    return Ok(Some(Self::LoadSignedByteOffset(
+                        Arm64RegisterWidth::X,
+                        xt,
+                        xn,
+                        xm,
+                        ext,
+                        scaled,
+                    )));
+                }
+                Arm64LoadStoreSize::Half => {
+                    return Ok(Some(Self::LoadSignedHalfOffset(
+                        Arm64RegisterWidth::X,
+                        xt,
+                        xn,
+                        xm,
+                        ext,
+                        scaled,
+                    )));
+                }
+                Arm64LoadStoreSize::Word => {
+                    return Ok(Some(Self::LoadSignedWordOffset(xt, xn, xm, ext, scaled)));
+                }
+                Arm64LoadStoreSize::Double => {
+                    // opc=10 size=11 is PRFM (prefetch), register offset: Rt carries the 5-bit prfop. The reserved
+                    // prfop-type 11 (Rt[4:3]=11) is instead FEAT_RPRFM range prefetch, which repurposes the
+                    // option/S bits as the high prfop bits ([15]=p5, [13:12]=p4:p3, [2:0]=p2:p0).
+                    if reg_field(word, 0) >> 3 == 0b11 {
+                        let prfop = (((word >> 15) & 1) << 5)
+                            | (((word >> 12) & 0b11) << 3)
+                            | (word & 0b111);
+                        return Ok(Some(Self::RangePrefetch {
+                            prfop: prfop as u8,
+                            rm: xm,
+                            rn: xn,
+                        }));
+                    }
+                    return Ok(Some(Self::PrefetchRegister {
+                        prfop: xt.as_operand_bits(),
+                        rn: xn,
+                        rm: xm,
+                        extend: ext,
+                        scaled,
+                    }));
+                }
+            }
+        }
+        if word & LDST_REG_OFF_MASK == LDRS_W_REG_OFF_BASE {
+            let (xt, xn, xm, ext, scaled) =
+                decode_register_offset(word).ok_or(DecodeError::InvalidOpcode)?;
+            match Arm64LoadStoreSize::from_size_bits(word >> 30) {
+                Arm64LoadStoreSize::Byte => {
+                    return Ok(Some(Self::LoadSignedByteOffset(
+                        Arm64RegisterWidth::W,
+                        xt,
+                        xn,
+                        xm,
+                        ext,
+                        scaled,
+                    )));
+                }
+                Arm64LoadStoreSize::Half => {
+                    return Ok(Some(Self::LoadSignedHalfOffset(
+                        Arm64RegisterWidth::W,
+                        xt,
+                        xn,
+                        xm,
+                        ext,
+                        scaled,
+                    )));
+                }
+                _ => {} // LDRSW-W (Word) / Double with opc=11 are UNALLOCATED -- fall through
+            }
+        }
+
+        // load/store single register, 9-bit unscaled immediate (LDUR/STUR + single-reg pre/post-index): bit24=0
+        // + bit21=0. idx[11:10]=10 is unallocated -> InvalidOpcode. size[31:30] picks the access width / signed
+        // destination, like the uimm group.
+        if word & LDST_IMM9_MASK == LDUR_BASE {
+            let (mode, xt, xn, offset) = decode_imm9(word).ok_or(DecodeError::InvalidOpcode)?;
+            return Ok(Some(Self::LoadRegisterImm9(
+                Arm64LoadStoreSize::from_size_bits(word >> 30),
+                mode,
+                xt,
+                xn,
+                offset,
+            )));
+        }
+        if word & LDST_IMM9_MASK == STUR_BASE {
+            let (mode, xt, xn, offset) = decode_imm9(word).ok_or(DecodeError::InvalidOpcode)?;
+            return Ok(Some(Self::StoreRegisterImm9(
+                Arm64LoadStoreSize::from_size_bits(word >> 30),
+                mode,
+                xt,
+                xn,
+                offset,
+            )));
+        }
+        if word & LDST_IMM9_MASK == LDURS_X_BASE {
+            let (mode, xt, xn, offset) = decode_imm9(word).ok_or(DecodeError::InvalidOpcode)?;
+            match Arm64LoadStoreSize::from_size_bits(word >> 30) {
+                Arm64LoadStoreSize::Byte => {
+                    return Ok(Some(Self::LoadSignedByteImm9(
+                        Arm64RegisterWidth::X,
+                        mode,
+                        xt,
+                        xn,
+                        offset,
+                    )));
+                }
+                Arm64LoadStoreSize::Half => {
+                    return Ok(Some(Self::LoadSignedHalfImm9(
+                        Arm64RegisterWidth::X,
+                        mode,
+                        xt,
+                        xn,
+                        offset,
+                    )));
+                }
+                Arm64LoadStoreSize::Word => {
+                    return Ok(Some(Self::LoadSignedWordImm9(mode, xt, xn, offset)));
+                }
+                Arm64LoadStoreSize::Double => {
+                    // opc=10 size=11 is PRFUM (prefetch, unscaled); only idx=00 is allocated (pre/post-index unalloc).
+                    if matches!(mode, Arm64Imm9Mode::Unscaled) {
+                        return Ok(Some(Self::PrefetchUnscaled {
+                            prfop: xt.as_operand_bits(),
+                            rn: xn,
+                            offset_bytes: offset,
+                        }));
+                    }
+                }
+            }
+        }
+        if word & LDST_IMM9_MASK == LDURS_W_BASE {
+            let (mode, xt, xn, offset) = decode_imm9(word).ok_or(DecodeError::InvalidOpcode)?;
+            match Arm64LoadStoreSize::from_size_bits(word >> 30) {
+                Arm64LoadStoreSize::Byte => {
+                    return Ok(Some(Self::LoadSignedByteImm9(
+                        Arm64RegisterWidth::W,
+                        mode,
+                        xt,
+                        xn,
+                        offset,
+                    )));
+                }
+                Arm64LoadStoreSize::Half => {
+                    return Ok(Some(Self::LoadSignedHalfImm9(
+                        Arm64RegisterWidth::W,
+                        mode,
+                        xt,
+                        xn,
+                        offset,
+                    )));
+                }
+                _ => {} // Word/Double opc=11 unallocated -- fall through
+            }
+        }
+
+        // load register (PC-relative literal): opc[31:30] selects LDR-W / LDR-X / LDRSW; the opc=11 PRFM-literal
+        // is decoded by the dedicated arm below. The mask pins [31:24] = opc + 011000.
+        if word & LDST_LITERAL_MASK == LDR_LIT_W_BASE {
+            return Ok(Some(Self::LoadLiteral(
+                Arm64RegisterWidth::W,
+                Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0)),
+                decode_literal_offset(word),
+            )));
+        }
+        if word & LDST_LITERAL_MASK == LDR_LIT_X_BASE {
+            return Ok(Some(Self::LoadLiteral(
+                Arm64RegisterWidth::X,
+                Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0)),
+                decode_literal_offset(word),
+            )));
+        }
+        if word & LDST_LITERAL_MASK == LDRSW_LIT_BASE {
+            return Ok(Some(Self::LoadSignedWordLiteral(
+                Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0)),
+                decode_literal_offset(word),
+            )));
+        }
+        if word & LDST_LITERAL_MASK == PRFM_LIT_BASE {
+            // opc=11 in the literal group is PRFM (PC-relative prefetch); Rt carries the 5-bit prfop.
+            return Ok(Some(Self::PrefetchLiteral {
+                prfop: reg_field(word, 0),
+                offset_bytes: decode_literal_offset(word),
+            }));
+        }
+
+        // FEAT_THE read-check-write atomics (RCW/RCWS). Decoded BEFORE the exclusive/CAS/LSE-atomic group, which
+        // shares the CAS-group (0x19) / atomic-memory-op (0x38) frames. S[30]=RCWS, A[23]/L[22]=ordering; the
+        // masked key picks the sub-form (the LSE forms have [15]=0 so from_single_base/from_pair_base reject them).
+        if word & RCW_MASK == RCW_CAS_BASE
+            || word & RCW_MASK == RCW_CASP_BASE
+            || Arm64RcwAtomicOp::from_single_base(word & RCW_MASK).is_some()
+            || Arm64RcwAtomicOp::from_pair_base(word & RCW_MASK).is_some()
+        {
+            let secure = (word >> 30) & 1 == 1;
+            let ordering = Arm64AtomicOrdering::from_acquire_release(
+                (word >> 23) & 1 == 1,
+                (word >> 22) & 1 == 1,
+            );
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            let r16 = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            let r0 = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let key = word & RCW_MASK;
+            if key == RCW_CAS_BASE {
+                return Ok(Some(Self::RcwCompareAndSwap {
+                    secure,
+                    ordering,
+                    rs: r16,
+                    rt: r0,
+                    rn,
+                }));
+            }
+            if key == RCW_CASP_BASE {
+                return Ok(Some(Self::RcwCompareAndSwapPair {
+                    secure,
+                    ordering,
+                    rs: r16,
+                    rt: r0,
+                    rn,
+                }));
+            }
+            if let Some(op) = Arm64RcwAtomicOp::from_single_base(key) {
+                return Ok(Some(Self::RcwAtomic {
+                    op,
+                    secure,
+                    ordering,
+                    rs: r16,
+                    rt: r0,
+                    rn,
+                }));
+            }
+            if let Some(op) = Arm64RcwAtomicOp::from_pair_base(key) {
+                return Ok(Some(Self::RcwAtomicPair {
+                    op,
+                    secure,
+                    ordering,
+                    rt1: r0,
+                    rt2: r16,
+                    rn,
+                }));
+            }
+        }
+        // FEAT_LS64 atomic 64-byte access (LD64B/ST64B/ST64BV/ST64BV0). Decoded BEFORE the exclusive/LSE-atomic
+        // group, which shares the size=11 load/store frame and would otherwise claim these words.
+        if word & LS64_FIXED_MASK == LS64_LD_BASE || word & LS64_FIXED_MASK == LS64_ST_BASE {
+            return Ok(Some(Self::Ls64 {
+                store: word & LS64_FIXED_MASK == LS64_ST_BASE,
+                rt: Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0)),
+                rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5)),
+            }));
+        }
+        if word & LS64_STV_MASK == LS64_STV_BASE || word & LS64_STV_MASK == LS64_STV0_BASE {
+            return Ok(Some(Self::Ls64StoreStatus {
+                zero_data: word & LS64_STV_MASK == LS64_STV0_BASE,
+                rs: Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16)),
+                rt: Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0)),
+                rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5)),
+            }));
+        }
+
+        // load/store exclusive group (ARMv8.0): LDXR/STXR/LDAXR/STLXR, ordinary LDAR/STLR, and CAS. Dispatch on
+        // o2[23]/L[22]/o1[21]/o0[15]. o1=1 is CAS (o2=1) or the exclusive pair (o2=0); the o2=1,o0=0
+        // LOR forms (LDLAR/STLLR) are decoded below.
+        if word & EXCLUSIVE_GROUP_MASK == EXCLUSIVE_GROUP_BASE {
+            let size = Arm64LoadStoreSize::from_size_bits(word >> 30);
+            let o2 = (word >> 23) & 1;
+            let l = (word >> 22) & 1;
+            let o1 = (word >> 21) & 1;
+            let o0 = (word >> 15) & 1;
+            let rt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            let rs = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            if o1 == 1 {
+                if o2 == 1 {
+                    // CAS: acquire = L[22], release = o0[15].
+                    let ordering = Arm64AtomicOrdering::from_acquire_release(l == 1, o0 == 1);
+                    return Ok(Some(Self::CompareAndSwap(size, ordering, rs, rt, rn)));
+                }
+                // o2=0: when bit31=0 this is the compare-and-swap PAIR CASP (bits[31:30]=0:sz, W=00/X=01); otherwise
+                // the exclusive PAIR (bits[31:30]=1:sz, W=10/X=11). Both share o1=1,o2=0; bit31 disambiguates.
+                if (word >> 31) & 1 == 0 {
+                    // CASP: acquire = L[22], release = o0[15]; Rt2[14:10] is fixed 11111; sz = bit30 (0=W/1=X).
+                    let pair_width = if (word >> 30) & 1 == 1 {
+                        Arm64RegisterWidth::X
+                    } else {
+                        Arm64RegisterWidth::W
+                    };
+                    let ordering = Arm64AtomicOrdering::from_acquire_release(l == 1, o0 == 1);
+                    return Ok(Some(Self::CompareAndSwapPair {
+                        width: pair_width,
+                        ordering,
+                        rs,
+                        rt,
+                        xn: rn,
+                    }));
+                }
+                let width = if (word >> 30) & 1 == 1 {
+                    Arm64RegisterWidth::X
+                } else {
+                    Arm64RegisterWidth::W
+                };
+                let rt2 = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 10));
+                if l == 1 {
+                    return Ok(Some(Self::LoadExclusivePair {
+                        width,
+                        acquire: o0 == 1,
+                        rt,
+                        rt2,
+                        xn: rn,
+                    }));
+                }
+                return Ok(Some(Self::StoreExclusivePair {
+                    width,
+                    release: o0 == 1,
+                    rs,
+                    rt,
+                    rt2,
+                    xn: rn,
+                }));
+            }
+            return match (o2, l, o0) {
+                (0, 1, _) => Ok(Some(Self::LoadExclusive(size, o0 == 1, rt, rn))), // LDXR / LDAXR
+                (0, 0, _) => Ok(Some(Self::StoreExclusive(size, o0 == 1, rs, rt, rn))), // STXR / STLXR
+                (1, 1, 1) => Ok(Some(Self::LoadAcquire(size, rt, rn))),                 // LDAR
+                (1, 0, 1) => Ok(Some(Self::StoreRelease(size, rt, rn))),                // STLR
+                (1, 1, 0) => Ok(Some(Self::LoadLOAcquire(size, rt, rn))),               // LDLAR
+                (1, 0, 0) => Ok(Some(Self::StoreLORelease(size, rt, rn))),              // STLLR
+                _ => Err(DecodeError::InvalidOpcode), // unallocated
+            };
+        }
+        // FEAT_LSUI unprivileged exclusives + CAS: the [24]=1 (`T`) variant of the exclusive group (the regular decode
+        // above pins [24]=0). o2=0 => LDTXR/STTXR/LDATXR/STLTXR (o1=0, size W/D); o2=1 => CAST/CASPT (o1=0, X-only,
+        // bit31 picks single(1)/pair(0); ordering at L[22] + o0[15]).
+        if word & EXCLUSIVE_GROUP_MASK == EXCLUSIVE_GROUP_BASE | (1 << 24) {
+            let o2 = (word >> 23) & 1;
+            let l = (word >> 22) & 1;
+            let o1 = (word >> 21) & 1;
+            let o0 = (word >> 15) & 1;
+            let rt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            let rs = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            if o1 == 0 && o2 == 0 && (word >> 31) & 1 == 1 {
+                let size = Arm64LoadStoreSize::from_size_bits(word >> 30);
+                if l == 1 {
+                    return Ok(Some(Self::LoadExclusiveUnpriv(size, o0 == 1, rt, rn)));
+                }
+                return Ok(Some(Self::StoreExclusiveUnpriv(size, o0 == 1, rs, rt, rn)));
+            }
+            if o1 == 0 && o2 == 1 && (word >> 30) & 1 == 1 {
+                // CAST (single, [31:30]=11) / CASPT (pair, [31:30]=01); both X-only (bit30 fixed 1). acquire=L[22],
+                // release=o0[15]; bit31 picks single(1) vs pair(0).
+                let ordering = Arm64AtomicOrdering::from_acquire_release(l == 1, o0 == 1);
+                if (word >> 31) & 1 == 1 {
+                    return Ok(Some(Self::CompareAndSwapUnpriv {
+                        ordering,
+                        rs,
+                        rt,
+                        rn,
+                    }));
+                }
+                return Ok(Some(Self::CompareAndSwapPairUnpriv {
+                    ordering,
+                    rs,
+                    rt,
+                    rn,
+                }));
+            }
+        }
+
+        // LDAPR (load-acquire RCpc, FEAT_LRCPC): a fixed pattern in the atomic neighborhood (Rs=11111, o3=1,
+        // opc=100). Must precede the LSE-atomic decode, which would otherwise reject it as an unallocated opc.
+        if word & LDAPR_MASK == LDAPR_BASE {
+            let size = Arm64LoadStoreSize::from_size_bits(word >> 30);
+            let rt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let xn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            return Ok(Some(Self::LoadAcquireRcpc(size, rt, xn)));
+        }
+        // STLUR / LDAPUR / LDAPURS{B,H,W} (FEAT_LRCPC2): RCpc with a 9-bit unscaled offset. (size,opc) selects the
+        // op; an unallocated pair (e.g. size=11 opc=10/11) falls through to InvalidOpcode.
+        if word & RCPC_UNSCALED_MASK == RCPC_UNSCALED_BASE {
+            let size = (word >> 30) & 0b11;
+            let opc = (word >> 22) & 0b11;
+            if let Some(op) = Arm64RcpcUnscaledOp::from_size_opc(size, opc) {
+                let rt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+                let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+                let offset = sign_extend((word >> 12) & 0x1FF, 9);
+                return Ok(Some(Self::RcpcUnscaled { op, rt, rn, offset }));
+            }
+            return Err(DecodeError::InvalidOpcode);
+        }
+
+        // LSE atomic memory operations (ARMv8.1): LDADD/LDCLR/.../SWP. bits[11:10]=00 + bit21=1 keep this
+        // distinct from the register-offset group. o3[15] picks SWP (1) vs an RMW op (0); opc[14:12] the op.
+        if word & LSE_ATOMIC_MASK == LSE_ATOMIC_BASE {
+            let size = Arm64LoadStoreSize::from_size_bits(word >> 30);
+            let ordering = Arm64AtomicOrdering::from_acquire_release(
+                (word >> 23) & 1 == 1,
+                (word >> 22) & 1 == 1,
+            );
+            let rs = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+            let rt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            if (word >> 15) & 1 == 1 {
+                if (word >> 12) & 0x7 == 0 {
+                    return Ok(Some(Self::Swap(size, ordering, rs, rt, rn)));
+                }
+                return Err(DecodeError::InvalidOpcode); // o3=1, opc!=0 -- unallocated in this cut
+            }
+            return Ok(Some(Self::AtomicRmw(
+                Arm64AtomicOp::from_opc_bits((word >> 12) & 0x7),
+                size,
+                ordering,
+                rs,
+                rt,
+                rn,
+            )));
+        }
+        // FEAT_LSE128 128-bit atomics (SWPP/LDCLRP/LDSETP, +A/L). op[15:12]; Rn uses SP at 31.
+        if let Some(op) = (word & LSE128_MASK == LSE128_BASE)
+            .then(|| Arm64Lse128Op::from_opcode((word >> 12) & 0xF))
+            .flatten()
+        {
+            return Ok(Some(Self::Lse128Atomic {
+                op,
+                acquire: (word >> 23) & 1 == 1,
+                release: (word >> 22) & 1 == 1,
+                rt2: Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16)),
+                rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5)),
+                rt: Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0)),
+            }));
+        }
+        // FEAT_LSUI unprivileged LSE atomics (LDTADD/LDTCLR/LDTSET/SWPT, +A/L). Distinct from LSE128 (above) and the
+        // FEAT_THE RCW pair (decoded earlier) by [11:10]=01; only add/clr/set/swap opc are allocated (others reject).
+        if word & LSUI_ATOMIC_MASK == LSUI_ATOMIC_BASE {
+            return match Arm64LsuiAtomicOp::from_op_bits((word >> 12) & 0xF) {
+                Some(op) => Ok(Some(Self::LsuiAtomic {
+                    op,
+                    width: if (word >> 30) & 1 == 1 {
+                        Arm64RegisterWidth::X
+                    } else {
+                        Arm64RegisterWidth::W
+                    },
+                    ordering: Arm64AtomicOrdering::from_acquire_release(
+                        (word >> 23) & 1 == 1,
+                        (word >> 22) & 1 == 1,
+                    ),
+                    rs: Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16)),
+                    rt: Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0)),
+                    rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5)),
+                })),
+                None => Err(DecodeError::InvalidOpcode), // unallocated o3:opc in the LSUI atomic space
+            };
+        }
+        // FEAT_LRCPC3 ordered load/store pair (LDIAPP/STILP). size at [30] (not [31]), load[22], !writeback[12].
+        if word & RCPC3_PAIR_MASK == RCPC3_PAIR_BASE {
+            return Ok(Some(Self::Rcpc3OrderedPair {
+                load: (word >> 22) & 1 == 1,
+                width: if (word >> 30) & 1 == 1 {
+                    Arm64RegisterWidth::X
+                } else {
+                    Arm64RegisterWidth::W
+                },
+                writeback: (word >> 12) & 1 == 0,
+                rt2: Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16)),
+                rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5)),
+                rt: Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0)),
+            }));
+        }
+        // FEAT_LRCPC3 SIMD&FP unscaled load-acquire/store-release (LDAPUR/STLUR). size[31:30]+opc1[23]; Xn uses SP.
+        if word & RCPC3_SIMD_MASK == RCPC3_SIMD_BASE {
+            let size = if (word >> 23) & 1 == 1 {
+                Arm64VectorLoadStoreSize::Quad
+            } else {
+                match (word >> 30) & 0b11 {
+                    0 => Arm64VectorLoadStoreSize::Byte,
+                    1 => Arm64VectorLoadStoreSize::Half,
+                    2 => Arm64VectorLoadStoreSize::Single,
+                    _ => Arm64VectorLoadStoreSize::Double,
+                }
+            };
+            return Ok(Some(Self::Rcpc3SimdLoadStore {
+                load: (word >> 22) & 1 == 1,
+                size,
+                ft: Arm64FloatRegister::from_operand_bits(reg_field(word, 0)),
+                rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5)),
+                imm9: sign_extend((word >> 12) & 0x1FF, 9),
+            }));
+        }
+        // FEAT_GCS store to the guarded control stack (GCSSTR/GCSSTTR). unpriv[12]; Xn uses SP.
+        if word & GCS_STORE_MASK == GCS_STORE_BASE {
+            return Ok(Some(Self::GcsStore {
+                unprivileged: (word >> 12) & 1 == 1,
+                rt: Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0)),
+                rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5)),
+            }));
+        }
+        // FEAT_LRCPC3 single .d element load-acquire/store-release (LDAP1/STL1). index(Q)[30], L[22]; Xn uses SP.
+        if word & RCPC3_VEC_ELEM_MASK == RCPC3_VEC_ELEM_BASE {
+            return Ok(Some(Self::Rcpc3VectorElement {
+                load: (word >> 22) & 1 == 1,
+                index: ((word >> 30) & 1) as u8,
+                vt: Arm64FloatRegister::from_operand_bits(reg_field(word, 0)),
+                rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5)),
+            }));
+        }
+
+        // load/store pair: LDP / STP, W or X, in the three index modes. The mask drops opc[31:30] (the width,
+        // recovered from bit 31) and pins [29:22] = pair group + idx[24:23] + L[22], so each (idx, L) resolves to
+        // exactly one variant; the idx = 00 no-allocate LDNP/STNP slot has no base in this LDP/STP group and is
+        // decoded by the no-allocate-pair arm below. `Rt`/`Rt2` use ZR at 31, `Rn` uses SP at 31.
+        // opc[31:30] selects the pair variant: 00 = W, 10 = X (both modeled; width_from_word reads opc[1] = bit 31).
+        // opc[0] = bit 30 MUST be 0 -- opc=01 (LDPSW, signed-word, decoded by its own arm below) and opc=11
+        // (UNALLOCATED) share the masked key with the W form (opc is outside LDST_PAIR_MASK), so without this
+        // guard a LDPSW word (e.g. 0x6940_0440) would silently mis-decode as a W LDP; opc=11 falls through to InvalidOpcode.
+        let pair = word & LDST_PAIR_MASK;
+        if (word >> 30) & 1 == 0
+            && [
+                STP_OFF_BASE,
+                LDP_OFF_BASE,
+                STP_PRE_BASE,
+                LDP_PRE_BASE,
+                STP_POST_BASE,
+                LDP_POST_BASE,
+            ]
+            .contains(&pair)
+        {
+            let width = width_from_word(word);
+            let index = match pair {
+                STP_OFF_BASE | LDP_OFF_BASE => Arm64LoadStoreIndex::Offset,
+                STP_PRE_BASE | LDP_PRE_BASE => Arm64LoadStoreIndex::PreIndex,
+                _ => Arm64LoadStoreIndex::PostIndex, // STP_POST_BASE | LDP_POST_BASE
+            };
+            let is_load = pair & (1 << 22) != 0; // L bit
+            let (xt, xt2, xn, offset_bytes) = decode_ldst_pair(word, width);
+            return Ok(Some(if is_load {
+                Self::LoadPair(width, index, xt, xt2, xn, offset_bytes)
+            } else {
+                Self::StorePair(width, index, xt, xt2, xn, offset_bytes)
+            }));
+        }
+        // FEAT_LSUI unprivileged pair (STTP/LDTP): the opc=11 (`T`) view of STP/LDP, 64-bit only (scale 8). The
+        // privileged block above pins opc[0]=bit30=0, so opc=11 (bits[31:30]=11) falls through to here.
+        if (word >> 30) & 0b11 == 0b11
+            && [
+                STP_OFF_BASE,
+                LDP_OFF_BASE,
+                STP_PRE_BASE,
+                LDP_PRE_BASE,
+                STP_POST_BASE,
+                LDP_POST_BASE,
+            ]
+            .contains(&pair)
+        {
+            let index = match pair {
+                STP_OFF_BASE | LDP_OFF_BASE => Arm64LoadStoreIndex::Offset,
+                STP_PRE_BASE | LDP_PRE_BASE => Arm64LoadStoreIndex::PreIndex,
+                _ => Arm64LoadStoreIndex::PostIndex,
+            };
+            let is_load = pair & (1 << 22) != 0; // L bit
+            let (rt, rt2, rn, offset_bytes) = decode_ldst_pair(word, Arm64RegisterWidth::X);
+            return Ok(Some(Self::LsuiPair {
+                load: is_load,
+                index,
+                rt,
+                rt2,
+                rn,
+                offset_bytes,
+            }));
+        }
+        // load/store pair NON-TEMPORAL (LDNP/STNP, idx=00): a distinct masked base from the LDP/STP forms. GP
+        // (V=0, opc 00=W/10=X) reuses the pair scale; SIMD/FP (V=1, opc 00=S/01=D/10=Q) uses its own scale.
+        let pair_nt = word & LDST_PAIR_MASK;
+        // FEAT_LSUI unprivileged NON-TEMPORAL pair (LDTNP/STTNP): opc=11, idx=00, V=0 (GP, X-only). The privileged GP
+        // NT below pins opc[0]=bit30=0, so opc=11 (bits[31:30]=11) falls through to here. SIMD NT (V=1) is 0x2C, excluded.
+        if (word >> 30) & 0b11 == 0b11 && (pair_nt == 0x2800_0000 || pair_nt == 0x2840_0000) {
+            let load = pair_nt & (1 << 22) != 0;
+            let (rt, rt2, rn, offset_bytes) = decode_ldst_pair(word, Arm64RegisterWidth::X);
+            return Ok(Some(Self::LsuiPairNonTemporal {
+                load,
+                rt,
+                rt2,
+                rn,
+                offset_bytes,
+            }));
+        }
+        // FEAT_LSUI unprivileged SIMD pair (LDTP/STTP/LDTNP/STTNP, Q-only). opc=11 + V=1; the mask 0xFE00_0000 pins
+        // [31:25]=1110110 (opc=11, 101 pair-group, V=1, [25]=0); idx[24:23], L[22] vary. Placed BEFORE the regular SIMD
+        // NT below (which pins opc 00/01/10 and would otherwise InvalidOpcode this opc=11 word).
+        if word & 0xFE00_0000 == 0xEC00_0000 {
+            let offset_bytes = sign_extend((word >> 15) & 0x7F, 7) * 16;
+            return Ok(Some(Self::LsuiVecPair {
+                load: (word >> 22) & 1 == 1,
+                index: Arm64LsuiPairIndex::from_idx_bits((word >> 23) & 0b11),
+                vt: Arm64FloatRegister::from_operand_bits(reg_field(word, 0)),
+                vt2: Arm64FloatRegister::from_operand_bits(reg_field(word, 10)),
+                rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5)),
+                offset_bytes,
+            }));
+        }
+        if (word >> 30) & 1 == 0 && (pair_nt == 0x2800_0000 || pair_nt == 0x2840_0000) {
+            let width = width_from_word(word);
+            let load = pair_nt & (1 << 22) != 0;
+            let (rt, rt2, xn, offset_bytes) = decode_ldst_pair(word, width);
+            return Ok(Some(Self::LoadStorePairNonTemporal {
+                load,
+                width,
+                rt,
+                rt2,
+                xn,
+                offset_bytes,
+            }));
+        }
+        if pair_nt == 0x2C00_0000 || pair_nt == 0x2C40_0000 {
+            let (size, scale): (Arm64VectorLoadStoreSize, i32) = match (word >> 30) & 0b11 {
+                0 => (Arm64VectorLoadStoreSize::Single, 4),
+                1 => (Arm64VectorLoadStoreSize::Double, 8),
+                2 => (Arm64VectorLoadStoreSize::Quad, 16),
+                _ => return Err(DecodeError::InvalidOpcode), // opc 11 is unallocated
+            };
+            let load = pair_nt & (1 << 22) != 0;
+            let imm7 = ((word >> 15) & 0x7F) as i32;
+            let imm7 = if imm7 >= 64 { imm7 - 128 } else { imm7 };
+            let vt = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let vt2 = Arm64FloatRegister::from_operand_bits(reg_field(word, 10));
+            let xn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            return Ok(Some(Self::VecLoadStorePairNonTemporal {
+                load,
+                size,
+                vt,
+                vt2,
+                xn,
+                offset_bytes: imm7 * scale,
+            }));
+        }
+        // SIMD&FP load/store PAIR (LDP/STP St/Dt/Qt), offset/pre/post-index: the 0x2C pair family with idx != 00.
+        // The mask drops opc[31:30] (the S/D/Q width) and pins the pair group + V + idx + L; idx=00 is the
+        // non-temporal form handled above, and V=1 keeps these disjoint from the GP pair group (V=0). opc=11 is
+        // unallocated. Placed here beside its non-temporal sibling.
+        let vec_pair = word & LDST_PAIR_MASK;
+        if [
+            VEC_STP_OFF_BASE,
+            VEC_LDP_OFF_BASE,
+            VEC_STP_PRE_BASE,
+            VEC_LDP_PRE_BASE,
+            VEC_STP_POST_BASE,
+            VEC_LDP_POST_BASE,
+        ]
+        .contains(&vec_pair)
+        {
+            let (size, scale): (Arm64VectorLoadStoreSize, i32) = match (word >> 30) & 0b11 {
+                0 => (Arm64VectorLoadStoreSize::Single, 4),
+                1 => (Arm64VectorLoadStoreSize::Double, 8),
+                2 => (Arm64VectorLoadStoreSize::Quad, 16),
+                _ => return Err(DecodeError::InvalidOpcode), // opc 11 is unallocated
+            };
+            let index = match vec_pair {
+                VEC_STP_OFF_BASE | VEC_LDP_OFF_BASE => Arm64LoadStoreIndex::Offset,
+                VEC_STP_PRE_BASE | VEC_LDP_PRE_BASE => Arm64LoadStoreIndex::PreIndex,
+                _ => Arm64LoadStoreIndex::PostIndex, // VEC_STP_POST_BASE | VEC_LDP_POST_BASE
+            };
+            let load = vec_pair & (1 << 22) != 0;
+            let imm7 = ((word >> 15) & 0x7F) as i32;
+            let imm7 = if imm7 >= 64 { imm7 - 128 } else { imm7 };
+            let vt = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let vt2 = Arm64FloatRegister::from_operand_bits(reg_field(word, 10));
+            let xn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+            return Ok(Some(Self::VecLoadStorePair {
+                load,
+                index,
+                size,
+                vt,
+                vt2,
+                xn,
+                offset_bytes: imm7 * scale,
+            }));
+        }
+        // LDPSW (opc=01): load pair of signed words (X destinations, scale 4). Shares the masked idx bases with the
+        // LDP loads (the mask drops opc) -- distinguished by opc[31:30]=01.
+        if (word >> 30) & 0b11 == 0b01 {
+            let index = match pair_nt {
+                LDP_OFF_BASE => Some(Arm64LoadStoreIndex::Offset),
+                LDP_PRE_BASE => Some(Arm64LoadStoreIndex::PreIndex),
+                LDP_POST_BASE => Some(Arm64LoadStoreIndex::PostIndex),
+                _ => None,
+            };
+            if let Some(index) = index {
+                let (xt, xt2, xn, offset_bytes) = decode_ldst_pair(word, Arm64RegisterWidth::W);
+                return Ok(Some(Self::LoadPairSignedWord(
+                    index,
+                    xt,
+                    xt2,
+                    xn,
+                    offset_bytes,
+                )));
+            }
+        }
+        // STGP (FEAT_MTE): store allocation-tag pair (opc=01, store, scale 16). Same masked idx bases as the W
+        // store pair (opc dropped), but opc[31:30]=01 (the LDPSW load bases above have L=1, so they differ).
+        if (word >> 30) & 0b11 == 0b01 {
+            let index = match pair_nt {
+                0x2900_0000 => Some(Arm64LoadStoreIndex::Offset),
+                0x2980_0000 => Some(Arm64LoadStoreIndex::PreIndex),
+                0x2880_0000 => Some(Arm64LoadStoreIndex::PostIndex),
+                _ => None,
+            };
+            if let Some(index) = index {
+                let imm7 = (word >> 15) & 0x7F;
+                let imm7 = if imm7 >= 64 {
+                    imm7 as i32 - 128
+                } else {
+                    imm7 as i32
+                };
+                let rt = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+                let rt2 = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 10));
+                let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+                return Ok(Some(Self::StoreTagPair {
+                    index,
+                    rt,
+                    rt2,
+                    rn,
+                    offset_bytes: imm7 * 16,
+                }));
+            }
+        }
+
+        // scalar floating-point data-processing (2 source): FADD/FSUB/FMUL/FDIV, S or D (the mask pins bit 23 =
+        // 0 and drops the ftype low bit 22 -- so it accepts only ftype 00/01, while half-precision ftype=11
+        // falls through; precision comes from bit 22). opcode[15:12] selects the operation.
+        if word & FP_DATA_TWO_SOURCE_MASK == FADD_FP_BASE {
+            let (fd, fn_, fm) = decode_float_data2(word);
+            return Ok(Some(Self::FAdd(scalar_fp_precision(word)?, fd, fn_, fm)));
+        }
+        if word & FP_DATA_TWO_SOURCE_MASK == FSUB_FP_BASE {
+            let (fd, fn_, fm) = decode_float_data2(word);
+            return Ok(Some(Self::FSub(scalar_fp_precision(word)?, fd, fn_, fm)));
+        }
+        if word & FP_DATA_TWO_SOURCE_MASK == FMUL_FP_BASE {
+            let (fd, fn_, fm) = decode_float_data2(word);
+            return Ok(Some(Self::FMul(scalar_fp_precision(word)?, fd, fn_, fm)));
+        }
+        if word & FP_DATA_TWO_SOURCE_MASK == FDIV_FP_BASE {
+            let (fd, fn_, fm) = decode_float_data2(word);
+            return Ok(Some(Self::FDiv(scalar_fp_precision(word)?, fd, fn_, fm)));
+        }
+        if word & FP_DATA_TWO_SOURCE_MASK == FMAX_FP_BASE {
+            let (fd, fn_, fm) = decode_float_data2(word);
+            return Ok(Some(Self::FMax(scalar_fp_precision(word)?, fd, fn_, fm)));
+        }
+        if word & FP_DATA_TWO_SOURCE_MASK == FMIN_FP_BASE {
+            let (fd, fn_, fm) = decode_float_data2(word);
+            return Ok(Some(Self::FMin(scalar_fp_precision(word)?, fd, fn_, fm)));
+        }
+        if word & FP_DATA_TWO_SOURCE_MASK == FMAXNM_FP_BASE {
+            let (fd, fn_, fm) = decode_float_data2(word);
+            return Ok(Some(Self::FMaxnm(scalar_fp_precision(word)?, fd, fn_, fm)));
+        }
+        if word & FP_DATA_TWO_SOURCE_MASK == FMINNM_FP_BASE {
+            let (fd, fn_, fm) = decode_float_data2(word);
+            return Ok(Some(Self::FMinnm(scalar_fp_precision(word)?, fd, fn_, fm)));
+        }
+        if word & FP_DATA_TWO_SOURCE_MASK == FNMUL_FP_BASE {
+            let (fd, fn_, fm) = decode_float_data2(word);
+            return Ok(Some(Self::FNmul(scalar_fp_precision(word)?, fd, fn_, fm)));
+        }
+
+        // scalar floating-point data-processing (1 source): FNEG/FABS/FSQRT + the FP->FP register FMOV + FRINTN/P/M/Z/A,
+        // S/D/H (the HALF mask frees ftype bit 23 so the half forms decode; from_word recovers S/D/H). opcode[20:15]
+        // selects the operation.
+        if word & FP_DATA_ONE_SOURCE_HALF_MASK == FNEG_FP_BASE {
+            let (fd, fn_) = decode_float_data1(word);
+            return Ok(Some(Self::FNeg(scalar_fp_precision(word)?, fd, fn_)));
+        }
+        // FEAT_FRINTTS scalar round-to-integer-N (FRINT32X/Z/64X/Z): FP one-source family, opcodes 01000x (distinct
+        // from FRINTN/M/P/Z/A at 00100x), so they decode here without colliding. S/D ONLY (no half form), so this keeps
+        // the bit-23-pinned FP_DATA_ONE_SOURCE_MASK -- a half (ftype 11) word never matches a FRINTTS opcode here.
+        for op in Arm64ScalarFrintTsOp::ALL {
+            if word & FP_DATA_ONE_SOURCE_MASK == op.base() {
+                let (fd, fn_) = decode_float_data1(word);
+                return Ok(Some(Self::FRoundIntScalar {
+                    op,
+                    precision: Arm64FloatPrecision::from_word(word),
+                    fd,
+                    fn_,
+                }));
+            }
+        }
+        if word & FP_DATA_ONE_SOURCE_HALF_MASK == FABS_FP_BASE {
+            let (fd, fn_) = decode_float_data1(word);
+            return Ok(Some(Self::FAbs(scalar_fp_precision(word)?, fd, fn_)));
+        }
+        if word & FP_DATA_ONE_SOURCE_HALF_MASK == FSQRT_FP_BASE {
+            let (fd, fn_) = decode_float_data1(word);
+            return Ok(Some(Self::FSqrt(scalar_fp_precision(word)?, fd, fn_)));
+        }
+        if word & FP_DATA_ONE_SOURCE_HALF_MASK == FMOV_FP_BASE {
+            let (fd, fn_) = decode_float_data1(word);
+            return Ok(Some(Self::FMov(scalar_fp_precision(word)?, fd, fn_)));
+        }
+        if word & FP_DATA_ONE_SOURCE_HALF_MASK == FRINTN_FP_BASE {
+            let (fd, fn_) = decode_float_data1(word);
+            return Ok(Some(Self::FRintN(scalar_fp_precision(word)?, fd, fn_)));
+        }
+        if word & FP_DATA_ONE_SOURCE_HALF_MASK == FRINTP_FP_BASE {
+            let (fd, fn_) = decode_float_data1(word);
+            return Ok(Some(Self::FRintP(scalar_fp_precision(word)?, fd, fn_)));
+        }
+        if word & FP_DATA_ONE_SOURCE_HALF_MASK == FRINTM_FP_BASE {
+            let (fd, fn_) = decode_float_data1(word);
+            return Ok(Some(Self::FRintM(scalar_fp_precision(word)?, fd, fn_)));
+        }
+        if word & FP_DATA_ONE_SOURCE_HALF_MASK == FRINTZ_FP_BASE {
+            let (fd, fn_) = decode_float_data1(word);
+            return Ok(Some(Self::FRintZ(scalar_fp_precision(word)?, fd, fn_)));
+        }
+        if word & FP_DATA_ONE_SOURCE_HALF_MASK == FRINTA_FP_BASE {
+            let (fd, fn_) = decode_float_data1(word);
+            return Ok(Some(Self::FRintA(scalar_fp_precision(word)?, fd, fn_)));
+        }
+        if word & FP_DATA_ONE_SOURCE_HALF_MASK == FRINTX_FP_BASE {
+            let (fd, fn_) = decode_float_data1(word);
+            return Ok(Some(Self::FRintX(scalar_fp_precision(word)?, fd, fn_)));
+        }
+        if word & FP_DATA_ONE_SOURCE_HALF_MASK == FRINTI_FP_BASE {
+            let (fd, fn_) = decode_float_data1(word);
+            return Ok(Some(Self::FRintI(scalar_fp_precision(word)?, fd, fn_)));
+        }
+
+        // scalar FP convert-precision: FCVT between H/S/D. Source precision = ftype[23:22], destination =
+        // opc[16:15] (same 2-bit code). One block covers all six pairs; a reserved format (0b10) or src==dst is
+        // unallocated -> InvalidOpcode.
+        // BFCVT (scalar f32 -> bf16): a fixed-precision 1-source FP convert. It overlaps the FCVT precision-convert
+        // mask (its dest ftype 10 is unallocated for FCVT), so claim it first with a fully-pinned base.
+        if word & 0xFFFF_FC00 == 0x1E63_4000 {
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::BfConvertScalar { rd, rn }));
+        }
+        if word & FCVT_MASK == FCVT_BASE {
+            let src = Arm64FloatPrecision::from_ftype_bits((word >> 22) & 0b11);
+            let dest = Arm64FloatPrecision::from_ftype_bits((word >> 15) & 0b11);
+            return match (dest, src) {
+                (Some(dest), Some(src)) if dest != src => {
+                    let (fd, fn_) = decode_float_data1(word);
+                    Ok(Some(Self::FcvtFloat(dest, src, fd, fn_)))
+                }
+                _ => Err(DecodeError::InvalidOpcode),
+            };
+        }
+        // scalar FP conditional compare (FCCMP/FCCMPE), [11:10]=01. ftype 10 is reserved -> InvalidOpcode.
+        if word & FCCMP_MASK == FCCMP_BASE {
+            let precision = Arm64FloatPrecision::from_ftype_bits((word >> 22) & 0b11)
+                .ok_or(DecodeError::InvalidOpcode)?;
+            let fm = Arm64FloatRegister::from_operand_bits(reg_field(word, 16));
+            let cond = Arm64Condition::from_operand_bits(((word >> 12) & 0b1111) as u8);
+            let fn_ = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            let signaling = (word >> 4) & 1 == 1;
+            let nzcv = (word & 0b1111) as u8;
+            return Ok(Some(Self::FccmpScalar {
+                precision,
+                signaling,
+                fn_,
+                fm,
+                nzcv,
+                cond,
+            }));
+        }
+
+        // scalar FP compare: FCMP (register) / FCMP (#0.0), S or D. opcode2[4:0] distinguishes the two; the
+        // #0.0 form requires Rm = 0 (the mask drops Rm, so validate it -- an Rm != 0 #0.0 word is unallocated).
+        if word & FP_COMPARE_MASK == FCMP_REG_BASE {
+            let fn_ = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            let fm = Arm64FloatRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::FCmp(scalar_fp_precision(word)?, fn_, fm)));
+        }
+        if word & FP_COMPARE_MASK == FCMP_ZERO_BASE && reg_field(word, 16) == 0 {
+            let fn_ = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::FCmpZero(scalar_fp_precision(word)?, fn_)));
+        }
+        if word & FP_COMPARE_MASK == FCMPE_REG_BASE {
+            let fn_ = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            let fm = Arm64FloatRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::FCmpE(scalar_fp_precision(word)?, fn_, fm)));
+        }
+        if word & FP_COMPARE_MASK == FCMPE_ZERO_BASE && reg_field(word, 16) == 0 {
+            let fn_ = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::FCmpEZero(scalar_fp_precision(word)?, fn_)));
+        }
+
+        // convert FP<->integer: SCVTF/UCVTF (int->FP) and FCVTZS/FCVTZU (FP->int, toward zero). sf (GP width) and
+        // ftype (FP precision) are independent and both recovered here; rmode+opcode select the op. (FMOV GP<->FP
+        // and the other rounding-mode FCVTs share this space with distinct opcodes; they fall through to their own arms below.)
+        if word & FP_CONVERT_INT_MASK == SCVTF_BASE {
+            let (fp_precision, gp_width, fd, rn) =
+                decode_int_to_fp(word).ok_or(DecodeError::InvalidOpcode)?;
+            return Ok(Some(Self::Scvtf(fp_precision, gp_width, fd, rn)));
+        }
+        if word & FP_CONVERT_INT_MASK == UCVTF_BASE {
+            let (fp_precision, gp_width, fd, rn) =
+                decode_int_to_fp(word).ok_or(DecodeError::InvalidOpcode)?;
+            return Ok(Some(Self::Ucvtf(fp_precision, gp_width, fd, rn)));
+        }
+        if word & FP_CONVERT_INT_MASK == FCVTZS_BASE {
+            let (gp_width, fp_precision, rd, fn_) =
+                decode_fp_to_int(word).ok_or(DecodeError::InvalidOpcode)?;
+            return Ok(Some(Self::Fcvtzs(gp_width, fp_precision, rd, fn_)));
+        }
+        if word & FP_CONVERT_INT_MASK == FCVTZU_BASE {
+            let (gp_width, fp_precision, rd, fn_) =
+                decode_fp_to_int(word).ok_or(DecodeError::InvalidOpcode)?;
+            return Ok(Some(Self::Fcvtzu(gp_width, fp_precision, rd, fn_)));
+        }
+        // FCVT{N,A,P,M}{S,U}: the other rounding-mode FP->GP-int converts (S/D/H). The op comes from rmode+opcode
+        // (from_fields rejects the SCVTF/UCVTF/FCVTZS/FCVTZU/FMOV pairs handled above), the precision from ftype
+        // (reject reserved 10). Placed after the toward-zero/SCVTF blocks, which claim their exact bases first.
+        if word & FP_TO_INT_ROUND_MASK == FP_TO_INT_ROUND_BASE
+            && let Some(op) =
+                Arm64FpToIntRoundOp::from_fields((word >> 19) & 0b11, (word >> 16) & 0b111)
+        {
+            let fp_precision = scalar_fp_precision(word)?;
+            let gp_width = width_from_word(word);
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let fn_ = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::FcvtFpToIntRound {
+                op,
+                gp_width,
+                fp_precision,
+                rd,
+                fn_,
+            }));
+        }
+
+        // convert FP<->FIXED-POINT (bit21=0, vs 1 for the integer form above): SCVTF/UCVTF int->fixed (FP is the
+        // dest reg), FCVTZS/FCVTZU fixed->int (GP is the dest reg). A reserved ftype (0b10) -> InvalidOpcode.
+        if word & FP_CONVERT_FIXED_MASK == SCVTF_FIXED_BASE {
+            let (precision, gp_width, fbits) =
+                decode_fp_fixed(word).ok_or(DecodeError::InvalidOpcode)?;
+            let fd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::ScvtfFixed(precision, gp_width, fd, rn, fbits)));
+        }
+        if word & FP_CONVERT_FIXED_MASK == UCVTF_FIXED_BASE {
+            let (precision, gp_width, fbits) =
+                decode_fp_fixed(word).ok_or(DecodeError::InvalidOpcode)?;
+            let fd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::UcvtfFixed(precision, gp_width, fd, rn, fbits)));
+        }
+        if word & FP_CONVERT_FIXED_MASK == FCVTZS_FIXED_BASE {
+            let (precision, gp_width, fbits) =
+                decode_fp_fixed(word).ok_or(DecodeError::InvalidOpcode)?;
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let fn_ = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::FcvtzsFixed(gp_width, precision, rd, fn_, fbits)));
+        }
+        if word & FP_CONVERT_FIXED_MASK == FCVTZU_FIXED_BASE {
+            let (precision, gp_width, fbits) =
+                decode_fp_fixed(word).ok_or(DecodeError::InvalidOpcode)?;
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let fn_ = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::FcvtzuFixed(gp_width, precision, rd, fn_, fbits)));
+        }
+        // FJCVTZS (JavaScript double->int32): a fully fixed encoding, only Rn/Rd vary.
+        if word & FJCVTZS_MASK == FJCVTZS_BASE {
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let fn_ = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::Fjcvtzs(rd, fn_)));
+        }
+
+        // AES crypto (AESE/AESD/AESMC/AESIMC): fully-fixed two-register `.16b` words -- claimed first (their very
+        // specific mask never false-matches, and decoding them here keeps them out of the data-processing loops).
+        for op in Arm64VectorAesOp::ALL {
+            if word & VEC_AES_MASK == op.base() {
+                let rd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+                let rn = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+                return Ok(Some(Self::VecAes { op, rd, rn }));
+            }
+        }
+
+        // SHA1/SHA256 (three-register): opcode[15:12] selects the op (an unallocated opcode -> InvalidOpcode).
+        if word & VEC_SHA3_MASK == VEC_SHA3_BASE {
+            let op = Arm64VectorSha3Op::from_opcode((word >> 12) & 0xF)
+                .ok_or(DecodeError::InvalidOpcode)?;
+            let (rd, rn, rm) = decode_vec_three(word);
+            return Ok(Some(Self::VecSha3 { op, rd, rn, rm }));
+        }
+        // SHA1/SHA256 (two-register): opcode[16:12] selects the op.
+        if word & VEC_SHA2_MASK == VEC_SHA2_BASE {
+            let op = Arm64VectorSha2Op::from_opcode((word >> 12) & 0x1F)
+                .ok_or(DecodeError::InvalidOpcode)?;
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::VecSha2 { op, rd, rn }));
+        }
+
+        // SHA512/SHA3/SM3/SM4 (the 0xCE crypto space) -- decoded HERE, before the data-processing loops, because a
+        // 0xCE word masks into the three-same space and would mis-decode. Each shape has its own mask + an exact
+        // base lookup, and the bases are disjoint, so a non-member word falls through every check cleanly.
+        if let Some(op) = Arm64VectorCrypto3Op::from_base(word & 0xFFE0_FC00) {
+            let (rd, rn, rm) = decode_vec_three(word);
+            return Ok(Some(Self::VecCrypto3 { op, rd, rn, rm }));
+        }
+        if let Some(op) = Arm64VectorCrypto2Op::from_base(word & 0xFFFF_FC00) {
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::VecCrypto2 { op, rd, rn }));
+        }
+        if let Some(op) = Arm64VectorSm3TtOp::from_base(word & 0xFFE0_CC00) {
+            let index = ((word >> 12) & 0b11) as u8;
+            let vm = Arm64FloatRegister::from_operand_bits(reg_field(word, 16));
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::VecSm3Tt {
+                op,
+                rd,
+                rn,
+                vm,
+                index,
+            }));
+        }
+        if let Some(op) = Arm64VectorCrypto4Op::from_base(word & 0xFFE0_8000) {
+            let rm = Arm64FloatRegister::from_operand_bits(reg_field(word, 16));
+            let ra = Arm64FloatRegister::from_operand_bits(reg_field(word, 10));
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::VecCrypto4 { op, rd, rn, rm, ra }));
+        }
+        if word & 0xFFE0_0000 == 0xCE80_0000 {
+            let rotate = ((word >> 10) & 0x3F) as u8;
+            let (rd, rn, rm) = decode_vec_three(word);
+            return Ok(Some(Self::VecXar { rd, rn, rm, rotate }));
+        }
+
+        // Scalar Advanced SIMD three-same integer (bits[31:30]=01, bit28=1 -- the scalar marker -- distinct from the
+        // vector group's bit28=0). The op's U + opcode are in op.base(); `size` names the b/h/s/d register and is
+        // validated per op (ADD/CMxx/SSHL are .d-only, SQDMULH .h/.s, the saturating add/shift all sizes).
+        if let Some(op) = Arm64ScalarThreeSameOp::from_base(word & SCALAR_THREE_SAME_MASK) {
+            let size = (word >> 22) & 0b11;
+            if !op.allows_size(size) {
+                return Err(DecodeError::InvalidOpcode);
+            }
+            let element = Arm64VectorElement::from_size_bits(size);
+            let (rd, rn, rm) = decode_vec_three(word);
+            return Ok(Some(Self::ScalarThreeSame {
+                op,
+                element,
+                rd,
+                rn,
+                rm,
+            }));
+        }
+        // Scalar three-same floating-point (FABD/FMULX/the FP compares/FRECPS/FRSQRTS) -- bit23(E) is part of the
+        // op, bit22(sz) picks s/d.
+        if let Some(op) = Arm64ScalarFpThreeSameOp::from_base(word & SCALAR_FP_THREE_SAME_MASK) {
+            let double = (word >> 22) & 1 == 1;
+            let (rd, rn, rm) = decode_vec_three(word);
+            return Ok(Some(Self::ScalarFpThreeSame {
+                op,
+                double,
+                rd,
+                rn,
+                rm,
+            }));
+        }
+        // Scalar half-precision (FP16) three-same -- own opcode space (bit22=1, bit21=0); always the `h` register.
+        if let Some(op) =
+            Arm64ScalarFpThreeSameOp::from_fp16_base(word & SCALAR_FP16_THREE_SAME_MASK)
+        {
+            let (rd, rn, rm) = decode_vec_three(word);
+            return Ok(Some(Self::ScalarFp16ThreeSame { op, rd, rn, rm }));
+        }
+        // Scalar two-register-misc integer (same-size: SQABS/SQNEG/SUQADD/USQADD/ABS/NEG + the compare-zero forms).
+        if let Some(op) = Arm64ScalarTwoMiscOp::from_base(word & SCALAR_TWO_MISC_MASK) {
+            let size = (word >> 22) & 0b11;
+            if !op.allows_size(size) {
+                return Err(DecodeError::InvalidOpcode);
+            }
+            let element = Arm64VectorElement::from_size_bits(size);
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::ScalarTwoMisc {
+                op,
+                element,
+                rd,
+                rn,
+            }));
+        }
+        // Scalar two-register-misc floating-point (the FP converts/estimates/compare-zero). bit23(E) is part of the
+        // op; bit22(sz) picks s/d.
+        if let Some(op) = Arm64ScalarFpTwoMiscOp::from_base(word & SCALAR_FP_TWO_MISC_MASK) {
+            let double = (word >> 22) & 1 == 1;
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::ScalarFpTwoMisc { op, double, rd, rn }));
+        }
+        // Scalar half-precision (FP16) two-register-misc -- own opcode space; always the `h` register.
+        if let Some(op) = Arm64ScalarFpTwoMiscOp::from_fp16_base(word & SCALAR_FP16_TWO_MISC_MASK) {
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::ScalarFp16TwoMisc { op, rd, rn }));
+        }
+        // Scalar saturating narrow (SQXTN/SQXTUN/UQXTN): the 2-reg-misc frame with a one-size-narrower result. The
+        // size names the destination (.b/.h/.s); size 11 (.d) has no wider source and is unallocated.
+        if let Some(op) = Arm64ScalarNarrowOp::from_base(word & SCALAR_TWO_MISC_MASK) {
+            let size = (word >> 22) & 0b11;
+            if size == 0b11 {
+                return Err(DecodeError::InvalidOpcode);
+            }
+            let dst_element = Arm64VectorElement::from_size_bits(size);
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::ScalarNarrow {
+                op,
+                dst_element,
+                rd,
+                rn,
+            }));
+        }
+        // FCVTXN (scalar, fixed Sd <- Dn).
+        if word & 0xFFFF_FC00 == 0x7E61_6800 {
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::ScalarFcvtxn { rd, rn }));
+        }
+        // Scalar shift-by-immediate (SSHR/SHL/SQSHL/...): immh:immb folds element size + shift. immh's highest set
+        // bit gives the element (immh 0000 is unallocated for scalar). The non-saturating shifts are .d-only.
+        if let Some(op) = Arm64ScalarShiftImmOp::from_base(word & SCALAR_SHIFT_IMM_MASK) {
+            let immh_immb = (word >> 16) & 0x7F;
+            let immh = immh_immb >> 3;
+            let size = if immh & 0b1000 != 0 {
+                3
+            } else if immh & 0b0100 != 0 {
+                2
+            } else if immh & 0b0010 != 0 {
+                1
+            } else if immh & 0b0001 != 0 {
+                0
+            } else {
+                return Err(DecodeError::InvalidOpcode);
+            };
+            if !op.allows_size(size) {
+                return Err(DecodeError::InvalidOpcode);
+            }
+            let element = Arm64VectorElement::from_size_bits(size);
+            let element_bits = 8u32 << size;
+            let shift = if op.is_left() {
+                immh_immb - element_bits
+            } else {
+                2 * element_bits - immh_immb
+            };
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::ScalarShiftImm {
+                op,
+                element,
+                rd,
+                rn,
+                shift: shift as u8,
+            }));
+        }
+        // Scalar narrowing shift-right (SQSHRN/...): immh names the NARROW (dest) element (.b/.h/.s); the source is
+        // one wider. immh 1xxx is unallocated (no source wider than .d). shift = 2*narrow_bits - immh:immb.
+        if let Some(op) = Arm64ScalarShiftNarrowOp::from_base(word & SCALAR_SHIFT_IMM_MASK) {
+            let immh_immb = (word >> 16) & 0x7F;
+            let immh = immh_immb >> 3;
+            if immh == 0 || immh & 0b1000 != 0 {
+                return Err(DecodeError::InvalidOpcode);
+            }
+            let size = if immh & 0b0100 != 0 {
+                2
+            } else if immh & 0b0010 != 0 {
+                1
+            } else {
+                0
+            };
+            let narrow_element = Arm64VectorElement::from_size_bits(size);
+            let narrow_bits = 8u32 << size;
+            let shift = 2 * narrow_bits - immh_immb;
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::ScalarShiftNarrow {
+                op,
+                narrow_element,
+                rd,
+                rn,
+                shift: shift as u8,
+            }));
+        }
+        // Scalar fixed-point convert (SCVTF/UCVTF/FCVTZS/FCVTZU): immh 01xx = .s, 1xxx = .d (.h is FP16, not
+        // modeled here). fbits = 2*esize - immh:immb.
+        if let Some(op) = Arm64ScalarFixedConvertOp::from_base(word & SCALAR_SHIFT_IMM_MASK) {
+            let immh_immb = (word >> 16) & 0x7F;
+            let immh = immh_immb >> 3;
+            let size = if immh & 0b1000 != 0 {
+                3
+            } else if immh & 0b0100 != 0 {
+                2
+            } else {
+                return Err(DecodeError::InvalidOpcode);
+            };
+            let element = Arm64VectorElement::from_size_bits(size);
+            let esize = 8u32 << size;
+            let fbits = 2 * esize - immh_immb;
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::ScalarFixedConvert {
+                op,
+                element,
+                rd,
+                rn,
+                fbits: fbits as u8,
+            }));
+        }
+        // Scalar FP16 by-element (FMUL/FMLA/FMLS/FMULX): the SAME base as the f32 scalar by-element FP ops but
+        // size=00 -- claim it (with the .h fold) before the f32 decode rejects the size-00 arrangement.
+        if let Some(op) = (((word >> 22) & 0b11) == 0)
+            .then(|| Arm64ScalarByElementOp::from_base(word & SCALAR_BY_ELEMENT_MASK))
+            .flatten()
+            .filter(|op| {
+                matches!(
+                    op,
+                    Arm64ScalarByElementOp::Fmul
+                        | Arm64ScalarByElementOp::Fmla
+                        | Arm64ScalarByElementOp::Fmls
+                        | Arm64ScalarByElementOp::Fmulx
+                )
+            })
+        {
+            let (vm_num, index) = byelem_decode(0b01, word);
+            let vm = Arm64FloatRegister::from_operand_bits(vm_num);
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::ScalarFp16ByElement {
+                op,
+                rd,
+                rn,
+                vm,
+                index,
+            }));
+        }
+        // Scalar by-element (same-size: SQDMULH/SQRDMULH/FMUL/FMLA/... indexed). The index folds into L:M:H per the
+        // element size (same `byelem_*` helpers as the vector by-element). Int ops are .h/.s, FP ops .s/.d.
+        if let Some(op) = Arm64ScalarByElementOp::from_base(word & SCALAR_BY_ELEMENT_MASK) {
+            let size = (word >> 22) & 0b11;
+            if !op.allows_size(size) {
+                return Err(DecodeError::InvalidOpcode);
+            }
+            let element = Arm64VectorElement::from_size_bits(size);
+            let (vm_num, index) = byelem_decode(size, word);
+            let vm = Arm64FloatRegister::from_operand_bits(vm_num);
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::ScalarByElement {
+                op,
+                element,
+                rd,
+                rn,
+                vm,
+                index,
+            }));
+        }
+        // Scalar by-element long (SQDMULL/SQDMLAL/SQDMLSL): the encoded size is the SOURCE (.h/.s); the destination
+        // is one size wider.
+        if let Some(op) = Arm64ScalarByElementLongOp::from_base(word & SCALAR_BY_ELEMENT_MASK) {
+            let size = (word >> 22) & 0b11;
+            if size != 0b01 && size != 0b10 {
+                return Err(DecodeError::InvalidOpcode);
+            }
+            let src_element = Arm64VectorElement::from_size_bits(size);
+            let (vm_num, index) = byelem_decode(size, word);
+            let vm = Arm64FloatRegister::from_operand_bits(vm_num);
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::ScalarByElementLong {
+                op,
+                src_element,
+                rd,
+                rn,
+                vm,
+                index,
+            }));
+        }
+        // Scalar pairwise: ADDP (fixed .2d -> d).
+        if word & 0xFFFF_FC00 == 0x5EF1_B800 {
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::ScalarAddp { rd, rn }));
+        }
+        // Scalar FP pairwise (FADDP/FMAXP/FMINP/FMAXNMP/FMINNMP): shares the FP-2-reg-misc mask (distinct bases --
+        // the [21:17]=11000 pairwise frame vs the 2-reg-misc 10000). bit22(sz) picks .2s/.2d.
+        if let Some(op) = Arm64ScalarFpPairwiseOp::from_base(word & SCALAR_FP_TWO_MISC_MASK) {
+            let double = (word >> 22) & 1 == 1;
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::ScalarFpPairwise { op, double, rd, rn }));
+        }
+        // Scalar DUP (duplicate a vector lane to a scalar register): the AdvSIMD-copy imm5 packs element + index.
+        if word & 0xFFE0_FC00 == 0x5E00_0400 {
+            let (element, index) =
+                decode_lane_imm5((word >> 16) & 0x1F).ok_or(DecodeError::InvalidOpcode)?;
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::ScalarDup {
+                element,
+                rd,
+                rn,
+                index,
+            }));
+        }
+
+        // FP8 (FEAT_FP8) vector forms -- decoded ahead of the generic three-same / two-reg-misc loops below because
+        // they live in the same SIMD frame; their tight masks claim only the genuine FP8 words. Convert-long is a
+        // two-reg-misc (U=1, opcode 10111); FDOT/FMLALL/FMLALB live in the U=0 three-same opcode space.
+        if word & FP8_CVTL_MASK == FP8_CVTL_BASE {
+            let op = Arm64Fp8ConvertLongOp::from_size_bits((word >> 22) & 0b11);
+            let upper = (word >> 30) & 1 == 1;
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::Fp8ConvertLong { op, upper, rd, rn }));
+        }
+        if word & FP8_DOT_MASK == FP8_DOT_BASE {
+            let half = (word >> 22) & 1 == 1;
+            let wide = (word >> 30) & 1 == 1;
+            let (rd, rn, rm) = decode_vec_three(word);
+            return Ok(Some(Self::Fp8Dot {
+                half,
+                wide,
+                rd,
+                rn,
+                rm,
+            }));
+        }
+        if word & FP8_DOT_MASK == FP8_MLALL_BASE {
+            let first_top = (word >> 30) & 1 == 1;
+            let second_top = (word >> 22) & 1 == 1;
+            let (rd, rn, rm) = decode_vec_three(word);
+            return Ok(Some(Self::Fp8MlalLongLong {
+                first_top,
+                second_top,
+                rd,
+                rn,
+                rm,
+            }));
+        }
+        if word & FP8_MLAL_LONG_MASK == FP8_MLAL_LONG_BASE {
+            let top = (word >> 30) & 1 == 1;
+            let (rd, rn, rm) = decode_vec_three(word);
+            return Ok(Some(Self::Fp8MlalLong { top, rd, rn, rm }));
+        }
+
+        // Advanced SIMD "three same" lane ops: the integer set (arith / min-max / compare / variable shift) and
+        // the FP set (arith / min-max / compare). The two are mutually exclusive under their masks -- FP opcodes
+        // are 11xxx, the integer opcodes used here are 0xxxx/100xx -- so a word matches at most one op's base.
+        for op in Arm64VectorIntThreeSameOp::ALL {
+            if word & VEC_INT_THREE_SAME_MASK == op.base() {
+                let size = (word >> 22) & 0b11;
+                if !op.allows_size(size) {
+                    // an element size this op does not allocate (PMUL non-byte, SQDMULH byte/dword, halving dword, ...)
+                    return Err(DecodeError::InvalidOpcode);
+                }
+                let arrangement = Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, size);
+                let (rd, rn, rm) = decode_vec_three(word);
+                return Ok(Some(Self::VecInt3Same {
+                    op,
+                    arrangement,
+                    rd,
+                    rn,
+                    rm,
+                }));
+            }
+        }
+        for op in Arm64VectorFpThreeSameOp::ALL {
+            if word & VEC_FP_THREE_SAME_MASK == op.base() {
+                let arrangement = match ((word >> 30) & 1, (word >> 22) & 1) {
+                    (0, 0) => Arm64VectorArrangement::S2,
+                    (1, 0) => Arm64VectorArrangement::S4,
+                    (1, 1) => Arm64VectorArrangement::D2,
+                    _ => return Err(DecodeError::InvalidOpcode), // FP `.1d` (Q=0,sz=1) is unallocated
+                };
+                let (rd, rn, rm) = decode_vec_three(word);
+                return Ok(Some(Self::VecFp3Same {
+                    op,
+                    arrangement,
+                    rd,
+                    rn,
+                    rm,
+                }));
+            }
+        }
+        // NEON half-precision (FP16) three-same: its own opcode space (bit22=1, bit21=0) distinct from the
+        // f32/f64 group above. bit30 (Q) picks .4h vs .8h.
+        for op in Arm64VectorFpThreeSameOp::ALL {
+            if word & VEC_FP16_THREE_SAME_MASK == op.fp16_base() {
+                let wide = (word >> 30) & 1 == 1;
+                let (rd, rn, rm) = decode_vec_three(word);
+                return Ok(Some(Self::VecFp16ThreeSame {
+                    op,
+                    wide,
+                    rd,
+                    rn,
+                    rm,
+                }));
+            }
+        }
+        // NEON half-precision (FP16) two-register-misc: own opcode space (bit21=1 frame), very specific bases.
+        if let Some(op) = Arm64VectorFp16TwoMiscOp::from_base(word & VEC_FP16_TWO_MISC_MASK) {
+            let wide = (word >> 30) & 1 == 1;
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::VecFp16TwoMisc { op, wide, rd, rn }));
+        }
+        // NEON half-precision (FP16) across-lanes reduce (FMAXV/FMINV/FMAXNMV/FMINNMV). U=0 keeps these distinct
+        // from the f32 across-lanes FP ops (U=1).
+        if let Some(op) = Arm64VectorFp16AcrossOp::from_base(word & VEC_FP16_TWO_MISC_MASK) {
+            let wide = (word >> 30) & 1 == 1;
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::VecFp16Across { op, wide, rd, rn }));
+        }
+
+        // Advanced SIMD "three same" bitwise/logical ops (AND/BIC/ORR/ORN/EOR/BSL/BIT/BIF): the opcode is fixed
+        // 00011 and the size field selects the op, so the arrangement is only `.8b`/`.16b` (the Q bit).
+        for op in Arm64VectorBitwiseOp::ALL {
+            if word & VEC_BITWISE_MASK == op.base() {
+                let arrangement = if (word >> 30) & 1 == 1 {
+                    Arm64VectorArrangement::B16
+                } else {
+                    Arm64VectorArrangement::B8
+                };
+                let (rd, rn, rm) = decode_vec_three(word);
+                return Ok(Some(Self::VecBitwise {
+                    op,
+                    arrangement,
+                    rd,
+                    rn,
+                    rm,
+                }));
+            }
+        }
+
+        // Advanced SIMD permute (ZIP/UZP/TRN): the 3-bit opcode [14:12] selects the op; bit21=0 keeps these
+        // distinct from the three-same group (bit21=1) under the shared mask value. `.1d` (size 11, Q 0) is the
+        // scalar-only hole and decodes to InvalidOpcode.
+        for op in Arm64VectorPermuteOp::ALL {
+            if word & VEC_PERMUTE_MASK == op.base() {
+                let arrangement =
+                    Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, (word >> 22) & 0b11);
+                if matches!(arrangement, Arm64VectorArrangement::D1) {
+                    return Err(DecodeError::InvalidOpcode); // `.1d` is not a valid permute arrangement
+                }
+                let (rd, rn, rm) = decode_vec_three(word);
+                return Ok(Some(Self::VecPermute {
+                    op,
+                    arrangement,
+                    rd,
+                    rn,
+                    rm,
+                }));
+            }
+        }
+
+        // Advanced SIMD three-different (widening/narrowing: SADDL/SMULL/SMLAL/SQDMULL/ADDHN/SADDW/...): same mask
+        // value as three-same/permute, but bits[11:10]=00 (vs their 10) keep the bases distinct. The size field is
+        // the SOURCE size, so the wide side is `size + 1` (.8h/.4s/.2d); source size 11 and op-disallowed widths
+        // (SQDMULL with a byte source) are unallocated.
+        for op in Arm64VectorThreeDifferentOp::ALL {
+            if word & VEC_THREE_DIFFERENT_MASK == op.base() {
+                let size = (word >> 22) & 0b11;
+                if size == 0b11 {
+                    return Err(DecodeError::InvalidOpcode); // source size 11 has no wider destination
+                }
+                let wide = Arm64VectorArrangement::from_q_and_size(1, size + 1); // the 128-bit .8h/.4s/.2d side
+                if !op.allows_wide(wide) {
+                    return Err(DecodeError::InvalidOpcode); // e.g. SQDMULL has no byte-source (.8h-wide) form
+                }
+                let high = (word >> 30) & 1 == 1;
+                let (rd, rn, rm) = decode_vec_three(word);
+                return Ok(Some(Self::VecThreeDifferent {
+                    op,
+                    wide,
+                    high,
+                    rd,
+                    rn,
+                    rm,
+                }));
+            }
+        }
+        // PMULL/PMULL2 (polynomial multiply long): three-different opcode 1110, NOT in the op table above (its .1q
+        // destination has no (Q,size) arrangement). size 00 = .8b -> .8h; size 11 = .1d -> .1q; 01/10 unallocated.
+        if word & VEC_THREE_DIFFERENT_MASK == 0x0E20_E000 {
+            let poly64 = match (word >> 22) & 0b11 {
+                0b00 => false,
+                0b11 => true,
+                _ => return Err(DecodeError::InvalidOpcode),
+            };
+            let high = (word >> 30) & 1 == 1;
+            let (rd, rn, rm) = decode_vec_three(word);
+            return Ok(Some(Self::VecPmull {
+                high,
+                poly64,
+                rd,
+                rn,
+                rm,
+            }));
+        }
+
+        // Advanced SIMD two-register-misc integer unary (ABS/NEG/REV*/CLS/CLZ/CNT/SQABS/SQNEG): the `U` + the
+        // 5-bit opcode select the op (both in the mask) and the arrangement supplies the element size. The valid
+        // size set is per-op, so a matched opcode with an out-of-range size is an unallocated encoding.
+        for op in Arm64VectorIntUnaryOp::ALL {
+            if word & VEC_INT_UNARY_MASK == op.base() {
+                let arrangement =
+                    Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, (word >> 22) & 0b11);
+                if !op.allows_arrangement(arrangement) {
+                    return Err(DecodeError::InvalidOpcode); // size out of range for this op (e.g. .1d, or a wide REV16)
+                }
+                let (rd, rn) = decode_vec_two(word);
+                return Ok(Some(Self::VecIntUnary {
+                    op,
+                    arrangement,
+                    rd,
+                    rn,
+                }));
+            }
+        }
+        // SHLL/SHLL2 (shift left long by element size): two-register-misc, U=1, opcode 10011 -- a distinct opcode
+        // from the int-unary ops above (same mask). Source element .b/.h/.s (size 00/01/10); size 11 is unallocated.
+        if word & VEC_INT_UNARY_MASK == VEC_SHLL_BASE {
+            let size = match (word >> 22) & 0b11 {
+                0 => Arm64VectorElement::B,
+                1 => Arm64VectorElement::H,
+                2 => Arm64VectorElement::S,
+                _ => return Err(DecodeError::InvalidOpcode), // no .d source
+            };
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::VecShll {
+                high: (word >> 30) & 1 == 1,
+                size,
+                rd,
+                rn,
+            }));
+        }
+
+        // Advanced SIMD vector narrowing extract (XTN/SQXTN/SQXTUN/UQXTN): same two-reg-misc frame (shared mask),
+        // opcodes 10010/10100 (distinct from the int-unary + add-pairwise-long opcodes). `size` is the destination
+        // element; size 11 has no narrower result and is unallocated. `Q` selects the XTN/XTN2 (lower/upper) form.
+        for op in Arm64VectorNarrowOp::ALL {
+            if word & VEC_INT_UNARY_MASK == op.base() {
+                let size = (word >> 22) & 0b11;
+                if size == 0b11 {
+                    return Err(DecodeError::InvalidOpcode); // no doubleword narrowing destination
+                }
+                let dst = Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, size);
+                let (rd, rn) = decode_vec_two(word);
+                return Ok(Some(Self::VecNarrow { op, dst, rd, rn }));
+            }
+        }
+
+        // FEAT_FHM FMLAL/FMLAL2/FMLSL/FMLSL2 (NEON FP16 widening multiply-accumulate, .2s/.4s <- .2h/.4h).
+        if let Some(op) = Arm64VectorFmlalOp::from_base(word & VEC_FMLAL_MASK) {
+            let q = (word >> 30) & 1 == 1;
+            let (rd, rn, rm) = decode_vec_three(word);
+            return Ok(Some(Self::VecFpMulAddLong { op, q, rd, rn, rm }));
+        }
+
+        // Advanced SIMD add long pairwise (SADDLP/UADDLP/SADALP/UADALP): same 2-reg-misc mask, opcodes 00010/00110
+        // (distinct from the int-unary ops). The arrangement is the narrow source; size 11 (64-bit) is unallocated.
+        for op in Arm64VectorAddPairwiseLongOp::ALL {
+            if word & VEC_INT_UNARY_MASK == op.base() {
+                let size = (word >> 22) & 0b11;
+                if size == 0b11 {
+                    return Err(DecodeError::InvalidOpcode); // a 64-bit source has no wider pairwise destination
+                }
+                let narrow = Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, size);
+                let (rd, rn) = decode_vec_two(word);
+                return Ok(Some(Self::VecAddPairwiseLong { op, narrow, rd, rn }));
+            }
+        }
+        // Advanced SIMD two-register-misc FP unary (FABS/FNEG/FSQRT): the `size` high bit is fixed (FP) and the
+        // arrangement supplies `sz`, so only `.2s`/`.4s`/`.2d` decode.
+        for op in Arm64VectorFpUnaryOp::ALL {
+            if word & VEC_FP_UNARY_MASK == op.base() {
+                let arrangement = match ((word >> 30) & 1, (word >> 22) & 1) {
+                    (0, 0) => Arm64VectorArrangement::S2,
+                    (1, 0) => Arm64VectorArrangement::S4,
+                    (1, 1) => Arm64VectorArrangement::D2,
+                    _ => return Err(DecodeError::InvalidOpcode), // FP `.1d` (Q=0,sz=1) is unallocated
+                };
+                let (rd, rn) = decode_vec_two(word);
+                return Ok(Some(Self::VecFpUnary {
+                    op,
+                    arrangement,
+                    rd,
+                    rn,
+                }));
+            }
+        }
+
+        // Advanced SIMD FP length convert (FCVTL/FCVTN/FCVTXN): same FP-unary mask, opcodes 10111/10110 (distinct
+        // from the FP-unary ops). sz (bit 22) picks the .4s (f16/f32) vs .2d (f32/f64) wide side; FCVTXN is .2d only.
+        for op in Arm64VectorFpConvertLengthOp::ALL {
+            if word & VEC_FP_UNARY_MASK == op.base() {
+                let sz = (word >> 22) & 1;
+                let wide = Arm64VectorArrangement::from_q_and_size(1, sz + 0b10); // .4s (sz 0) / .2d (sz 1)
+                if !op.allows_wide(wide) {
+                    return Err(DecodeError::InvalidOpcode); // FCVTXN with the .4s wide side is unallocated
+                }
+                let high = (word >> 30) & 1 == 1;
+                let (rd, rn) = decode_vec_two(word);
+                return Ok(Some(Self::VecFpConvertLength {
+                    op,
+                    wide,
+                    high,
+                    rd,
+                    rn,
+                }));
+            }
+        }
+        // BFCVTN/BFCVTN2 (f32 -> bf16 narrow): FP-unary opcode 10110 with bit23=1 (distinct from FCVTN's bit23=0).
+        // bit30 picks the lower .4h (BFCVTN) vs upper .8h (BFCVTN2) destination half.
+        if word & VEC_FP_UNARY_MASK == 0x0EA1_6800 {
+            let top = (word >> 30) & 1 == 1;
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::VecBfcvtn { top, rd, rn }));
+        }
+        // Advanced SIMD two-register-misc NOT (U=1, opcode 00101, size 00 -- byte-wise `.8b`/`.16b`). The size
+        // must be 00: the same opcode with size 01 is RBIT (not modeled), so the mask pins the size.
+        if word & VEC_NOT_MASK == 0x2E20_5800 {
+            let arrangement = if (word >> 30) & 1 == 1 {
+                Arm64VectorArrangement::B16
+            } else {
+                Arm64VectorArrangement::B8
+            };
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::VecNot {
+                arrangement,
+                rd,
+                rn,
+            }));
+        }
+
+        // FMOV vector-immediate (the modified-immediate cmode=1111 form). Claimed before the MOVI/MVNI block --
+        // the .4h/.8h forms set o2 (bit11), which the MOVI mask pins to 0, so they would not even enter that block.
+        // o2 selects half-precision; op (bit29) selects .2d for the single/double group (.1d is unallocated).
+        if word & 0x9FF8_F400 == 0x0F00_F400 {
+            let q = (word >> 30) & 1;
+            let op = (word >> 29) & 1;
+            let o2 = (word >> 11) & 1;
+            let arrangement = if o2 == 1 {
+                if q == 1 {
+                    Arm64VectorArrangement::H8
+                } else {
+                    Arm64VectorArrangement::H4
+                }
+            } else if op == 1 {
+                if q == 0 {
+                    return Err(DecodeError::InvalidOpcode); // .1d (op=1, Q=0) is unallocated
+                }
+                Arm64VectorArrangement::D2
+            } else if q == 1 {
+                Arm64VectorArrangement::S4
+            } else {
+                Arm64VectorArrangement::S2
+            };
+            let imm8 = ((((word >> 16) & 0b111) << 5) | ((word >> 5) & 0x1F)) as u8;
+            let rd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::VecFmovImmediate {
+                arrangement,
+                imm8,
+                rd,
+            }));
+        }
+
+        // Advanced SIMD modified immediate (MOVI/MVNI/ORR/BIC vector constant). MUST precede the shift-by-
+        // immediate decode: a modified-immediate word has immh=[22:19]=0000, which the shift decode treats as the
+        // "modified-immediate group" hole -- so trying it first lets these decode instead of becoming InvalidOpcode.
+        if word & VEC_MODIMM_MASK == VEC_MODIMM_BASE {
+            let cmode = (word >> 12) & 0xF;
+            let op_bit = (word >> 29) & 1;
+            let q = (word >> 30) & 1;
+            if let Some((op, ebits, shift)) = modimm_decode(cmode, op_bit) {
+                if ebits == 64 && q == 0 {
+                    return Err(DecodeError::InvalidOpcode); // `.1d` scalar MOVI is not modeled
+                }
+                let size = match ebits {
+                    8 => 0,
+                    16 => 1,
+                    32 => 2,
+                    _ => 3,
+                };
+                let arrangement = Arm64VectorArrangement::from_q_and_size(q, size);
+                let imm8 = ((((word >> 16) & 0b111) << 5) | ((word >> 5) & 0x1F)) as u8;
+                let rd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+                return Ok(Some(Self::VecModifiedImmediate {
+                    op,
+                    arrangement,
+                    imm8,
+                    shift,
+                    rd,
+                }));
+            }
+            return Err(DecodeError::InvalidOpcode); // cmode 1111 (FMOV vector-immediate) is handled by the dedicated block above
+        }
+
+        // Advanced SIMD shift by immediate (SHL / SSHR / USHR): immh:immb folds the element size and the shift.
+        // The element size is the position of the highest set bit of immh; `immh = 0000` is a different group.
+        for op in Arm64VectorShiftImmOp::ALL {
+            if word & VEC_SHIFT_IMM_MASK == op.base() {
+                let immh_immb = (word >> 16) & 0x7F;
+                let immh = immh_immb >> 3;
+                let element_bits = if immh & 0b1000 != 0 {
+                    64
+                } else if immh & 0b0100 != 0 {
+                    32
+                } else if immh & 0b0010 != 0 {
+                    16
+                } else if immh & 0b0001 != 0 {
+                    8
+                } else {
+                    return Err(DecodeError::InvalidOpcode); // immh = 0000 is the modified-immediate group, not a shift
+                };
+                let size = match element_bits {
+                    8 => 0,
+                    16 => 1,
+                    32 => 2,
+                    _ => 3,
+                };
+                let arrangement = Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, size);
+                if matches!(arrangement, Arm64VectorArrangement::D1) {
+                    return Err(DecodeError::InvalidOpcode); // a 64-bit shift has no .1d (scalar) vector form
+                }
+                let shift = if op.is_left() {
+                    immh_immb - element_bits
+                } else {
+                    2 * element_bits - immh_immb
+                };
+                let (rd, rn) = decode_vec_two(word);
+                return Ok(Some(Self::VecShiftImm {
+                    op,
+                    arrangement,
+                    rd,
+                    rn,
+                    shift: shift as u8,
+                }));
+            }
+        }
+
+        // Advanced SIMD shift-by-immediate with a SIZE CHANGE: the long widening left shift (SSHLL/USHLL) and the
+        // narrowing right shifts (SHRN/SQSHRN/...). Same mask as the same-size shifts, but the opcodes (>= 10000)
+        // are distinct. immh encodes the NARROW element size (8/16/32; immh 1xxx unallocated here, 0000 = the
+        // modified-immediate group); the wide side is twice as wide.
+        for op in Arm64VectorShiftLongNarrowOp::ALL {
+            if word & VEC_SHIFT_IMM_MASK == op.base() {
+                let immh_immb = (word >> 16) & 0x7F;
+                let immh = immh_immb >> 3;
+                if immh & 0b1000 != 0 {
+                    return Err(DecodeError::InvalidOpcode); // immh 1xxx is not allocated for long/narrowing shifts
+                }
+                let (narrow_size, narrow_bits) = if immh & 0b0100 != 0 {
+                    (2u32, 32u32)
+                } else if immh & 0b0010 != 0 {
+                    (1u32, 16u32)
+                } else if immh & 0b0001 != 0 {
+                    (0u32, 8u32)
+                } else {
+                    return Err(DecodeError::InvalidOpcode); // immh 0000 is the modified-immediate group
+                };
+                let narrow = Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, narrow_size);
+                let shift = if op.is_long() {
+                    immh_immb - narrow_bits
+                } else {
+                    2 * narrow_bits - immh_immb
+                };
+                let (rd, rn) = decode_vec_two(word);
+                return Ok(Some(Self::VecShiftLongNarrow {
+                    op,
+                    narrow,
+                    rd,
+                    rn,
+                    shift: shift as u8,
+                }));
+            }
+        }
+
+        // Advanced SIMD across-lanes reductions (ADDV/SMAXV/.../SADDLV/FMAXV...). Integer ops carry the lane size
+        // in [23:22] (mask excludes it); FP ops carry the size HIGH bit in the op (mask includes bit23, excludes
+        // the sz bit). A per-op mask keeps the two sub-groups from cross-matching; the source arrangement is then
+        // validated (FP is `.4s` only here -- FP16 `.8h` decodes to InvalidOpcode).
+        for op in Arm64VectorAcrossLanesOp::ALL {
+            let mask = if op.is_fp() {
+                VEC_ACROSS_FP_MASK
+            } else {
+                VEC_ACROSS_INT_MASK
+            };
+            if word & mask == op.base() {
+                let arrangement = if op.is_fp() {
+                    Arm64VectorArrangement::from_q_and_size(
+                        (word >> 30) & 1,
+                        if (word >> 22) & 1 == 0 { 0b10 } else { 0b01 },
+                    )
+                } else {
+                    Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, (word >> 22) & 0b11)
+                };
+                if !op.allows_arrangement(arrangement) {
+                    return Err(DecodeError::InvalidOpcode); // unallocated source size for this reduction
+                }
+                let (rd, rn) = decode_vec_two(word);
+                return Ok(Some(Self::VecAcrossLanes {
+                    op,
+                    arrangement,
+                    rd,
+                    rn,
+                }));
+            }
+        }
+
+        // Advanced SIMD compare-against-zero (CMGT/CMGE/CMEQ/CMLE/CMLT #0; FCMGT/.../FCMLT #0.0). Integer ops
+        // reuse the int-unary mask (size in [23:22], excluded); FP ops reuse the FP-unary mask (size hi baked in
+        // the op, sz at bit 22 excluded). A per-op mask keeps the two sub-groups apart; arrangement is validated.
+        for op in Arm64VectorCompareZeroOp::ALL {
+            let mask = if op.is_fp() {
+                VEC_FP_UNARY_MASK
+            } else {
+                VEC_INT_UNARY_MASK
+            };
+            if word & mask == op.base() {
+                let arrangement = if op.is_fp() {
+                    match ((word >> 30) & 1, (word >> 22) & 1) {
+                        (0, 0) => Arm64VectorArrangement::S2,
+                        (1, 0) => Arm64VectorArrangement::S4,
+                        (1, 1) => Arm64VectorArrangement::D2,
+                        _ => return Err(DecodeError::InvalidOpcode), // FP `.1d` (Q=0, sz=1) is unallocated
+                    }
+                } else {
+                    let arr = Arm64VectorArrangement::from_q_and_size(
+                        (word >> 30) & 1,
+                        (word >> 22) & 0b11,
+                    );
+                    if matches!(arr, Arm64VectorArrangement::D1) {
+                        return Err(DecodeError::InvalidOpcode); // `.1d` is the scalar form, not a vector arrangement
+                    }
+                    arr
+                };
+                let (rd, rn) = decode_vec_two(word);
+                return Ok(Some(Self::VecCompareZero {
+                    op,
+                    arrangement,
+                    rd,
+                    rn,
+                }));
+            }
+        }
+
+        // Advanced SIMD EXT (byte extract over the Vn:Vm concatenation). The [21]=0 + [15]=0 + [10]=0 frame
+        // separates it from the bitwise three-same. imm4 is the byte index; `.8b` restricts it to 0..7.
+        if word & VEC_EXT_MASK == VEC_EXT_BASE {
+            let q = (word >> 30) & 1;
+            let index = ((word >> 11) & 0xF) as u8;
+            if q == 0 && index > 7 {
+                return Err(DecodeError::InvalidOpcode); // a `.8b` extract index must be 0..7 (imm4<3> = 0)
+            }
+            let arrangement = if q == 1 {
+                Arm64VectorArrangement::B16
+            } else {
+                Arm64VectorArrangement::B8
+            };
+            let (rd, rn, rm) = decode_vec_three(word);
+            return Ok(Some(Self::VecExt {
+                arrangement,
+                rd,
+                rn,
+                rm,
+                index,
+            }));
+        }
+
+        // Advanced SIMD TBL/TBX (table lookup over a 1-4 register table). op[12] picks TBL vs TBX; len[14:13] is
+        // num_tables-1; the table is always .16b, the result/index follow Q. (bit29=0 separates it from EXT.)
+        if word & VEC_TBL_MASK == VEC_TBL_BASE {
+            let tbx = (word >> 12) & 1 == 1;
+            let num_tables = (((word >> 13) & 0b11) + 1) as u8;
+            let arrangement = if (word >> 30) & 1 == 1 {
+                Arm64VectorArrangement::B16
+            } else {
+                Arm64VectorArrangement::B8
+            };
+            let rd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let rn_first = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            let rm = Arm64FloatRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::VecTableLookup {
+                tbx,
+                arrangement,
+                rd,
+                rn_first,
+                num_tables,
+                rm,
+            }));
+        }
+
+        // FP8 (FEAT_FP8) indexed-element forms -- decoded ahead of the generic by-element loops (tight masks; the
+        // opcode[15:12]=0000/1000 + U bits pin them to genuine FP8 words). FDOT (4-way size 00 / 2-way size 01) and
+        // FMLALB/T (size 11) share one frame; size 10 there is FHM FMLAL-by-element (not modeled here) and falls through.
+        if word & FP8_IDX_DOT_MLALB_MASK == FP8_IDX_DOT_MLALB_BASE {
+            let (rd, rn) = decode_vec_two(word);
+            let wide = (word >> 30) & 1 == 1;
+            match (word >> 22) & 0b11 {
+                size @ (0b00 | 0b01) => {
+                    let half = size == 0b01;
+                    let (vm_num, index) = byelem_decode(if half { 0b01 } else { 0b10 }, word);
+                    let vm = Arm64FloatRegister::from_operand_bits(vm_num);
+                    return Ok(Some(Self::Fp8DotByElement {
+                        half,
+                        wide,
+                        rd,
+                        rn,
+                        vm,
+                        index,
+                    }));
+                }
+                0b11 => {
+                    let index = (((word >> 11) & 1) << 3 | ((word >> 19) & 0b111)) as u8;
+                    let vm = Arm64FloatRegister::from_operand_bits(((word >> 16) & 0x7) as u8);
+                    return Ok(Some(Self::Fp8MlalLongByElement {
+                        top: wide,
+                        rd,
+                        rn,
+                        vm,
+                        index,
+                    }));
+                }
+                _ => {} // size 10 = FHM FMLAL-by-element, not an FP8 form -- fall through
+            }
+        }
+        if word & FP8_IDX_MLALL_MASK == FP8_IDX_MLALL_BASE {
+            let (rd, rn) = decode_vec_two(word);
+            let index = (((word >> 11) & 1) << 3 | ((word >> 19) & 0b111)) as u8;
+            let vm = Arm64FloatRegister::from_operand_bits(((word >> 16) & 0x7) as u8);
+            return Ok(Some(Self::Fp8MlalLongLongByElement {
+                first_top: (word >> 30) & 1 == 1,
+                second_top: (word >> 22) & 1 == 1,
+                rd,
+                rn,
+                vm,
+                index,
+            }));
+        }
+
+        // FEAT_FHM FMLAL/FMLAL2/FMLSL/FMLSL2 by INDEXED element (the by-element counterpart of VecFpMulAddLong). Same
+        // indexed frame as FP8 (op0 01111) but size=10 + [13:12]=00; opcode[15]=the `2`, opcode[14]=sub. The `2` forms
+        // carry U=1 too, so we REQUIRE bit15 == U[29]: that excludes MUL (U=0/opcode 1000) and SQDMULH (U=0/opcode 1100)
+        // which share opcode[15:14]/size but have U=0 -- they fall through to the generic by-element decode below.
+        if word & 0x9FC0_3400 == 0x0F80_0000 {
+            let second = (word >> 29) & 1;
+            if (word >> 15) & 1 == second {
+                let op =
+                    Arm64VectorFmlalOp::from_sub_and_second((word >> 14) & 1 == 1, second == 1);
+                let q = (word >> 30) & 1 == 1;
+                let (vm_num, index) = byelem_decode(0b01, word);
+                let vm = Arm64FloatRegister::from_operand_bits(vm_num);
+                let (rd, rn) = decode_vec_two(word);
+                return Ok(Some(Self::VecFpMulAddLongByElement {
+                    op,
+                    q,
+                    rd,
+                    rn,
+                    vm,
+                    index,
+                }));
+            }
+        }
+
+        // FP16 by-element (FMUL/FMLA/FMLS/FMULX .4h/.8h): the SAME masked base as the f32/f64 by-element FP ops but
+        // size=00 -- claim it here (with the .h index fold) before the f32 decode rejects the size-00 arrangement.
+        if let Some(op) = (((word >> 22) & 0b11) == 0)
+            .then(|| Arm64VectorFp16ByElementOp::from_base(word & VEC_BY_ELEMENT_MASK))
+            .flatten()
+        {
+            let wide = (word >> 30) & 1 == 1;
+            let (vm_num, index) = byelem_decode(0b01, word);
+            let vm = Arm64FloatRegister::from_operand_bits(vm_num);
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::VecFp16ByElement {
+                op,
+                wide,
+                rd,
+                rn,
+                vm,
+                index,
+            }));
+        }
+
+        // Advanced SIMD vector by indexed element (MUL/MLA/MLS/SQDMULH/SQRDMULH; FMUL/FMLA/FMLS/FMULX by
+        // Vm.<ts>[idx]). [10]=0 separates this from the shift/modified-immediate groups; the index + Vm fold into
+        // L/M/Rm/H per element size. An arrangement the op doesn't allocate is unallocated.
+        for op in Arm64VectorByElementOp::ALL {
+            if word & VEC_BY_ELEMENT_MASK == op.base() {
+                let size = (word >> 22) & 0b11;
+                let arrangement = Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, size);
+                if !op.allows_arrangement(arrangement) {
+                    return Err(DecodeError::InvalidOpcode);
+                }
+                let (vm_num, index) = byelem_decode(size, word);
+                let vm = Arm64FloatRegister::from_operand_bits(vm_num);
+                let (rd, rn) = decode_vec_two(word);
+                return Ok(Some(Self::VecByElement {
+                    op,
+                    arrangement,
+                    rd,
+                    rn,
+                    vm,
+                    index,
+                }));
+            }
+        }
+
+        // Advanced SIMD LONG vector by indexed element (SMULL/UMULL/SMLAL/.../SQDMLSL by Vm.<ts>[idx]). Same mask
+        // as the same-size by-element (distinct opcodes); the encoded size is the NARROW element (.h/.s only --
+        // size 00/11 unallocated), so the wide destination is `size + 1` (.4s/.2d).
+        for op in Arm64VectorByElementLongOp::ALL {
+            if word & VEC_BY_ELEMENT_MASK == op.base() {
+                let size = (word >> 22) & 0b11;
+                if size != 0b01 && size != 0b10 {
+                    return Err(DecodeError::InvalidOpcode); // long by-element narrow is .h or .s only
+                }
+                let wide = Arm64VectorArrangement::from_q_and_size(1, size + 1); // the 128-bit .4s / .2d destination
+                let high = (word >> 30) & 1 == 1;
+                let (vm_num, index) = byelem_decode(size, word);
+                let vm = Arm64FloatRegister::from_operand_bits(vm_num);
+                let (rd, rn) = decode_vec_two(word);
+                return Ok(Some(Self::VecByElementLong {
+                    op,
+                    wide,
+                    high,
+                    rd,
+                    rn,
+                    vm,
+                    index,
+                }));
+            }
+        }
+
+        // SDOT/UDOT (vector): the three-same-extra encoding, [21]=0 + opcode[15:10]=100101 (distinct from the
+        // three-same group's [21]=1 under the shared mask). The accumulator is .2s/.4s (size must be 10).
+        if word & VEC_INT_THREE_SAME_MASK == 0x0E00_9400
+            || word & VEC_INT_THREE_SAME_MASK == 0x2E00_9400
+        {
+            if (word >> 22) & 0b11 != 0b10 {
+                return Err(DecodeError::InvalidOpcode); // SDOT/UDOT accumulator is .2s/.4s only
+            }
+            let unsigned = (word >> 29) & 1 == 1;
+            let arrangement = Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, 0b10);
+            let (rd, rn, rm) = decode_vec_three(word);
+            return Ok(Some(Self::VecDotProduct {
+                unsigned,
+                arrangement,
+                rd,
+                rn,
+                rm,
+            }));
+        }
+        // SDOT/UDOT (by element): the by-element encoding, opcode 1110; the index (the .s-style H:L:M) selects the
+        // 32-bit (4-byte) group of Vm.
+        if word & VEC_BY_ELEMENT_MASK == 0x0F00_E000 || word & VEC_BY_ELEMENT_MASK == 0x2F00_E000 {
+            if (word >> 22) & 0b11 != 0b10 {
+                return Err(DecodeError::InvalidOpcode);
+            }
+            let unsigned = (word >> 29) & 1 == 1;
+            let arrangement = Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, 0b10);
+            let (vm_num, index) = byelem_decode(0b10, word);
+            let vm = Arm64FloatRegister::from_operand_bits(vm_num);
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::VecDotProductByElement {
+                unsigned,
+                arrangement,
+                rd,
+                rn,
+                vm,
+                index,
+            }));
+        }
+
+        // SMMLA/UMMLA/USMMLA (integer matrix multiply): fixed .4s/.16b, distinguished by U (bit29) + opcode bit
+        // (bit11) -- both folded into op.base() under the wide VEC_MATRIX_MASK.
+        for op in Arm64VectorMatMulOp::ALL {
+            if word & VEC_MATRIX_MASK == op.base() {
+                let (rd, rn, rm) = decode_vec_three(word);
+                return Ok(Some(Self::VecMatrixMultiply { op, rd, rn, rm }));
+            }
+        }
+        // BFMMLA (BFloat16 matrix multiply): fixed .4s/.8h, pinned exactly by VEC_MATRIX_MASK.
+        if word & VEC_MATRIX_MASK == 0x6E40_EC00 {
+            let (rd, rn, rm) = decode_vec_three(word);
+            return Ok(Some(Self::VecBfmmla { rd, rn, rm }));
+        }
+        // USDOT (vector): the three-same-extra encoding ([21]=0, opcode 100111), U=0 -- only the unsigned-x-signed
+        // vector form exists. The accumulator is .2s/.4s (size must be 10).
+        if word & VEC_INT_THREE_SAME_MASK == 0x0E00_9C00 {
+            if (word >> 22) & 0b11 != 0b10 {
+                return Err(DecodeError::InvalidOpcode);
+            }
+            let arrangement = Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, 0b10);
+            let (rd, rn, rm) = decode_vec_three(word);
+            return Ok(Some(Self::VecUsdot {
+                arrangement,
+                rd,
+                rn,
+                rm,
+            }));
+        }
+        // BFDOT (vector) + BFMLALB/BFMLALT (vector): the three-same-extra opcode 111111 ([21]=0). The mask drops
+        // size + bit30, so split on `size`: 01 = BFDOT (acc .2s/.4s from Q); 11 = BFMLAL (fixed .4s, top = bit30).
+        if word & VEC_INT_THREE_SAME_MASK == 0x2E00_FC00 {
+            let (rd, rn, rm) = decode_vec_three(word);
+            return match (word >> 22) & 0b11 {
+                0b01 => Ok(Some(Self::VecBfdot {
+                    arrangement: Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, 0b10),
+                    rd,
+                    rn,
+                    rm,
+                })),
+                0b11 => Ok(Some(Self::VecBfmlal {
+                    top: (word >> 30) & 1 == 1,
+                    rd,
+                    rn,
+                    rm,
+                })),
+                _ => Err(DecodeError::InvalidOpcode),
+            };
+        }
+        // By-element opcode 1111 -- five ops share this masked base (the by-element mask drops `size` + bit30), so
+        // recover the op from `size`: USDOT=10, SUDOT=00, BFDOT=01 (all the .s index fold, acc .2s/.4s); BFMLAL=11
+        // (the .h index fold, fixed .4s, top = bit30).
+        if word & VEC_BY_ELEMENT_MASK == 0x0F00_F000 {
+            let (rd, rn) = decode_vec_two(word);
+            if (word >> 22) & 0b11 == 0b11 {
+                let top = (word >> 30) & 1 == 1;
+                let (vm_num, index) = byelem_decode(0b01, word);
+                let vm = Arm64FloatRegister::from_operand_bits(vm_num);
+                return Ok(Some(Self::VecBfmlalByElement {
+                    top,
+                    rd,
+                    rn,
+                    vm,
+                    index,
+                }));
+            }
+            let arrangement = Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, 0b10);
+            let (vm_num, index) = byelem_decode(0b10, word);
+            let vm = Arm64FloatRegister::from_operand_bits(vm_num);
+            return match (word >> 22) & 0b11 {
+                0b10 => Ok(Some(Self::VecMixedDotByElement {
+                    op: Arm64VectorMixedDotOp::Usdot,
+                    arrangement,
+                    rd,
+                    rn,
+                    vm,
+                    index,
+                })),
+                0b00 => Ok(Some(Self::VecMixedDotByElement {
+                    op: Arm64VectorMixedDotOp::Sudot,
+                    arrangement,
+                    rd,
+                    rn,
+                    vm,
+                    index,
+                })),
+                _ => Ok(Some(Self::VecBfdotByElement {
+                    arrangement,
+                    rd,
+                    rn,
+                    vm,
+                    index,
+                })), // size 01
+            };
+        }
+
+        // SQRDMLAH/SQRDMLSH (vector): three-same-extra ([21]=0, [11:10]=01), opcode bits distinct from SDOT. The
+        // accumulator is .4h/.8h/.2s/.4s (size 01/10).
+        for op in Arm64VectorRdmOp::ALL {
+            if word & VEC_INT_THREE_SAME_MASK == op.vector_base() {
+                let size = (word >> 22) & 0b11;
+                if size != 0b01 && size != 0b10 {
+                    return Err(DecodeError::InvalidOpcode);
+                }
+                let arrangement = Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, size);
+                let (rd, rn, rm) = decode_vec_three(word);
+                return Ok(Some(Self::VecRdm {
+                    op,
+                    arrangement,
+                    rd,
+                    rn,
+                    rm,
+                }));
+            }
+        }
+        // SQRDMLAH/SQRDMLSH (by element): by-element encoding, opcodes 1101/1111 with U=1 (distinct from SQRDMULH's
+        // U=0). The index folds via the element-size H:L:M.
+        for op in Arm64VectorRdmOp::ALL {
+            if word & VEC_BY_ELEMENT_MASK == op.by_element_base() {
+                let size = (word >> 22) & 0b11;
+                if size != 0b01 && size != 0b10 {
+                    return Err(DecodeError::InvalidOpcode);
+                }
+                let arrangement = Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, size);
+                let (vm_num, index) = byelem_decode(size, word);
+                let vm = Arm64FloatRegister::from_operand_bits(vm_num);
+                let (rd, rn) = decode_vec_two(word);
+                return Ok(Some(Self::VecRdmByElement {
+                    op,
+                    arrangement,
+                    rd,
+                    rn,
+                    vm,
+                    index,
+                }));
+            }
+        }
+
+        // FCMLA (complex FP multiply-add): three-same-extra ([21]=0, [15:13]=110, [10]=1), rotation at [12:11].
+        // FP arrangements: .4h/.8h (size 01, FP16), .2s/.4s (size 10), .2d (size 11, Q1). size 00 is unallocated.
+        if word & VEC_FCMLA_MASK == VEC_FCMLA_BASE {
+            let size = (word >> 22) & 0b11;
+            if size == 0b00 {
+                return Err(DecodeError::InvalidOpcode);
+            }
+            let arrangement = Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, size);
+            if matches!(arrangement, Arm64VectorArrangement::D1) {
+                return Err(DecodeError::InvalidOpcode); // .1d (Q0, size 11) is unallocated
+            }
+            let rotation = Arm64ComplexRotation::from_code((word >> 11) & 0b11);
+            let (rd, rn, rm) = decode_vec_three(word);
+            return Ok(Some(Self::VecFcmla {
+                arrangement,
+                rd,
+                rn,
+                rm,
+                rotation,
+            }));
+        }
+        // FCADD (complex FP add): three-same-extra ([21]=0, [15:13]=111, [11:10]=01), rotation at [12] (#90=0/#270=1).
+        if word & VEC_FCADD_MASK == VEC_FCADD_BASE {
+            let size = (word >> 22) & 0b11;
+            if size == 0b00 {
+                return Err(DecodeError::InvalidOpcode);
+            }
+            let arrangement = Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, size);
+            if matches!(arrangement, Arm64VectorArrangement::D1) {
+                return Err(DecodeError::InvalidOpcode);
+            }
+            let rotation = if (word >> 12) & 1 == 1 {
+                Arm64ComplexRotation::R270
+            } else {
+                Arm64ComplexRotation::R90
+            };
+            let (rd, rn, rm) = decode_vec_three(word);
+            return Ok(Some(Self::VecFcadd {
+                arrangement,
+                rd,
+                rn,
+                rm,
+                rotation,
+            }));
+        }
+        // FCMLA (by indexed element): U=1, [15]=0, [12]=1, [10]=0 keep it off the other by-element FP ops. Valid
+        // arrangements are .4h/.8h (size 01) and .4s (size 10, Q=1); size 00/11 and .2s are unallocated.
+        if word & VEC_FCMLA_IDX_MASK == VEC_FCMLA_IDX_BASE {
+            let q = (word >> 30) & 1;
+            let arrangement = match ((word >> 22) & 0b11, q) {
+                (0b01, _) => Arm64VectorArrangement::from_q_and_size(q, 0b01), // .4h / .8h
+                (0b10, 1) => Arm64VectorArrangement::S4,
+                _ => return Err(DecodeError::InvalidOpcode), // size 00/11, or the .2s (size 10, Q0) hole
+            };
+            let vm = Arm64FloatRegister::from_operand_bits(
+                ((((word >> 20) & 1) << 4) | ((word >> 16) & 0xF)) as u8,
+            );
+            // .8h indexes 0..=3 as 2*H+L (H[11] high, L[21] low); the 64-bit .4h uses L only (H must be 0); .4s
+            // uses H only (L must be 0). An out-of-range index bit for the narrower forms is unallocated.
+            let (l, h) = ((word >> 21) & 1, (word >> 11) & 1);
+            let index = match arrangement {
+                Arm64VectorArrangement::H8 => ((h << 1) | l) as u8,
+                Arm64VectorArrangement::H4 => {
+                    if h == 1 {
+                        return Err(DecodeError::InvalidOpcode); // .4h index high bit must be 0
+                    }
+                    l as u8
+                }
+                _ => {
+                    if l == 1 {
+                        return Err(DecodeError::InvalidOpcode); // .4s index low bit must be 0
+                    }
+                    h as u8
+                }
+            };
+            let rotation = Arm64ComplexRotation::from_code((word >> 13) & 0b11);
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::VecFcmlaByElement {
+                arrangement,
+                rd,
+                rn,
+                vm,
+                index,
+                rotation,
+            }));
+        }
+
+        // Advanced SIMD "copy" -- lane moves between vector lanes and general-purpose registers. The op is
+        // op(bit29) + imm4; imm5 packs the element size + lane index. (DUP/INS *element* forms are decoded by the arms below.)
+        if word & VEC_COPY_MASK == VEC_DUP_GENERAL_BASE {
+            let (element, index) =
+                decode_lane_imm5((word >> 16) & 0x1F).ok_or(DecodeError::InvalidOpcode)?;
+            if index != 0 {
+                return Err(DecodeError::InvalidOpcode); // DUP (general) splats a scalar -- it carries no lane index
+            }
+            let arrangement =
+                Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, element.size_bits());
+            if matches!(arrangement, Arm64VectorArrangement::D1) {
+                return Err(DecodeError::InvalidOpcode);
+            }
+            let rd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::VecDupGeneral {
+                arrangement,
+                rd,
+                rn,
+            }));
+        }
+        if word & VEC_COPY_MASK == VEC_UMOV_BASE {
+            let (element, index) =
+                decode_lane_imm5((word >> 16) & 0x1F).ok_or(DecodeError::InvalidOpcode)?;
+            // UMOV width follows the element: B/H/S use Wd (Q=0), D uses Xd (Q=1)
+            let expected_q = if matches!(element, Arm64VectorElement::D) {
+                1
+            } else {
+                0
+            };
+            if (word >> 30) & 1 != expected_q {
+                return Err(DecodeError::InvalidOpcode);
+            }
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let vn = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::VecUmov {
+                element,
+                index,
+                rd,
+                vn,
+            }));
+        }
+        if word & VEC_COPY_MASK == VEC_SMOV_BASE {
+            let (element, index) =
+                decode_lane_imm5((word >> 16) & 0x1F).ok_or(DecodeError::InvalidOpcode)?;
+            let width = if (word >> 30) & 1 == 1 {
+                Arm64RegisterWidth::X
+            } else {
+                Arm64RegisterWidth::W
+            };
+            // SMOV is valid for W <- .b/.h and X <- .b/.h/.s; never .d, never W <- .s
+            let is_x = matches!(width, Arm64RegisterWidth::X);
+            let valid = match element {
+                Arm64VectorElement::B | Arm64VectorElement::H => true,
+                Arm64VectorElement::S => is_x,
+                Arm64VectorElement::D => false,
+            };
+            if !valid {
+                return Err(DecodeError::InvalidOpcode);
+            }
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let vn = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::VecSmov {
+                width,
+                element,
+                index,
+                rd,
+                vn,
+            }));
+        }
+        if word & VEC_COPY_MASK == VEC_INS_GENERAL_BASE {
+            if (word >> 30) & 1 != 1 {
+                return Err(DecodeError::InvalidOpcode); // INS (general) is a 128-bit operation (Q=1)
+            }
+            let (element, index) =
+                decode_lane_imm5((word >> 16) & 0x1F).ok_or(DecodeError::InvalidOpcode)?;
+            let vd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::VecInsGeneral {
+                element,
+                index,
+                vd,
+                rn,
+            }));
+        }
+        // DUP (element): op=0, imm4=0000. imm5 carries the element size + source lane index (which may be nonzero,
+        // unlike DUP general). `.1d` destination is invalid.
+        if word & VEC_COPY_MASK == VEC_DUP_ELEMENT_BASE {
+            let (element, index) =
+                decode_lane_imm5((word >> 16) & 0x1F).ok_or(DecodeError::InvalidOpcode)?;
+            let arrangement =
+                Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, element.size_bits());
+            if matches!(arrangement, Arm64VectorArrangement::D1) {
+                return Err(DecodeError::InvalidOpcode); // `.1d` destination is invalid
+            }
+            let rd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::VecDupElement {
+                arrangement,
+                rd,
+                rn,
+                index,
+            }));
+        }
+        // INS (element): op=1, Q=1. imm5 = destination lane, imm4 = src_index << size (source lane). The mask
+        // excludes imm4 (it varies), and bit10=1 separates it from EXT (which shares the mask value, bit10=0).
+        if word & VEC_INS_ELEMENT_MASK == VEC_INS_ELEMENT_BASE {
+            let (element, dst_index) =
+                decode_lane_imm5((word >> 16) & 0x1F).ok_or(DecodeError::InvalidOpcode)?;
+            let src_index = (((word >> 11) & 0xF) >> element.size_bits()) as u8;
+            if src_index >= element.lane_count() {
+                return Err(DecodeError::InvalidOpcode); // source lane index out of range for this element size
+            }
+            let rd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::VecInsElement {
+                element,
+                rd,
+                dst_index,
+                rn,
+                src_index,
+            }));
+        }
+
+        // FMOV general-purpose <-> FP (bitwise reinterpret). rmode=00, opcode 110 (FP->GP) / 111 (GP->FP); ftype[23:22]
+        // and sf[31] are both dropped by FP_CONVERT_INT_MASK, so the ftype family is discriminated here. The S/D
+        // scalar move (ftype hi = 0) is W<->S / X<->D, so sf MUST equal ftype-lo (a mismatched word is unallocated); the
+        // ftype = 11 half form (below) instead has an INDEPENDENT GP width.
+        if word & FP_CONVERT_INT_MASK == FMOV_FP_TO_GENERAL_BASE
+            && (word >> 23) & 1 == 0
+            && ((word >> 31) & 1) == ((word >> 22) & 1)
+        {
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let fn_ = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::FmovFpToGeneral(width_from_word(word), rd, fn_)));
+        }
+        if word & FP_CONVERT_INT_MASK == FMOV_GENERAL_TO_FP_BASE
+            && (word >> 23) & 1 == 0
+            && ((word >> 31) & 1) == ((word >> 22) & 1)
+        {
+            let fd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::FmovGeneralToFp(width_from_word(word), fd, rn)));
+        }
+        // FMOV half (ftype = 11): W/X <-> Hn, the GP width independent of the (fixed half) precision.
+        if word & FP_CONVERT_INT_MASK == FMOV_FP_TO_GENERAL_BASE && (word >> 22) & 0b11 == 0b11 {
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let fn_ = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::FmovHalfToGeneral(
+                width_from_word(word),
+                rd,
+                fn_,
+            )));
+        }
+        if word & FP_CONVERT_INT_MASK == FMOV_GENERAL_TO_FP_BASE && (word >> 22) & 0b11 == 0b11 {
+            let fd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::FmovGeneralToHalf(width_from_word(word), fd, rn)));
+        }
+        // FMOV top-half (rmode = 01, ftype = 10, sf = 1): Xd <-> the HIGH 64 bits of a 128-bit vector (Vn.D[1]). sf=0
+        // or ftype != 10 are unallocated in this rmode=01/opcode=110|111 slot, so validate both (else fall through).
+        if word & FP_CONVERT_INT_MASK == FMOV_TOP_HALF_TO_GENERAL_BASE
+            && (word >> 31) & 1 == 1
+            && (word >> 22) & 0b11 == 0b10
+        {
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let vn = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::FmovTopHalfToGeneral(rd, vn)));
+        }
+        if word & FP_CONVERT_INT_MASK == FMOV_GENERAL_TO_TOP_HALF_BASE
+            && (word >> 31) & 1 == 1
+            && (word >> 22) & 0b11 == 0b10
+        {
+            let vd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::FmovGeneralToTopHalf(vd, rn)));
+        }
+
+        // scalar FP move-immediate: FMOV Fd, #imm8 (S or D). The imm8 is the raw 8-bit modified-immediate field.
+        if word & FP_IMM_MASK == FMOV_IMM_BASE {
+            let fd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let imm8 = ((word >> 13) & 0xFF) as u8;
+            return Ok(Some(Self::FMovImmediate(
+                scalar_fp_precision(word)?,
+                fd,
+                imm8,
+            )));
+        }
+
+        // scalar FP data-processing (3 source): FMADD/FMSUB/FNMADD/FNMSUB (the `0001_1111` group). o1[21]+o0[15]
+        // select the op; precision from bit 22.
+        if word & FP_DATA_THREE_SOURCE_MASK == FMADD_FP_BASE {
+            let (fd, fn_, fm, fa) = decode_float_data3(word);
+            return Ok(Some(Self::FMadd(
+                scalar_fp_precision(word)?,
+                fd,
+                fn_,
+                fm,
+                fa,
+            )));
+        }
+        if word & FP_DATA_THREE_SOURCE_MASK == FMSUB_FP_BASE {
+            let (fd, fn_, fm, fa) = decode_float_data3(word);
+            return Ok(Some(Self::FMsub(
+                scalar_fp_precision(word)?,
+                fd,
+                fn_,
+                fm,
+                fa,
+            )));
+        }
+        if word & FP_DATA_THREE_SOURCE_MASK == FNMADD_FP_BASE {
+            let (fd, fn_, fm, fa) = decode_float_data3(word);
+            return Ok(Some(Self::FNmadd(
+                scalar_fp_precision(word)?,
+                fd,
+                fn_,
+                fm,
+                fa,
+            )));
+        }
+        if word & FP_DATA_THREE_SOURCE_MASK == FNMSUB_FP_BASE {
+            let (fd, fn_, fm, fa) = decode_float_data3(word);
+            return Ok(Some(Self::FNmsub(
+                scalar_fp_precision(word)?,
+                fd,
+                fn_,
+                fm,
+                fa,
+            )));
+        }
+
+        // FP conditional select: FCSEL Fd, Fn, Fm, cond.
+        if word & FP_COND_SELECT_MASK == FCSEL_FP_BASE {
+            let fd = Arm64FloatRegister::from_operand_bits(reg_field(word, 0));
+            let fn_ = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            let fm = Arm64FloatRegister::from_operand_bits(reg_field(word, 16));
+            let cond = Arm64Condition::from_operand_bits(((word >> 12) & 0xF) as u8);
+            return Ok(Some(Self::FCsel(
+                scalar_fp_precision(word)?,
+                fd,
+                fn_,
+                fm,
+                cond,
+            )));
+        }
+
+        // pointer authentication (FEAT_PAuth): the data-processing-1-source group with [20:16]=00001 + sf=1 (the
+        // RBIT/REV ops have [20:16]=00000), so the full 0xFFFF_FC00 mask never aliases them. The zero-modifier and
+        // XPAC ops require Rn=11111.
+        if let Some(op) = Arm64PacOp::from_base(word & 0xFFFF_FC00) {
+            let rn_bits = reg_field(word, 5);
+            if !op.uses_modifier() && rn_bits != 0b11111 {
+                return Err(DecodeError::InvalidOpcode);
+            }
+            let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+            let rn = Arm64GeneralPurposeRegister::from_operand_bits(rn_bits);
+            return Ok(Some(Self::PointerAuth { op, rd, rn }));
+        }
+
+        // data-processing (1 source): RBIT/REV16/REV/REV32/CLZ/CLS, W or X. REV's opcode is width-dependent --
+        // opcode 000010 = REV.W / REV32.X, opcode 000011 = REV.X (the W slot unallocated) -- dispatched by sf.
+        if word & DP_ONE_SOURCE_MASK == RBIT_BASE {
+            let (xd, xn) = decode_dp1(word);
+            return Ok(Some(Self::Rbit(width_from_word(word), xd, xn)));
+        }
+        if word & DP_ONE_SOURCE_MASK == REV16_BASE {
+            let (xd, xn) = decode_dp1(word);
+            return Ok(Some(Self::Rev16(width_from_word(word), xd, xn)));
+        }
+        if word & DP_ONE_SOURCE_MASK == REV_OPC010_BASE {
+            let (xd, xn) = decode_dp1(word);
+            return Ok(Some(match width_from_word(word) {
+                Arm64RegisterWidth::W => Self::Rev(Arm64RegisterWidth::W, xd, xn),
+                Arm64RegisterWidth::X => Self::Rev32(xd, xn),
+            }));
+        }
+        if word & DP_ONE_SOURCE_MASK == REV_OPC011_BASE
+            && matches!(width_from_word(word), Arm64RegisterWidth::X)
+        {
+            let (xd, xn) = decode_dp1(word);
+            return Ok(Some(Self::Rev(Arm64RegisterWidth::X, xd, xn)));
+        }
+        if word & DP_ONE_SOURCE_MASK == CLZ_BASE {
+            let (xd, xn) = decode_dp1(word);
+            return Ok(Some(Self::Clz(width_from_word(word), xd, xn)));
+        }
+        if word & DP_ONE_SOURCE_MASK == CLS_BASE {
+            let (xd, xn) = decode_dp1(word);
+            return Ok(Some(Self::Cls(width_from_word(word), xd, xn)));
+        }
+        // FEAT_CSSC scalar unary (ABS/CNT/CTZ): additional one-source opcodes.
+        for op in Arm64CsscUnaryOp::ALL {
+            if word & DP_ONE_SOURCE_MASK == op.base() {
+                let (rd, rn) = decode_dp1(word);
+                return Ok(Some(Self::CsscUnary {
+                    op,
+                    width: width_from_word(word),
+                    rd,
+                    rn,
+                }));
+            }
+        }
+
+        // add/subtract with carry: ADC/SBC/ADCS/SBCS (same Rd/Rn/Rm layout as the 2-source forms).
+        if word & ADD_SUB_CARRY_MASK == ADC_BASE {
+            let (xd, xn, xm) = decode_two_source(word);
+            return Ok(Some(Self::Adc(width_from_word(word), xd, xn, xm)));
+        }
+        if word & ADD_SUB_CARRY_MASK == SBC_BASE {
+            let (xd, xn, xm) = decode_two_source(word);
+            return Ok(Some(Self::Sbc(width_from_word(word), xd, xn, xm)));
+        }
+        if word & ADD_SUB_CARRY_MASK == ADCS_BASE {
+            let (xd, xn, xm) = decode_two_source(word);
+            return Ok(Some(Self::Adcs(width_from_word(word), xd, xn, xm)));
+        }
+        if word & ADD_SUB_CARRY_MASK == SBCS_BASE {
+            let (xd, xn, xm) = decode_two_source(word);
+            return Ok(Some(Self::Sbcs(width_from_word(word), xd, xn, xm)));
+        }
+
+        // extract / ror-immediate (EXTR): N must equal sf (both bits dropped by the mask, so validate it); a
+        // W EXTR with lsb > 31 (imms[5] set) is also unallocated.
+        if word & EXTR_MASK == EXTR_W_BASE && ((word >> 31) & 1) == ((word >> 22) & 1) {
+            let width = width_from_word(word);
+            let lsb = ((word >> 10) & 0x3F) as u8;
+            if !(matches!(width, Arm64RegisterWidth::W) && lsb > 31) {
+                let xd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
+                let xn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
+                let xm = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 16));
+                return Ok(Some(Self::Extr(width, xd, xn, xm, lsb)));
+            }
+        }
+
+        Err(DecodeError::InvalidOpcode)
+    }
 }
 
 /* ---- field helpers shared by encode + decode ---- */
