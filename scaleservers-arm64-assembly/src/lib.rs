@@ -26,6 +26,9 @@ pub use enums::*;
 mod errors;
 pub use errors::{DecodeError, EncodeError};
 
+mod arm64_instruction;
+pub use arm64_instruction::Arm64Instruction;
+
 // The 8-bit FP immediate codec used by `FMOV (immediate)` -- convert a native float <-> the encoded `imm8`.
 mod float_immediate;
 pub use float_immediate::{
