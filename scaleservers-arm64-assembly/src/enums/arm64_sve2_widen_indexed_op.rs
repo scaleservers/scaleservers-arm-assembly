@@ -19,6 +19,10 @@ pub enum Arm64Sve2WidenIndexedOp {
     Umullt,
     Sqdmullb,
     Sqdmullt,
+    Sqdmlalb,
+    Sqdmlalt,
+    Sqdmlslb,
+    Sqdmlslt,
 }
 
 impl Arm64Sve2WidenIndexedOp {
@@ -40,6 +44,10 @@ impl Arm64Sve2WidenIndexedOp {
             Umullt => "umullt",
             Sqdmullb => "sqdmullb",
             Sqdmullt => "sqdmullt",
+            Sqdmlalb => "sqdmlalb",
+            Sqdmlalt => "sqdmlalt",
+            Sqdmlslb => "sqdmlslb",
+            Sqdmlslt => "sqdmlslt",
         }
     }
 
@@ -54,6 +62,8 @@ impl Arm64Sve2WidenIndexedOp {
             Smullb | Smullt => 0b1100,
             Umullb | Umullt => 0b1101,
             Sqdmullb | Sqdmullt => 0b1110,
+            Sqdmlalb | Sqdmlalt => 0b0010,
+            Sqdmlslb | Sqdmlslt => 0b0011,
         }
     }
 
@@ -62,7 +72,7 @@ impl Arm64Sve2WidenIndexedOp {
         use Arm64Sve2WidenIndexedOp::*;
         matches!(
             self,
-            Smlalt | Umlalt | Smlslt | Umlslt | Smullt | Umullt | Sqdmullt
+            Smlalt | Umlalt | Smlslt | Umlslt | Smullt | Umullt | Sqdmullt | Sqdmlalt | Sqdmlslt
         )
     }
 
@@ -70,6 +80,8 @@ impl Arm64Sve2WidenIndexedOp {
     pub fn from_bits(discriminator: u32, top: bool) -> Option<Self> {
         use Arm64Sve2WidenIndexedOp::*;
         let (b, t) = match discriminator & 0xF {
+            0b0010 => (Sqdmlalb, Sqdmlalt),
+            0b0011 => (Sqdmlslb, Sqdmlslt),
             0b1000 => (Smlalb, Smlalt),
             0b1001 => (Umlalb, Umlalt),
             0b1010 => (Smlslb, Smlslt),
@@ -83,11 +95,11 @@ impl Arm64Sve2WidenIndexedOp {
     }
 
     /// Every op, for tests.
-    pub const ALL: [Self; 14] = {
+    pub const ALL: [Self; 18] = {
         use Arm64Sve2WidenIndexedOp::*;
         [
             Smlalb, Smlalt, Umlalb, Umlalt, Smlslb, Smlslt, Umlslb, Umlslt, Smullb, Smullt, Umullb,
-            Umullt, Sqdmullb, Sqdmullt,
+            Umullt, Sqdmullb, Sqdmullt, Sqdmlalb, Sqdmlalt, Sqdmlslb, Sqdmlslt,
         ]
     };
 }

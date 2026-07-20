@@ -14,6 +14,8 @@ pub enum Arm64SveIntIndexedOp {
     Mls,
     /// `SQDMULH` -- saturating doubling multiply returning high half (`[15:10]` = 111100).
     Sqdmulh,
+    /// `SQRDMULH` -- saturating rounding doubling multiply returning high half (`[15:10]` = 111101).
+    Sqrdmulh,
     /// `SQRDMLAH` -- saturating rounding doubling multiply-add high (`[15:10]` = 000100).
     Sqrdmlah,
     /// `SQRDMLSH` -- saturating rounding doubling multiply-subtract high (`[15:10]` = 000101).
@@ -28,6 +30,7 @@ impl Arm64SveIntIndexedOp {
             Self::Mla => "mla",
             Self::Mls => "mls",
             Self::Sqdmulh => "sqdmulh",
+            Self::Sqrdmulh => "sqrdmulh",
             Self::Sqrdmlah => "sqrdmlah",
             Self::Sqrdmlsh => "sqrdmlsh",
         }
@@ -40,6 +43,7 @@ impl Arm64SveIntIndexedOp {
             Self::Mla => 0b000010,
             Self::Mls => 0b000011,
             Self::Sqdmulh => 0b111100,
+            Self::Sqrdmulh => 0b111101,
             Self::Sqrdmlah => 0b000100,
             Self::Sqrdmlsh => 0b000101,
         }
@@ -52,6 +56,7 @@ impl Arm64SveIntIndexedOp {
             0b000010 => Some(Self::Mla),
             0b000011 => Some(Self::Mls),
             0b111100 => Some(Self::Sqdmulh),
+            0b111101 => Some(Self::Sqrdmulh),
             0b000100 => Some(Self::Sqrdmlah),
             0b000101 => Some(Self::Sqrdmlsh),
             _ => None,
@@ -59,11 +64,12 @@ impl Arm64SveIntIndexedOp {
     }
 
     /// Every op, for tests.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Mul,
         Self::Mla,
         Self::Mls,
         Self::Sqdmulh,
+        Self::Sqrdmulh,
         Self::Sqrdmlah,
         Self::Sqrdmlsh,
     ];

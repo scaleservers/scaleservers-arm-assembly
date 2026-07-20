@@ -14,6 +14,8 @@ pub enum Arm64SmeFpPrecision {
     F64,
     /// BFloat16 widening to FP32 (`BFMOPA`/`BFMOPS Zda.S` from `.h` sources, FEAT_SME).
     Bf16,
+    /// IEEE FP16 widening to FP32 (`FMOPA`/`FMOPS Zda.S` from `.h` sources, FEAT_SME).
+    F16,
 }
 
 impl Arm64SmeFpPrecision {
@@ -23,6 +25,7 @@ impl Arm64SmeFpPrecision {
             Self::F32 => 0x8080_0000,
             Self::F64 => 0x80C0_0000,
             Self::Bf16 => 0x8180_0000,
+            Self::F16 => 0x81A0_0000,
         }
     }
 
@@ -39,7 +42,7 @@ impl Arm64SmeFpPrecision {
         match self {
             Self::F32 => Arm64VectorElement::S,
             Self::F64 => Arm64VectorElement::D,
-            Self::Bf16 => Arm64VectorElement::H,
+            Self::Bf16 | Self::F16 => Arm64VectorElement::H,
         }
     }
 
@@ -67,17 +70,19 @@ impl Arm64SmeFpPrecision {
         }
     }
 
-    /// Recover the precision from the `[24]` bf16 bit and the `[22]` `.d` bit, or `None` for the unallocated
-    /// `bf16 & .d` pair.
-    pub const fn from_bits(bf16: u32, size_d: u32) -> Option<Self> {
-        match (bf16 & 1, size_d & 1) {
-            (0, 0) => Some(Self::F32),
-            (0, 1) => Some(Self::F64),
-            (1, 0) => Some(Self::Bf16),
+    /// Recover the precision from the `[24]` bf16-region bit, the `[22]` `.d` bit and the `[21]` fp16-widening
+    /// bit. `None` for the unallocated combinations: `[21]=1` outside the `[24]=1` region (the FP8 outer-product
+    /// frame) and anything pairing `.d` with a 16-bit source.
+    pub const fn from_bits(bf16: u32, size_d: u32, f16: u32) -> Option<Self> {
+        match (bf16 & 1, size_d & 1, f16 & 1) {
+            (0, 0, 0) => Some(Self::F32),
+            (0, 1, 0) => Some(Self::F64),
+            (1, 0, 0) => Some(Self::Bf16),
+            (1, 0, 1) => Some(Self::F16),
             _ => None,
         }
     }
 
     /// Every precision, for tests.
-    pub const ALL: [Self; 3] = [Self::F32, Self::F64, Self::Bf16];
+    pub const ALL: [Self; 4] = [Self::F32, Self::F64, Self::Bf16, Self::F16];
 }

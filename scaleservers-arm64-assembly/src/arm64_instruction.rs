@@ -36,10 +36,10 @@ use crate::enums::{
     Arm64SveAdrMode, Arm64SveBf16BinaryOp, Arm64SveBitwiseImmOp, Arm64SveBitwiseLogicalOp,
     Arm64SveClampOp, Arm64SveCmpImmSignedOp, Arm64SveCmpImmUnsignedOp, Arm64SveContiguousLoadType,
     Arm64SveCryptoBinaryOp, Arm64SveCryptoDestructiveOp, Arm64SveDotIndexedOp,
-    Arm64SveFp8ConvertOp, Arm64SveFp8NarrowOp, Arm64SveFpBinUnpredOp, Arm64SveFpCompareOp,
+    Arm64SveFp8ConvertOp, Arm64SveFp8NarrowOp, Arm64SveFpBinUnpredOp, Arm64SveFpCmpZeroOp, Arm64SveFpCompareOp,
     Arm64SveFpConvertKind, Arm64SveFpFmaOp, Arm64SveFpIndexedOp, Arm64SveFpPredBinOp,
     Arm64SveFpReductionOp, Arm64SveFpUnaryOp, Arm64SveIndexOperand, Arm64SveIntBinUnpredOp,
-    Arm64SveIntCompareOp, Arm64SveIntIndexedOp, Arm64SveIntMacOp, Arm64SveIntReductionOp,
+    Arm64SveIntCompareOp, Arm64SveIntCompareWideOp, Arm64SveIntIndexedOp, Arm64SveIntMacOp, Arm64SveIntReductionOp,
     Arm64SveMatmulOp, Arm64SveNarrowConvertOp, Arm64SveOffsetMode, Arm64SvePredCountOp,
     Arm64SvePredIntBinOp, Arm64SvePredLogicalOp, Arm64SvePredShiftVectorOp, Arm64SvePredUnaryOp,
     Arm64SveQuadPermuteOp, Arm64SveQuadReduceFpOp, Arm64SveQuadReduceIntOp, Arm64SveReverseWidth,
@@ -47,7 +47,8 @@ use crate::enums::{
     Arm64SystemHintOp, Arm64SystemRegister, Arm64VectorAcrossLanesOp, Arm64VectorAddPairwiseLongOp,
     Arm64VectorAesOp, Arm64VectorArrangement, Arm64VectorBitwiseOp, Arm64VectorByElementLongOp,
     Arm64VectorByElementOp, Arm64VectorCompareZeroOp, Arm64VectorCrypto2Op, Arm64VectorCrypto3Op,
-    Arm64VectorCrypto4Op, Arm64VectorElement, Arm64VectorFmlalOp, Arm64VectorFp16AcrossOp,
+    Arm64VectorCrypto4Op, Arm64VectorElement, Arm64VectorFixedConvertOp, Arm64VectorFmlalOp,
+    Arm64VectorFp16AcrossOp,
     Arm64VectorFp16ByElementOp, Arm64VectorFp16TwoMiscOp, Arm64VectorFpConvertLengthOp,
     Arm64VectorFpThreeSameOp, Arm64VectorFpUnaryOp, Arm64VectorImmediateShift,
     Arm64VectorIntThreeSameOp, Arm64VectorIntUnaryOp, Arm64VectorLoadStoreSize,
@@ -1979,6 +1980,14 @@ pub enum Arm64Instruction {
         rn: Arm64FloatRegister,
     },
 
+    /// `RBIT Vd.<arr>, Vn.<arr>` -- NEON bit reverse within each byte lane (the same two-register-misc row as
+    /// `NOT`, at `size` 01), byte-wise; valid only for the `.8b`/`.16b` arrangements. Needs Advanced SIMD.
+    VecRbit {
+        arrangement: Arm64VectorArrangement,
+        rd: Arm64FloatRegister,
+        rn: Arm64FloatRegister,
+    },
+
     /// `<op> Vd.<arr>, Vn.<arr>, #<shift>` -- NEON shift by immediate (`SHL` left; `SSHR`/`USHR` right). The
     /// arrangement gives the element size and `Q`; `shift` is `0..element_bits-1` (left) or `1..element_bits`
     /// (right), folded with the element size into `immh:immb`. `.1d` is invalid. Needs Advanced SIMD.
@@ -1988,6 +1997,19 @@ pub enum Arm64Instruction {
         rd: Arm64FloatRegister,
         rn: Arm64FloatRegister,
         shift: u8,
+    },
+
+    /// `<op> Vd.<arr>, Vn.<arr>, #<fbits>` -- NEON vector fixed-point convert (`SCVTF`/`UCVTF`/`FCVTZS`/
+    /// `FCVTZU`), the shift-by-immediate-class twin of [`Self::ScalarFixedConvert`]. The arrangement gives the
+    /// element size and `Q` (`.4h`/`.8h`/`.2s`/`.4s`/`.2d`; no byte element, no `.1d`); `fbits` (the fractional
+    /// bit count) is `1..=esize`, folded into `immh:immb`. The half arrangements need FEAT_FP16, the rest
+    /// Advanced SIMD.
+    VecFixedConvert {
+        op: Arm64VectorFixedConvertOp,
+        arrangement: Arm64VectorArrangement,
+        rd: Arm64FloatRegister,
+        rn: Arm64FloatRegister,
+        fbits: u8,
     },
 
     /// `LDR <Bt|Ht|St|Dt|Qt>, [Xn{, #imm}]` -- SIMD&FP single-register load, unsigned-immediate offset form.
@@ -3345,6 +3367,19 @@ pub enum Arm64Instruction {
         imm5: u8,
     },
 
+    /// `LDFF1{S}{B,H,W,D} { Zt.<T> }, Pg/Z, [Zn.<T>{, #imm}]` -- SVE first-fault gather load with a vector base and
+    /// a scalar immediate offset (FEAT_SVE). The first-fault twin of [`Self::SveGatherLoadVectorImm`] (`[13]` set);
+    /// the fields carry the same rules.
+    SveGatherLoadVectorImmFirstFault {
+        msz: Arm64VectorElement,
+        element: Arm64VectorElement,
+        signed: bool,
+        pg: Arm64PredicateRegister,
+        zt: Arm64ScalableVectorRegister,
+        zn: Arm64ScalableVectorRegister,
+        imm5: u8,
+    },
+
     /// `ST1{B,H,W,D} { Zt.<T> }, Pg, [Zn.<T>{, #imm}]` -- SVE scatter store with a vector base and a scalar immediate
     /// offset (FEAT_SVE). `element` is the base/data lane size `.s` or `.d`; `msz` is the per-lane access size
     /// (`<=` the element). `imm5` is the unscaled `0..=31` immediate (displayed offset = `imm5 * access_size_bytes`).
@@ -3444,6 +3479,32 @@ pub enum Arm64Instruction {
         count: u8,
         pg: Arm64PredicateRegister,
         zt_base: Arm64ScalableVectorRegister,
+        rn: Arm64GeneralPurposeRegister,
+        rm: Arm64GeneralPurposeRegister,
+    },
+
+    /// `LD1W`/`LD1D`/`ST1W`/`ST1D { Zt.Q }, Pg{/Z}, [Xn|SP{, #imm, MUL VL}]` -- SVE2.1 128-bit-element contiguous
+    /// load/store, scalar base + immediate offset (FEAT_SVE2p1). `doubleword` selects the `LD1D`/`ST1D` access.
+    /// load base `0xA510_2000` (`.d` sets `[23]`) / store base `0xE500_E000` (`.d` sets `[23:22]`): imm`[19:16]`,
+    /// Pg`[12:10]`, Rn`[9:5]`, Zt`[4:0]`.
+    SveContiguousQuadwordImm {
+        store: bool,
+        doubleword: bool,
+        pg: Arm64PredicateRegister,
+        zt: Arm64ScalableVectorRegister,
+        rn: Arm64GeneralPurposeRegister,
+        imm: i8,
+    },
+
+    /// `LD1W`/`LD1D`/`ST1W`/`ST1D { Zt.Q }, Pg{/Z}, [Xn|SP, Xm, LSL #2|#3]` -- SVE2.1 128-bit-element contiguous
+    /// load/store, scalar base + scaled scalar offset (`#2` for the word access, `#3` for the doubleword; `rm`
+    /// must not be `XZR`). load base `0xA500_8000` / store base `0xE500_4000` (same `.d` adjustments as the
+    /// immediate form): Rm`[20:16]`, Pg`[12:10]`, Rn`[9:5]`, Zt`[4:0]`.
+    SveContiguousQuadwordScalar {
+        store: bool,
+        doubleword: bool,
+        pg: Arm64PredicateRegister,
+        zt: Arm64ScalableVectorRegister,
         rn: Arm64GeneralPurposeRegister,
         rm: Arm64GeneralPurposeRegister,
     },
@@ -3621,6 +3682,31 @@ pub enum Arm64Instruction {
         slice_reg: u8,
         slice_offset: u8,
         pg: Arm64PredicateRegister,
+        z: Arm64ScalableVectorRegister,
+    },
+
+    /// `MOVA Zd.Q, Pg/M, ZA<t><H|V>.Q[Wv, 0]` / `MOVA ZA<t><H|V>.Q[Wv, 0], Pg/M, Zn.Q` -- the quadword (128-bit
+    /// element) SME tile-slice move (FEAT_SME; disassembles as the `MOV` alias). The `.q` grid has sixteen
+    /// single-slice tiles (`za0`..`za15`) and the slice offset is always `0`. The `[16]=1` sibling of
+    /// [`Self::SmeMova`] with `size[23:22]` pinned to `11`: dir`[17]`, V`[15]`, Wv-12`[14:13]`, Pg`[12:10]`, then
+    /// tile`[8:5]`+Zd`[4:0]` (to-vector, `[9]`=0) or Zn`[9:5]`+tile`[3:0]` (to-tile, `[4]`=0). GNU+LLVM verified.
+    SmeMovaQuad {
+        to_vector: bool,
+        vertical: bool,
+        za_tile: u8,
+        slice_reg: u8,
+        pg: Arm64PredicateRegister,
+        z: Arm64ScalableVectorRegister,
+    },
+
+    /// `MOVAZ Zd.Q, ZA<t><H|V>.Q[Wv, 0]` -- the quadword zeroing tile-slice read (FEAT_SME2p1): move the `.q`
+    /// tile slice into `Zd` and zero it. Tile-to-vector only, unpredicated; the `[9]=1` sibling of the
+    /// [`Self::SmeMovaQuad`] to-vector frame with `Pg[12:10]` pinned to `000`: V`[15]`, Wv-12`[14:13]`,
+    /// tile`[8:5]`, Zd`[4:0]`. GNU+LLVM verified.
+    SmeMovazQuad {
+        vertical: bool,
+        za_tile: u8,
+        slice_reg: u8,
         z: Arm64ScalableVectorRegister,
     },
 
@@ -4987,6 +5073,18 @@ pub enum Arm64Instruction {
         zm: Arm64ScalableVectorRegister,
     },
 
+    /// `<op> Pd.<T>, Pg/Z, Zn.<T>, Zm.D` -- SVE integer compare against wide (doubleword) elements
+    /// (FEAT_SVE). `size` is the `.b`/`.h`/`.s` element of `Pd`/`Zn`; `pg` (P0..P7) governs. See
+    /// [`Arm64SveIntCompareWideOp`].
+    SveIntCompareWide {
+        op: Arm64SveIntCompareWideOp,
+        size: Arm64VectorElement,
+        pd: Arm64PredicateRegister,
+        pg: Arm64PredicateRegister,
+        zn: Arm64ScalableVectorRegister,
+        zm: Arm64ScalableVectorRegister,
+    },
+
     /// `<op> Zdn.<T>, Pg/M, Zdn.<T>, Zm.<T>` -- SVE predicated floating-point binary (destructive; FEAT_SVE).
     /// `Zdn` is both destination and first source; `pg` (P0..P7) governs. Valid for `.h`/`.s`/`.d`. See
     /// [`Arm64SveFpPredBinOp`].
@@ -4996,6 +5094,18 @@ pub enum Arm64Instruction {
         pg: Arm64PredicateRegister,
         zdn: Arm64ScalableVectorRegister,
         zm: Arm64ScalableVectorRegister,
+    },
+
+    /// `<op> Zdn.<T>, Pg/M, Zdn.<T>, #<const>` -- SVE predicated floating-point binary with an immediate constant
+    /// (destructive; FEAT_SVE). Only the first eight [`Arm64SveFpPredBinOp`] rows (`FADD`..`FMIN`) have this form;
+    /// `i1` picks the op's upper constant (`FADD`/`FSUB`/`FSUBR`: `0.5`/`1.0`, `FMUL`: `0.5`/`2.0`, the
+    /// max/min family: `0.0`/`1.0`). Valid for `.h`/`.s`/`.d`.
+    SveFpBinaryImmPredicated {
+        op: Arm64SveFpPredBinOp,
+        size: Arm64VectorElement,
+        pg: Arm64PredicateRegister,
+        zdn: Arm64ScalableVectorRegister,
+        i1: bool,
     },
 
     /// `BFSCALE Zdn.H, Pg/M, Zdn.H, Zm.H` -- SVE BFloat16 scale-by-`2^(int in Zm)` (FEAT_SVE_BFSCALE). This is `FSCALE`
@@ -5036,6 +5146,18 @@ pub enum Arm64Instruction {
         pg: Arm64PredicateRegister,
         zn: Arm64ScalableVectorRegister,
         zm: Arm64ScalableVectorRegister,
+    },
+
+    /// `<op> Pd.<T>, Pg/Z, Zn.<T>, #0.0` -- SVE floating-point compare against zero into a predicate result
+    /// (FEAT_SVE; `FCMLT`/`FCMLE` exist only in this form). `pg` (P0..P7) governs. Valid for `.h`/`.s`/`.d`.
+    /// base `0x6510_2000`: size`[23:22]`, eq`[18:16]`, Pg`[12:10]`, Zn`[9:5]`, lt`[4]`, Pd`[3:0]`. See
+    /// [`Arm64SveFpCmpZeroOp`].
+    SveFpCompareZero {
+        op: Arm64SveFpCmpZeroOp,
+        size: Arm64VectorElement,
+        pd: Arm64PredicateRegister,
+        pg: Arm64PredicateRegister,
+        zn: Arm64ScalableVectorRegister,
     },
 
     /// `FADDA <V>dn, Pg, <V>dn, Zm.<T>` -- SVE floating-point strictly-ordered accumulating add reduction
@@ -5138,6 +5260,17 @@ pub enum Arm64Instruction {
         mul: u8,
     },
 
+    /// `{INC,DEC}{H,W,D} Zdn.<T>{, <pattern>{, MUL #imm}}` -- SVE increment/decrement every vector element by the
+    /// element count, non-saturating (FEAT_SVE; `.b` has no vector form; `decrement` picks `DEC`). `pattern`/`mul`
+    /// as for [`Self::SveElementCount`].
+    SveIncDecVector {
+        element: Arm64VectorElement,
+        decrement: bool,
+        zdn: Arm64ScalableVectorRegister,
+        pattern: u8,
+        mul: u8,
+    },
+
     /// `DUP Zd.<T>, <R><n|SP>` -- broadcast a general-purpose scalar across every lane (FEAT_SVE). `rn` renders
     /// `Wn`/`WSP` for `.b`/`.h`/`.s` and `Xn`/`SP` for `.d`.
     SveDupScalar {
@@ -5233,6 +5366,39 @@ pub enum Arm64Instruction {
         size: Arm64VectorElement,
         pg: Arm64PredicateRegister,
         zdn: Arm64ScalableVectorRegister,
+        zm: Arm64ScalableVectorRegister,
+    },
+
+    /// `ASR`/`LSR`/`LSL Zdn.<T>, Pg/M, Zdn.<T>, Zm.D` -- SVE predicated destructive shift by the wide doubleword
+    /// lanes of `Zm` (FEAT_SVE). `size` is `.b`/`.h`/`.s`; only the plain [`Arm64SvePredShiftVectorOp`] rows are
+    /// valid (the reversed forms have no wide encoding).
+    SveShiftWidePredicated {
+        op: Arm64SvePredShiftVectorOp,
+        size: Arm64VectorElement,
+        pg: Arm64PredicateRegister,
+        zdn: Arm64ScalableVectorRegister,
+        zm: Arm64ScalableVectorRegister,
+    },
+
+    /// `ASR`/`LSR`/`LSL Zd.<T>, Zn.<T>, #imm` -- SVE unpredicated (constructive) shift by immediate (FEAT_SVE).
+    /// Only the plain [`Arm64SvePredShiftVectorOp`] rows are valid. The 7-bit tsz:imm value encodes
+    /// `esize + shift` (`LSL`) / `2*esize - shift` (`ASR`/`LSR`) like the predicated form, but sits flat at
+    /// `[23:22]`/`[20:16]` with the op at `[11:10]`.
+    SveShiftImmediateUnpredicated {
+        op: Arm64SvePredShiftVectorOp,
+        size: Arm64VectorElement,
+        zd: Arm64ScalableVectorRegister,
+        zn: Arm64ScalableVectorRegister,
+        shift: u8,
+    },
+
+    /// `ASR`/`LSR`/`LSL Zd.<T>, Zn.<T>, Zm.D` -- SVE unpredicated (constructive) shift by wide doubleword lanes
+    /// (FEAT_SVE). `size` is `.b`/`.h`/`.s`; only the plain [`Arm64SvePredShiftVectorOp`] rows are valid.
+    SveShiftWideUnpredicated {
+        op: Arm64SvePredShiftVectorOp,
+        size: Arm64VectorElement,
+        zd: Arm64ScalableVectorRegister,
+        zn: Arm64ScalableVectorRegister,
         zm: Arm64ScalableVectorRegister,
     },
 
@@ -5354,6 +5520,16 @@ pub enum Arm64Instruction {
         zm: Arm64ScalableVectorRegister,
     },
 
+    /// `<op> Pd.<T>, Pn.<T>, Pm.<T>` -- SVE permute predicates (`ZIP1`/`ZIP2`/`UZP1`/`UZP2`/`TRN1`/`TRN2`;
+    /// FEAT_SVE). The same opcode rows as [`SvePermute`] in the predicate space.
+    SvePredPermute {
+        op: Arm64VectorPermuteOp,
+        size: Arm64VectorElement,
+        pd: Arm64PredicateRegister,
+        pn: Arm64PredicateRegister,
+        pm: Arm64PredicateRegister,
+    },
+
     /// `<op> Zd.<T>, Zn.<T>, Zm.<T>` -- SVE unpredicated floating-point binary (FEAT_SVE). Valid for `.h`/`.s`/`.d`.
     /// See [`Arm64SveFpBinUnpredOp`].
     SveFpBinaryUnpredicated {
@@ -5402,6 +5578,13 @@ pub enum Arm64Instruction {
         pg: Arm64PredicateRegister,
         zd: Arm64ScalableVectorRegister,
         imm8: u8,
+    },
+
+    /// `REV Pd.<T>, Pn.<T>` -- SVE reverse all elements in a predicate (unpredicated; FEAT_SVE).
+    SvePredReverse {
+        size: Arm64VectorElement,
+        pd: Arm64PredicateRegister,
+        pn: Arm64PredicateRegister,
     },
 
     /// `REV Zd.<T>, Zn.<T>` -- SVE reverse all elements in a vector (unpredicated; FEAT_SVE).
@@ -5511,6 +5694,14 @@ pub enum Arm64Instruction {
         size: Arm64VectorElement,
         zdn: Arm64ScalableVectorRegister,
         rn: Arm64GeneralPurposeRegister,
+    },
+
+    /// `INSR Zdn.<T>, <V><m>` -- shift the vector up by one element and insert a SIMD&FP scalar in the low lane
+    /// (FEAT_SVE). `vm` names `Bm`/`Hm`/`Sm`/`Dm` per `size`.
+    SveInsrSimd {
+        size: Arm64VectorElement,
+        zdn: Arm64ScalableVectorRegister,
+        vm: Arm64FloatRegister,
     },
 
     /// `LASTA`/`LASTB <R>d, Pg, Zn.<T>` -- extract the element after / at the last active lane into a
@@ -5725,10 +5916,10 @@ pub enum Arm64Instruction {
         zn: Arm64ScalableVectorRegister,
     },
 
-    /// `FMLALB`/`FMLALT`/`FMLSLB`/`FMLSLT`/`BFMLALB`/`BFMLALT Zda.S, Zn.H, Zm.H` -- SVE2 FP16/BFloat16 widening
-    /// multiply-add long: accumulate the products of the even/odd (`top`) `.h` lanes into the `.s` accumulator
-    /// (FEAT_SVE2; `bf16` picks the BFloat16 forms, which need FEAT_BF16 and have no subtract). `subtract` picks
-    /// the `FMLSL*` forms.
+    /// `FMLALB`/`FMLALT`/`FMLSLB`/`FMLSLT`/`BFMLALB`/`BFMLALT`/`BFMLSLB`/`BFMLSLT Zda.S, Zn.H, Zm.H` -- SVE2
+    /// FP16/BFloat16 widening multiply-add long: accumulate the products of the even/odd (`top`) `.h` lanes into
+    /// the `.s` accumulator (FEAT_SVE2; `bf16` picks the BFloat16 forms, FEAT_BF16 -- with `subtract` the
+    /// FEAT_SVE2p1 `BFMLSL*`). `subtract` picks the `FMLSL*`/`BFMLSL*` forms.
     Sve2FpWidenMulAddLong {
         bf16: bool,
         subtract: bool,
@@ -5739,7 +5930,8 @@ pub enum Arm64Instruction {
     },
 
     /// `<op> Zda.S, Zn.H, Zm.H[index]` -- SVE2 FP16/BFloat16 widening multiply-add long by indexed element:
-    /// `FMLALB`/`FMLALT`/`FMLSLB`/`FMLSLT` (FEAT_SVE2) and `BFMLALB`/`BFMLALT` (`bf16`, FEAT_BF16; no subtract form).
+    /// `FMLALB`/`FMLALT`/`FMLSLB`/`FMLSLT` (FEAT_SVE2), `BFMLALB`/`BFMLALT` (`bf16`, FEAT_BF16), and
+    /// `BFMLSLB`/`BFMLSLT` (`bf16` + `subtract`, FEAT_SVE2p1).
     /// `index` is 0..7 and `Zm` is restricted to `Z0..Z7`. The 3-bit index is split across `[20]:[19]:[11]`.
     Sve2FpWidenMulAddLongIndexed {
         bf16: bool,
@@ -6042,6 +6234,30 @@ pub enum Arm64Instruction {
         zm: Arm64ScalableVectorRegister,
     },
 
+    /// `SQRDCMLAH Zda.<T>, Zn.<T>, Zm.<T>[index], #<rot>` -- SVE2 saturating rounding complex multiply-accumulate
+    /// by indexed element (FEAT_SVE2). Same size/index scheme as [`Self::SveComplexMulAddIndexed`]: `.h` (`Zm` in
+    /// `Z0..Z7`, `index` `0..3`) or `.s` (`Zm` in `Z0..Z15`, `index` `0..1`).
+    Sve2ComplexMulAddIndexed {
+        size: Arm64VectorElement,
+        rotation: Arm64ComplexRotation,
+        zda: Arm64ScalableVectorRegister,
+        zn: Arm64ScalableVectorRegister,
+        zm: Arm64ScalableVectorRegister,
+        index: u8,
+    },
+
+    /// `CDOT Zda.<T>, Zn.<Tb>, Zm.<Tb>[index], #<rot>` -- SVE2 complex integer dot product by indexed element
+    /// (FEAT_SVE2): a `.s` accumulator over `.b` sources (`Zm` in `Z0..Z7`, `index` `0..3`) or a `.d` accumulator
+    /// over `.h` sources (`Zm` in `Z0..Z15`, `index` `0..1`). `size` is the accumulator element.
+    Sve2ComplexDotIndexed {
+        size: Arm64VectorElement,
+        rotation: Arm64ComplexRotation,
+        zda: Arm64ScalableVectorRegister,
+        zn: Arm64ScalableVectorRegister,
+        zm: Arm64ScalableVectorRegister,
+        index: u8,
+    },
+
     /// `XAR Zdn.<T>, Zdn.<T>, Zm.<T>, #<rotate>` -- SVE2 bitwise exclusive-OR of `Zdn` and `Zm` then rotate each
     /// `size`-element right by `rotate` (`1..=esize`) (FEAT_SVE2; destructive). Valid for `.b`/`.h`/`.s`/`.d`.
     Sve2Xar {
@@ -6153,8 +6369,8 @@ pub enum Arm64Instruction {
         zn: Arm64ScalableVectorRegister,
     },
 
-    /// `FCVTN`/`FCVTNB`/`BFCVTN Zd.B, {Zn.<h|s>-Zn+1.<h|s>}` -- SVE FP8 narrowing convert (FEAT_FP8): narrow a
-    /// two-vector source list (`zn_base` even) to 8-bit floating-point lanes in `Zd.b`. See [`Arm64SveFp8NarrowOp`].
+    /// `FCVTN`/`FCVTNB`/`BFCVTN`/`FCVTNT Zd.B, {Zn.<h|s>-Zn+1.<h|s>}` -- SVE FP8 narrowing convert (FEAT_FP8): narrow
+    /// a two-vector source list (`zn_base` even) to 8-bit floating-point lanes in `Zd.b`. See [`Arm64SveFp8NarrowOp`].
     SveFp8Narrow {
         op: Arm64SveFp8NarrowOp,
         zd: Arm64ScalableVectorRegister,
@@ -6217,6 +6433,17 @@ pub enum Arm64Instruction {
     /// plus (inverse) mix-columns (FEAT_SVE_AES2). Destructive on the two-/four-register `Zdn` group; `Zm` (`z0` to `z7`)
     /// is element-indexed. base `0x4523_E800`: decrypt`[10]`, vgx4`[18]`, index`[20:19]`, Zm`[7:5]`, Zdn`[4:0]`.
     SveAes2MultiVec {
+        decrypt: bool,
+        four: bool,
+        zdn_base: Arm64ScalableVectorRegister,
+        zm: Arm64ScalableVectorRegister,
+        index: u8,
+    },
+
+    /// `AESE`/`AESD { Zdn.B-... }, { Zdn.B-... }, Zm.Q[index]` -- SVE2.1 multi-vector AES single round WITHOUT the
+    /// fused mix-columns (FEAT_SVE_AES2). Same fields and policing as [`Self::SveAes2MultiVec`]; the plain rounds
+    /// clear that form's `[16]` bit.
+    SveAes2MultiVecPlain {
         decrypt: bool,
         four: bool,
         zdn_base: Arm64ScalableVectorRegister,
@@ -6386,6 +6613,14 @@ pub enum Arm64Instruction {
         imm8: u8,
     },
 
+    /// `EXT Zd.B, { Zn1.B, Zn2.B }, #imm` -- extract a byte-window from a consecutive vector pair at offset `imm`
+    /// (`0..=255`), constructive (FEAT_SVE2). `zn` is the first pair register (the second is `(Zn + 1) % 32`).
+    SveExtConstructive {
+        zd: Arm64ScalableVectorRegister,
+        zn: Arm64ScalableVectorRegister,
+        imm8: u8,
+    },
+
     /// `SPLICE Zdn.<T>, Pg, Zdn.<T>, Zm.<T>` -- splice the active elements of `Zdn` then fill from `Zm`, destructive
     /// (FEAT_SVE). `pg` is `P0..P7`.
     SveSplice {
@@ -6393,6 +6628,15 @@ pub enum Arm64Instruction {
         pg: Arm64PredicateRegister,
         zdn: Arm64ScalableVectorRegister,
         zm: Arm64ScalableVectorRegister,
+    },
+
+    /// `SPLICE Zd.<T>, Pg, { Zn1.<T>, Zn2.<T> }` -- splice the active elements of `Zn1` then fill from `Zn2` (a
+    /// consecutive pair), constructive (FEAT_SVE2). `pg` is `P0..P7`; `zn` is the first pair register.
+    SveSpliceConstructive {
+        size: Arm64VectorElement,
+        pg: Arm64PredicateRegister,
+        zd: Arm64ScalableVectorRegister,
+        zn: Arm64ScalableVectorRegister,
     },
 
     /// `COMPACT Zd.<T>, Pg, Zn.<T>` -- pack the active elements of `Zn` into the low lanes of `Zd` (FEAT_SVE,
@@ -6848,6 +7092,7 @@ const SVE_LD1R_MASK: u32 = 0xFE40_8000; // pins [31:25]=1000010 + bit22=1 + bit1
 // = .d (else .s), msz[24:23] = access size, U[14] = unsigned/zero-extend. bit22=0 separates from LD1R (bit22=1).
 const SVE_GATHER_VEC_IMM_BASE: u32 = 0x8420_8000;
 const SVE_GATHER_VEC_IMM_MASK: u32 = 0xBE60_A000; // pins bit31 + [29:25]=00010 + bit22=0 + bit21=1 + bit15=1 + bit13=0
+const SVE_GATHER_VEC_IMM_FF: u32 = 0x2000; // the first-fault (LDFF1) twin sets bit13
 // SVE scatter store, vector base + immediate (ST1B/H/W/D): | msz<<23 | element_s<<21 | imm5<<16 | Pg<<10 | Zn<<5 | Zt.
 // base 0xE440_A000 ([31:25]=1110010, [22]=1, [15:13]=101). element .s sets [21]=1 (.d=0). [15:13]=101 separates it from
 // the contiguous ST1 ([15:13]=111).
@@ -6885,7 +7130,7 @@ const SME_ADDSVPL_MASK: u32 = 0xFFE0_F800; // pins [31:21] + [15:11] (bit11=1; A
 // SME FP outer product (FMOPA/FMOPS/BFMOPA/BFMOPS): base (in Arm64SmeFpPrecision) | Zm<<16 | Pm<<13 | Pn<<10 | Zn<<5 |
 // subtract<<4 | ZAtile. F32 0x8080_0000, F64 0x80C0_0000 (bit22=1), BF16 0x8180_0000 (bit24=1). The mask pins the
 // fixed frame; precision comes from [24] (bf16) and [22] (.d), subtract from [4].
-const SME_FP_MOP_MASK: u32 = 0xFEA0_0008; // pins [31:25]=1000000 + [23]=1 + [21]=0 + [3]=0; [24]/[22]/Zm/Pm/Pn/Zn/[4]/ZAtile vary
+const SME_FP_MOP_MASK: u32 = 0xFE80_0008; // pins [31:25]=1000000 + [23]=1 + [3]=0; [24]/[22]/[21]/Zm/Pm/Pn/Zn/[4]/ZAtile vary ([21] is the fp16-widening selector; the [24]=0,[21]=1 FP8 frame returns None from from_bits)
 const SME_FP_MOP_BASE: u32 = 0x8080_0000;
 const SME_BMOP_BASE: u32 = 0x8080_0008; // BMOPA/BMOPS: FP-MOP frame with the [3]=1 marker (SME_FP_MOP_MASK pins [3]=0)
 const SME_BMOP_MASK: u32 = 0xFFE0_000C; // pins [31:25]+[24]=0+[23]=1+[22:21]=0+[3]=1+[2]=0; frees Zm/Pm/Pn/Zn/sub[4]/tile[1:0]
@@ -6928,6 +7173,10 @@ const SME_MOP4_H_MASK: u32 = 0xFFC1_FC2E; // pins [31:24]=0x81 + [23:22]=00 + [1
 // splits by size: .b offs(4)/.h tile(1):offs(3)/.s tile(2):offs(2)/.d tile(3):offs(1).
 const SME_MOVA_BASE: u32 = 0xC000_0000;
 const SME_MOVA_MASK: u32 = 0xFF3D_0000; // pins [31:24]=0xC0 + [21:18]=0000 + [16]=0 (non-.q); size/dir/V/Wv/Pg/slice/Z vary
+const SME_MOVA_Q_BASE: u32 = 0xC0C1_0000; // the .q sibling: size[23:22]=11 + [16]=1
+const SME_MOVA_Q_MASK: u32 = 0xFFFD_0000; // pins [31:24]=0xC0 + [23:22]=11 + [21:18]=0000 + [16]=1; dir/V/Wv/Pg/tile/Z vary
+const SME_MOVAZ_Q_BASE: u32 = 0xC0C3_0200; // the zeroing .q read: the to-vector frame + [9]=1, Pg pinned 000
+const SME_MOVAZ_Q_MASK: u32 = 0xFFFF_1E00; // pins [31:16]=0xC0C3 + [12:10]=000 + [9]=1; V/Wv/tile/Zd vary
 // SME LD1/ST1 to ZA tile slice: base 0xE000_0000 | msz[24:22] | store<<21 | Rm<<16 | V<<15 | Wv<<13 | Pg<<10 | Rn<<5 |
 // tile:offset[3:0]. ([4]=0.) The tile:offset splits like MOVA (offs_bits by size). Index Xm scaled by the access size.
 const SME_TILE_LDST_BASE: u32 = 0xE000_0000;
@@ -7216,9 +7465,17 @@ const MOPS_SET_MASK: u32 = 0xFFE0_0C00; // pins [31:24] + [23:22]=11 + [21]=0 + 
 // SVE integer compare (vectors): | size<<22 | Zm<<16 | op_high<<13 | Pg<<10 | Zn<<5 | op_low<<4 | Pd.
 const SVE_INT_CMP_VEC_BASE: u32 = 0x2400_0000;
 const SVE_INT_CMP_VEC_MASK: u32 = 0xFF20_4000; // pins [31:24] + bit21=0 + bit14=0; the op bits + size/Zm/Pg/Zn/Pd vary
+// The wide-element (Zm.d) compares share the base; their op rows carry bit14 values the same-size mask cannot,
+// so they get a looser mask and their own (op_high, op_low) table -- together the two decode arms partition the
+// whole [15:13]x[4] space.
+const SVE_INT_CMP_WIDE_MASK: u32 = 0xFF20_0000; // pins [31:24] + bit21=0; op bits + size/Zm/Pg/Zn/Pd vary
 // SVE predicated FP binary (destructive): | size<<22 | opcode<<16 | Pg<<10 | Zm<<5 | Zdn. Mask value matches the
 // int groups; the base's top byte 0x65 + [15:13]=100 keep it distinct.
 const SVE_FP_PRED_BIN_BASE: u32 = 0x6500_8000;
+// SVE FP binary with an immediate constant (predicated): | size<<22 | op<<16 | Pg<<10 | i1<<5 | Zdn. The
+// [21:19]=011 key + zeroed [9:6] separate it from the register form; only op rows 0..=7 exist.
+const SVE_FP_PRED_BIN_IMM_BASE: u32 = 0x6518_8000;
+const SVE_FP_PRED_BIN_IMM_MASK: u32 = 0xFF38_E3C0; // pins [31:24] + [21:19] + [15:13] + [9:6]; size/op/Pg/i1/Zdn vary
 // SVE BFSCALE (FEAT_SVE_BFSCALE): FSCALE (opcode 9) in the BF16 size==00 slot. Tight mask (pins [31:13]) so it claims
 // ONLY 0x6509_8000-family words before the regular FP pred-bin decode (which would read size==00 as a bogus `.b`).
 const SVE_BFSCALE_BASE: u32 = 0x6509_8000;
@@ -7232,6 +7489,8 @@ const SVE_EXPAND_MASK: u32 = 0xFF3F_E000; // pins [31:24]+[21:16]=110001+[15:13]
 // SVE FP compare (vectors): | size<<22 | Zm<<16 | op_high<<13 | Pg<<10 | Zn<<5 | op_low<<4 | Pd. bit14=1 (in base)
 // distinguishes it from the FP predicated-binary group ([15:13]=100, bit14=0). Reuses the 0xFF20_4000 mask value.
 const SVE_FP_CMP_VEC_BASE: u32 = 0x6500_4000;
+const SVE_FP_CMP_ZERO_BASE: u32 = 0x6510_2000;
+const SVE_FP_CMP_ZERO_MASK: u32 = 0xFF38_E000; // pins [31:24] + [21:19]=010 + [15:13]=001; size/eq/Pg/Zn/lt/Pd vary
 // SVE INDEX: | size<<22 | step_field<<16 | step_is_reg<<11 | base_is_reg<<10 | base_field<<5 | Zd.
 const SVE_INDEX_BASE: u32 = 0x0420_4000;
 const SVE_INDEX_MASK: u32 = 0xFF20_F000; // pins [31:24] + bit21 + [15:12]=0100; size/fields/form-bits/Zd vary
@@ -7255,6 +7514,8 @@ const SVE_SAT_INCDEC_SCALAR_BASE: u32 = 0x0420_F000;
 const SVE_SAT_INCDEC_SCALAR_MASK: u32 = 0xFF20_F000; // pins [31:24] + bit21 + [15:12]=1111; size/sf/(mul-1)/D/U/pat/Rdn vary
 const SVE_SAT_INCDEC_VECTOR_BASE: u32 = 0x0420_C000;
 const SVE_SAT_INCDEC_VECTOR_MASK: u32 = 0xFF30_F000; // pins [31:24] + [21:20]=10 + [15:12]=1100; size/(mul-1)/D/U/pat/Zd vary
+const SVE_INCDEC_VECTOR_BASE: u32 = 0x0430_C000;
+const SVE_INCDEC_VECTOR_MASK: u32 = 0xFF30_F800; // pins [31:24] + [21:20]=11 + [15:11]=11000; size/(mul-1)/D/pattern/Zdn vary
 // SVE DUP (broadcast): scalar | size<<22 | Rn<<5 | Zd; immediate | size<<22 | sh<<13 | imm8<<5 | Zd; indexed
 // | imm2<<22 | tsz<<16 | Zn<<5 | Zd.
 const SVE_DUP_SCALAR_BASE: u32 = 0x0520_3800;
@@ -7371,6 +7632,8 @@ const SVE2_CMLA_MASK: u32 = 0xFF20_E000; // pins [31:24] + bit21=0 + [15:13]=001
 // [20], Zm Z0-15 at [19:16]. CMLA base 0x44A0_6000 ([15:12]=0110); FCMLA base 0x64A0_1000 ([15:12]=0001).
 const SVE_CMLA_INDEXED_BASE: u32 = 0x44A0_6000;
 const SVE_FCMLA_INDEXED_BASE: u32 = 0x64A0_1000;
+const SVE_SQRDCMLAH_INDEXED_BASE: u32 = 0x44A0_7000; // [15:12]=0111 beside CMLA's 0110; same size/index scheme
+const SVE_CDOT_INDEXED_BASE: u32 = 0x44A0_4000; // [15:12]=0100; the size bit selects the .s or .d ACCUMULATOR
 const SVE_COMPLEX_INDEXED_MASK: u32 = 0xFFA0_F000; // pins [31:24] + [23]=1 + [21]=1 + [15:12]; size[22]/index/Zm/rot vary
 // SVE2 cryptography (FEAT_SVE_AES/SM4/SHA3): bases in Arm64SveCryptoDestructiveOp/Arm64SveCryptoBinaryOp::base().
 // AESE 0x4522_E000 / AESD 0x4522_E400 / SM4E 0x4523_E000 destructive (Zm[9:5], Zdn[4:0]); AESMC 0x4520_E000 /
@@ -7397,6 +7660,18 @@ const SVE_STRUCTQ_ST_IMM_BASE: u32 = 0xE400_0000; // [21:20]=00; count-1<<22, im
 const SVE_STRUCTQ_ST_IMM_MASK: u32 = 0xFF30_E000; // pins [31:24]+[21:20]=00+[15:13]=000; frees count[23:22]/imm/Pg/Rn/Zt
 const SVE_STRUCTQ_ST_SCALAR_BASE: u32 = 0xE420_0000; // [21]=1; count-1<<22, Rm[20:16]
 const SVE_STRUCTQ_ST_SCALAR_MASK: u32 = 0xFF20_E000; // pins [31:24]+[21]=1+[15:13]=000; frees count[23:22]/Rm/Pg/Rn/Zt
+// SVE2p1 128-bit-element contiguous LD1W/LD1D/ST1W/ST1D {Zt.Q}. The .d access sets [23] on loads but [23:22] on
+// stores; the imm forms carry imm4 at [19:16], the scalar forms Rm at [20:16]. Probed binutils-2.45 + llvm-mc-20.
+const SVE_CONTIGQ_LD_IMM_BASE: u32 = 0xA510_2000; // [22:20]=001 + [15:13]=001; + 0x0080_0000 for LD1D
+const SVE_CONTIGQ_LD_IMM_MASK: u32 = 0xFF70_E000; // pins [31:24]+[22:20]+[15:13]; frees dw[23]/imm/Pg/Rn/Zt
+const SVE_CONTIGQ_LD_SCALAR_BASE: u32 = 0xA500_8000; // [22:21]=00 + [15:13]=100; + 0x0080_0000 for LD1D
+const SVE_CONTIGQ_LD_SCALAR_MASK: u32 = 0xFF60_E000; // pins [31:24]+[22:21]+[15:13]; frees dw[23]/Rm/Pg/Rn/Zt
+const SVE_CONTIGQ_ST_IMM_BASE: u32 = 0xE500_E000; // [23:20]=0000 + [15:13]=111; + 0x00C0_0000 for ST1D
+const SVE_CONTIGQ_ST_IMM_MASK: u32 = 0xFFF0_E000; // pins [31:24]+[23:20]+[15:13] (per-access base); frees imm/Pg/Rn/Zt
+const SVE_CONTIGQ_ST_SCALAR_BASE: u32 = 0xE500_4000; // [23:21]=000 + [15:13]=010; + 0x00C0_0000 for ST1D
+const SVE_CONTIGQ_ST_SCALAR_MASK: u32 = 0xFFE0_E000; // pins [31:24]+[23:21] (per-access base); frees Rm/Pg/Rn/Zt
+const SVE_CONTIGQ_ST_D: u32 = 0x00C0_0000;
+const SVE_CONTIGQ_LD_D: u32 = 0x0080_0000;
 const SVE_LD1Q_BASE: u32 = 0xC400_A000; // LD1Q quadword gather (vector .d base + scalar offset): Rm[20:16], Pg[12:10], Zn[9:5], Zt[4:0]
 const SVE_ST1Q_BASE: u32 = 0xE420_2000; // ST1Q quadword scatter
 const SVE_LDST1Q_MASK: u32 = 0xFFE0_E000; // pins [31:24]+[23:21]+[15:13]; frees Rm/Pg/Zn/Zt
@@ -7404,6 +7679,7 @@ const SVE_PMOV_BASE: u32 = 0x0500_3800; // PMOV: tsz size+index [23:17], directi
 const SVE_PMOV_MASK: u32 = 0xFF00_FC00; // pins [31:24]=0x05 + [15:10]=001110; the [23:16] tsz is validated by the size parse
 const SVE2_AES2_MULTIVEC_BASE: u32 = 0x4523_E800; // AESEMC/AESDIMC multi-vector: decrypt[10], vgx4[18], index[20:19], Zm[7:5], Zdn[4:0]
 const SVE2_AES2_MULTIVEC_MASK: u32 = 0xFFE3_FB00; // pins [31:24]=0x45+[23:21]=001+[18 free]+[17:16]=11+[15:11]=11101+[9:8]=00
+const SVE2_AES2_MULTIVEC_PLAIN_BASE: u32 = 0x4522_E800; // the plain AESE/AESD rounds: [16]=0, same fields and mask
 // NEON LUTI2/LUTI4. [23:22]: luti2.16b=10, luti2.8h=11, luti4(.16b|.8h)=01 (so luti2 has [23]=1, luti4 [23:22]=01); the
 // luti4 element lives in the index-field marker. index left-aligns into [14:12] over a 1-marker. Two frames keep it off TBL ([23:22]=00).
 const FPRCVT_BASE: u32 = 0x1E00_0000; // FEAT_FPRCVT scalar convert: sf[31], ftype[23:22] (only 00/01), opcode[21:16], [15:10]=0, Rn[9:5], Rd[4:0]
@@ -7483,10 +7759,11 @@ const SVE2_ADCL_MASK: u32 = 0xFF20_F800; // pins [31:24] + bit21=0 + [15:11]=110
 // opc[11:10], Zn[9:5], Zd[4:0].
 const SVE2_BITPERM_BASE: u32 = 0x4500_B000;
 const SVE2_BITPERM_MASK: u32 = 0xFF20_F000; // pins [31:24] + bit21=0 + [15:12]=1011; size/Zm/opc/Zn/Zd vary (opc via from_opc)
-// SVE2 widening by-indexed-element (SMULLB/SMLALB/SQDMULLB/... indexed). base 0x4420_8000 (bit21=1, bit15=1). size
-// [23:22]=10(.s)/11(.d); the index/Zm are packed in [20:16]+il[11] per size; disc[15:12] selects the op, T[10].
-const SVE2_WIDEN_INDEXED_BASE: u32 = 0x4420_8000;
-const SVE2_WIDEN_INDEXED_MASK: u32 = 0xFF20_8000; // pins [31:24] + bit21 + bit15; size/idx/Zm/disc/il/T/Zn/Zd vary
+// SVE2 widening by-indexed-element (SMULLB/SMLALB/SQDMLALB/SQDMULLB/... indexed). base 0x4420_0000 (bit21=1). size
+// [23:22]=10(.s)/11(.d); the index/Zm are packed in [20:16]+il[11] per size; the 4-bit disc[15:12] selects the op
+// (the SQDMLAL/SQDMLSL rows sit below bit15, so the disc is part of the op table, not the mask), T[10].
+const SVE2_WIDEN_INDEXED_BASE: u32 = 0x4420_0000;
+const SVE2_WIDEN_INDEXED_MASK: u32 = 0xFF20_0000; // pins [31:24] + bit21; size/idx/Zm/disc/il/T/Zn/Zd vary (disc via from_bits)
 // SVE2 character match (MATCH/NMATCH -> predicate): base 0x4520_8000. sz[22] (.b/.h), Zm[20:16], Pg[12:10],
 // Zn[9:5], op[4] (NMATCH), Pd[3:0]. [21]=1, [15:13]=100.
 const SVE2_MATCH_BASE: u32 = 0x4520_8000;
@@ -7583,9 +7860,15 @@ const SME2_FP_CVT_NARROW_MASK: u32 = 0xFFBF_FC00; // pins [31:24]=0xc1+[23]=0+[2
 // SVE predicated shift by immediate: | tszh<<22 | opc<<16 | Pg<<10 | tszl<<8 | imm3<<5 | Zdn. The 7-bit
 // tszh:tszl:imm3 encodes (esize + shift) for LSL / (2*esize - shift) for ASR/LSR.
 const SVE_SHIFT_IMM_BASE: u32 = 0x0400_8000;
-const SVE_SHIFT_IMM_MASK: u32 = 0xFF38_E000; // pins [31:24] + [21:19]=000 + [15:13]=100; opc[18:16] (incl. ASRD)/tszh/Pg/tszl/imm3/Zdn vary
+const SVE_SHIFT_IMM_MASK: u32 = 0xFF30_E000; // pins [31:24] + [21:20]=00 + [15:13]=100; the 4-bit opc[19:16] (incl. the SVE2 rows)/tszh/Pg/tszl/imm3/Zdn vary
 const SVE_SHIFT_VEC_BASE: u32 = 0x0410_8000; // ASR/LSR/LSL/ASRR/LSRR/LSLR by vector (predicated); [21:19]=010, opc[18:16]
 const SVE_SHIFT_VEC_MASK: u32 = 0xFF38_E000; // same value as SVE_SHIFT_IMM_MASK but base has [21:19]=010 (distinct key)
+const SVE_SHIFT_WIDE_PRED_BASE: u32 = 0x0418_8000; // predicated wide (Zm.d) ASR/LSR/LSL; [21:19]=011, plain opc[18:16] rows only
+// SVE unpredicated shifts: | tszh<<22 | tszl:imm3<<16 | opc<<10 | Zn<<5 | Zd (immediate, [15:12]=1001) and
+// | size<<22 | Zm<<16 | opc<<10 | Zn<<5 | Zd (wide Zm.d, [15:12]=1000). opc[11:10] = 00 ASR / 01 LSR / 11 LSL.
+const SVE_SHIFT_IMM_UNPRED_BASE: u32 = 0x0420_9000;
+const SVE_SHIFT_WIDE_UNPRED_BASE: u32 = 0x0420_8000;
+const SVE_SHIFT_UNPRED_MASK: u32 = 0xFF20_F000; // pins [31:24] + bit21=1 + [15:12]; tsz-or-size/imm-or-Zm/opc/Zn/Zd vary
 // SVE inc/dec by active-predicate-count (INCP/DECP/SQINCP/SQDECP/UQINCP/UQDECP). FOUR sub-encodings: scalar vs vector
 // dest ([11]=1/0), non-saturating ([18]=1, D at [16]) vs saturating ([18]=0, D[17]/U[16] + sf[10] for scalar).
 const SVE_INCP_SCALAR_BASE: u32 = 0x252C_8800; // INCP/DECP <Xdn>, Pm: | size<<22 | D<<16 | Pm<<5 | Rdn (64-bit)
@@ -7630,6 +7913,8 @@ const SVE_MOVPRFX_PRED_MASK: u32 = 0xFF3E_E000; // pins [31:24] + [21:17]=01000 
 // SVE permute vectors (ZIP/UZP/TRN): | size<<22 | Zm<<16 | opcode<<10 | Zn<<5 | Zd.
 const SVE_PERMUTE_BASE: u32 = 0x0520_6000;
 const SVE_PERMUTE_MASK: u32 = 0xFF20_E000; // pins [31:24] + bit21 + [15:13]=011; size/Zm/opcode/Zn/Zd vary
+const SVE_PRED_PERMUTE_BASE: u32 = 0x0520_4000; // predicate space: [15:13]=010, 4-bit Pm[19:16]/Pn[8:5]/Pd[3:0]
+const SVE_PRED_PERMUTE_MASK: u32 = 0xFF30_E210; // pins [31:24] + [21:20]=10 + [15:13] + bits 9/4; size/regs/opcode vary
 // SVE unpredicated FP binary: | size<<22 | Zm<<16 | opcode<<10 | Zn<<5 | Zd. bit21=0 + [15:13]=000 (the FMA group
 // is bit21=1; the other FP groups have [15:13] != 000). Reuses the 0xFF20_E000 mask value.
 const SVE_FP_BIN_UNPRED_BASE: u32 = 0x6500_0000;
@@ -7647,6 +7932,8 @@ const SVE_CPY_SCALAR_MASK: u32 = 0xFF3F_E000; // pins [31:24] + [21:16]=101000 +
 // opc<<16 | Pg<<10 | Zn<<5 | Zd.
 const SVE_REV_BASE: u32 = 0x0538_3800;
 const SVE_REV_MASK: u32 = 0xFF3F_FC00; // pins [31:24] + [21:16]=111000 + [15:10]=001110; size/Zn/Zd vary
+const SVE_PRED_REV_BASE: u32 = 0x0534_4000; // predicate space: [21:16]=110100, [15:10]=010000, 4-bit Pn[8:5]/Pd[3:0]
+const SVE_PRED_REV_MASK: u32 = 0xFF3F_FE10; // pins [31:24] + [21:16] + [15:9] + bit4; size/Pn/Pd vary
 const SVE_REVB_BASE: u32 = 0x0524_8000;
 const SVE_REVB_MASK: u32 = 0xFF3C_E000; // pins [31:24] + [21:18]=1001 + [15:13]=100; size/opc/Pg/Zn/Zd vary
 // SVE2.2 zeroing-predicate REVB/REVH/REVW and RBIT: identical frames to the merging forms but bit [13] set
@@ -7694,6 +7981,7 @@ const SVE_PNEXT_MASK: u32 = 0xFF3F_FC10; // pins [31:24] + [21:16] + [15:10] + b
 // SVE INSR (insert GP scalar): | size<<22 | Rn<<5 | Zdn. LASTA/LASTB -> GP: | size<<22 | B<<16 | Pg<<10 | Zn<<5 | Rd.
 const SVE_INSR_BASE: u32 = 0x0524_3800;
 const SVE_INSR_MASK: u32 = 0xFF3F_FC00; // pins [31:24] + [21:16]=100100 + [15:10]=001110; size/Rn/Zdn vary
+const SVE_INSR_SIMD_BASE: u32 = 0x0534_3800; // SIMD&FP scalar source ([20] set): | size<<22 | Vm<<5 | Zdn
 const SVE_LAST_GP_BASE: u32 = 0x0520_A000;
 const SVE_LAST_GP_MASK: u32 = 0xFF3E_E000; // pins [31:24] + [21:17]=10000 + [15:13]=101; size/B/Pg/Zn/Rd vary
 // SVE extract-last (SIMD&FP dest) and conditional-extract (CLASTA/CLASTB to vector/GP/SIMD). All share the mask
@@ -7719,9 +8007,11 @@ const SVE_FTSSEL_BASE: u32 = 0x0420_B000;
 const SVE_FTSSEL_MASK: u32 = 0xFF20_FC00; // pins [31:24] + bit21 + [15:10]=101100; size/Zm/Zn/Zd vary
 // SVE EXT (byte extract from a pair): | imm8h<<16 | imm8l<<10 | Zm<<5 | Zdn. SPLICE: | size<<22 | Pg<<10 | Zm<<5 | Zdn.
 const SVE_EXT_BASE: u32 = 0x0520_0000;
-const SVE_EXT_MASK: u32 = 0xFF20_E000; // pins [31:24] + bit21 + [15:13]=000; imm8h/imm8l/Zm/Zdn vary
+const SVE_EXT_MASK: u32 = 0xFFE0_E000; // pins [31:21]=...001 + [15:13]=000; imm8h/imm8l/Zm/Zdn vary
+const SVE_EXT_CONSTRUCTIVE_BASE: u32 = 0x0560_0000; // SVE2 pair-source form: [23:21]=011, same field layout
 const SVE_SPLICE_BASE: u32 = 0x052C_8000;
 const SVE_SPLICE_MASK: u32 = 0xFF3F_E000; // pins [31:24] + [21:16]=101100 + [15:13]=100; size/Pg/Zm/Zdn vary
+const SVE_SPLICE_CONSTRUCTIVE_BASE: u32 = 0x052D_8000; // SVE2 pair-source form: [21:16]=101101, same field layout
 // SVE COMPACT (pack active) + RBIT (predicated bit-reverse): | size<<22 | Pg<<10 | Zn<<5 | Zd. Both share the
 // SPLICE mask shape (0xFF3F_E000); the [21:16] field distinguishes them (100001 / 100111 / 101100).
 const SVE_COMPACT_BASE: u32 = 0x0521_8000;
@@ -8528,6 +8818,60 @@ fn check_governing_predicate(pg: Arm64PredicateRegister) -> Result<(), EncodeErr
     if pg.as_operand_bits() > 7 {
         return Err(EncodeError::InvalidOperandCombination {
             detail: "the governing predicate Pg must be P0..P7 (a 3-bit field)",
+        });
+    }
+    Ok(())
+}
+
+// Pack the size/index/Zm field of the SVE2 indexed complex ops (SQRDCMLAH/CDOT). `low` names the smaller of the
+// form's two accumulator elements: at `low` the index is 0..3 at [20:19] with Zm in Z0..Z7; one size up sets [22]
+// with index 0..1 at [20] and Zm in Z0..Z15.
+fn check_sve_complex_indexed(
+    size: Arm64VectorElement,
+    low: Arm64VectorElement,
+    zm: Arm64ScalableVectorRegister,
+    index: u8,
+) -> Result<u32, EncodeError> {
+    let zm_bits = zm.as_operand_bits() as u32;
+    if size == low {
+        if index > 3 || zm_bits > 7 {
+            return Err(EncodeError::InvalidOperandCombination {
+                detail: "this indexed complex element takes index 0..3 and Zm in Z0..Z7",
+            });
+        }
+        Ok(((index as u32) << 19) | (zm_bits << 16))
+    } else if size.size_bits() == low.size_bits() + 1 {
+        if index > 1 || zm_bits > 15 {
+            return Err(EncodeError::InvalidOperandCombination {
+                detail: "this indexed complex element takes index 0..1 and Zm in Z0..Z15",
+            });
+        }
+        Ok((1 << 22) | ((index as u32) << 20) | (zm_bits << 16))
+    } else {
+        Err(EncodeError::InvalidOperandCombination {
+            detail: "an indexed complex op takes only its two neighbouring element sizes",
+        })
+    }
+}
+
+// The unpredicated and wide SVE shifts carry only the plain ASR/LSR/LSL rows of the shared op enum.
+fn check_sve_plain_shift(op: Arm64SvePredShiftVectorOp) -> Result<(), EncodeError> {
+    if matches!(
+        op,
+        Arm64SvePredShiftVectorOp::Asrr | Arm64SvePredShiftVectorOp::Lsrr | Arm64SvePredShiftVectorOp::Lslr
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "the reversed shifts (ASRR/LSRR/LSLR) have no unpredicated or wide form",
+        });
+    }
+    Ok(())
+}
+
+// A wide (Zm.d) shift reads .b/.h/.s lanes; a .d element has no wide form.
+fn check_sve_wide_shift_element(size: Arm64VectorElement) -> Result<(), EncodeError> {
+    if matches!(size, Arm64VectorElement::D) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "an SVE wide shift element is .b/.h/.s",
         });
     }
     Ok(())
@@ -10066,6 +10410,11 @@ impl Arm64Instruction {
                 rd,
                 rn,
             } => vec_not_word(*arrangement, rd, rn)?,
+            Self::VecRbit {
+                arrangement,
+                rd,
+                rn,
+            } => vec_rbit_word(*arrangement, rd, rn)?,
             Self::VecShiftImm {
                 op,
                 arrangement,
@@ -10073,6 +10422,13 @@ impl Arm64Instruction {
                 rn,
                 shift,
             } => vec_shift_imm_word(*op, *arrangement, rd, rn, *shift)?,
+            Self::VecFixedConvert {
+                op,
+                arrangement,
+                rd,
+                rn,
+                fbits,
+            } => vec_fixed_convert_word(*op, *arrangement, rd, rn, *fbits)?,
             Self::VecLoadRegister(size, vt, xn, offset_bytes) => {
                 vec_ldst_register_word(true, *size, vt, xn, *offset_bytes)?
             }
@@ -11521,6 +11877,29 @@ impl Arm64Instruction {
                     | ((zn.as_operand_bits() as u32) << 5)
                     | (zt.as_operand_bits() as u32)
             }
+            Self::SveGatherLoadVectorImmFirstFault {
+                msz,
+                element,
+                signed,
+                pg,
+                zt,
+                zn,
+                imm5,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_unsigned_maximum("imm5", *imm5 as u32, 31)?;
+                check_sve_gather_element(*msz, *element, *signed)?;
+                let esz = (matches!(element, Arm64VectorElement::D)) as u32;
+                SVE_GATHER_VEC_IMM_BASE
+                    | SVE_GATHER_VEC_IMM_FF
+                    | (esz << 30)
+                    | (msz.size_bits() << 23)
+                    | ((*imm5 as u32) << 16)
+                    | ((!*signed as u32) << 14)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32)
+            }
             Self::SveScatterStoreVectorImm {
                 msz,
                 element,
@@ -12015,6 +12394,48 @@ impl Arm64Instruction {
                 } else {
                     frame | ((z.as_operand_bits() as u32) << 5) | tile_offs
                 }
+            }
+            Self::SmeMovaQuad {
+                to_vector,
+                vertical,
+                za_tile,
+                slice_reg,
+                pg,
+                z,
+            } => {
+                check_governing_predicate(*pg)?;
+                if *slice_reg > 3 || *za_tile > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the .q SME MOVA tile is ZA0-15 and the slice register is W12..W15",
+                    });
+                }
+                let frame = SME_MOVA_Q_BASE
+                    | ((*to_vector as u32) << 17)
+                    | ((*vertical as u32) << 15)
+                    | ((*slice_reg as u32) << 13)
+                    | ((pg.as_operand_bits() as u32) << 10);
+                if *to_vector {
+                    frame | ((*za_tile as u32) << 5) | (z.as_operand_bits() as u32)
+                } else {
+                    frame | ((z.as_operand_bits() as u32) << 5) | (*za_tile as u32)
+                }
+            }
+            Self::SmeMovazQuad {
+                vertical,
+                za_tile,
+                slice_reg,
+                z,
+            } => {
+                if *slice_reg > 3 || *za_tile > 15 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the .q SME MOVAZ tile is ZA0-15 and the slice register is W12..W15",
+                    });
+                }
+                SME_MOVAZ_Q_BASE
+                    | ((*vertical as u32) << 15)
+                    | ((*slice_reg as u32) << 13)
+                    | ((*za_tile as u32) << 5)
+                    | (z.as_operand_bits() as u32)
             }
             Self::SmeTileLoadStore {
                 store,
@@ -14870,6 +15291,29 @@ impl Arm64Instruction {
                     | (op.op_low() << 4)
                     | (pd.as_operand_bits() as u32)
             }
+            Self::SveIntCompareWide {
+                op,
+                size,
+                pd,
+                pg,
+                zn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                if matches!(size, Arm64VectorElement::D) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE wide compare element is .b/.h/.s (a .d comparison is the same-size form)",
+                    });
+                }
+                SVE_INT_CMP_VEC_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (op.op_high() << 13)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (op.op_low() << 4)
+                    | (pd.as_operand_bits() as u32)
+            }
             Self::SveFpBinaryPredicated {
                 op,
                 size,
@@ -14883,6 +15327,31 @@ impl Arm64Instruction {
                     | (op.opcode() << 16)
                     | ((pg.as_operand_bits() as u32) << 10)
                     | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::SveFpBinaryImmPredicated {
+                op,
+                size,
+                pg,
+                zdn,
+                i1,
+            } => {
+                check_governing_predicate(*pg)?;
+                if op.opcode() > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "only FADD..FMIN (op rows 0..=7) have the FP-immediate predicated form",
+                    });
+                }
+                if matches!(size, Arm64VectorElement::B) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE FP binary immediate takes the .h/.s/.d elements",
+                    });
+                }
+                SVE_FP_PRED_BIN_IMM_BASE
+                    | (size.size_bits() << 22)
+                    | (op.opcode() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((*i1 as u32) << 5)
                     | (zdn.as_operand_bits() as u32)
             }
             Self::SveBfscale { pg, zdn, zm } => {
@@ -14929,6 +15398,27 @@ impl Arm64Instruction {
                     | (size.size_bits() << 22)
                     | ((zm.as_operand_bits() as u32) << 16)
                     | (op.op_high() << 13)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (op.op_low() << 4)
+                    | (pd.as_operand_bits() as u32)
+            }
+            Self::SveFpCompareZero {
+                op,
+                size,
+                pd,
+                pg,
+                zn,
+            } => {
+                check_governing_predicate(*pg)?;
+                if matches!(size, Arm64VectorElement::B) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "an SVE FP compare against zero takes the .h/.s/.d elements",
+                    });
+                }
+                SVE_FP_CMP_ZERO_BASE
+                    | (size.size_bits() << 22)
+                    | (op.op_high() << 16)
                     | ((pg.as_operand_bits() as u32) << 10)
                     | ((zn.as_operand_bits() as u32) << 5)
                     | (op.op_low() << 4)
@@ -15084,6 +15574,31 @@ impl Arm64Instruction {
                     | ((*unsigned as u32) << 10)
                     | ((*pattern as u32) << 5)
                     | (zd.as_operand_bits() as u32)
+            }
+            Self::SveIncDecVector {
+                element,
+                decrement,
+                zdn,
+                pattern,
+                mul,
+            } => {
+                if matches!(element, Arm64VectorElement::B) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "SVE vector inc/dec has no byte-element form",
+                    });
+                }
+                check_unsigned_maximum("pattern", *pattern as u32, 31)?;
+                if !(1..=16).contains(mul) {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the MUL factor of an SVE inc/dec must be 1..=16",
+                    });
+                }
+                SVE_INCDEC_VECTOR_BASE
+                    | (element.size_bits() << 22)
+                    | (((*mul as u32) - 1) << 16)
+                    | ((*decrement as u32) << 10)
+                    | ((*pattern as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
             }
             Self::SveDupScalar { size, zd, rn } => {
                 SVE_DUP_SCALAR_BASE
@@ -15281,6 +15796,63 @@ impl Arm64Instruction {
                     | ((zm.as_operand_bits() as u32) << 5)
                     | (zdn.as_operand_bits() as u32)
             }
+            Self::SveShiftWidePredicated {
+                op,
+                size,
+                pg,
+                zdn,
+                zm,
+            } => {
+                check_governing_predicate(*pg)?;
+                check_sve_plain_shift(*op)?;
+                check_sve_wide_shift_element(*size)?;
+                SVE_SHIFT_WIDE_PRED_BASE
+                    | (size.size_bits() << 22)
+                    | (op.opc() << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::SveShiftImmediateUnpredicated {
+                op,
+                size,
+                zd,
+                zn,
+                shift,
+            } => {
+                check_sve_plain_shift(*op)?;
+                let esize = 8u32 << size.size_bits();
+                let shift = *shift as u32;
+                let v = if matches!(op, Arm64SvePredShiftVectorOp::Lsl) {
+                    check_signed_range("shift", shift as i64, 0, (esize - 1) as i64)?;
+                    esize + shift
+                } else {
+                    check_signed_range("shift", shift as i64, 1, esize as i64)?;
+                    2 * esize - shift
+                };
+                SVE_SHIFT_IMM_UNPRED_BASE
+                    | (((v >> 5) & 0x3) << 22)
+                    | ((v & 0x1F) << 16)
+                    | (op.opc() << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
+            Self::SveShiftWideUnpredicated {
+                op,
+                size,
+                zd,
+                zn,
+                zm,
+            } => {
+                check_sve_plain_shift(*op)?;
+                check_sve_wide_shift_element(*size)?;
+                SVE_SHIFT_WIDE_UNPRED_BASE
+                    | (size.size_bits() << 22)
+                    | ((zm.as_operand_bits() as u32) << 16)
+                    | (op.opc() << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
             Self::SveFillSpillVector {
                 store,
                 zt,
@@ -15427,6 +15999,20 @@ impl Arm64Instruction {
                     | ((zn.as_operand_bits() as u32) << 5)
                     | (zd.as_operand_bits() as u32)
             }
+            Self::SvePredPermute {
+                op,
+                size,
+                pd,
+                pn,
+                pm,
+            } => {
+                SVE_PRED_PERMUTE_BASE
+                    | (size.size_bits() << 22)
+                    | ((pm.as_operand_bits() as u32) << 16)
+                    | (op.sve_opcode() << 10)
+                    | ((pn.as_operand_bits() as u32) << 5)
+                    | (pd.as_operand_bits() as u32)
+            }
             Self::SveFpBinaryUnpredicated {
                 op,
                 size,
@@ -15487,6 +16073,12 @@ impl Arm64Instruction {
                     | ((pg.as_operand_bits() as u32) << 16)
                     | ((*imm8 as u32) << 5)
                     | (zd.as_operand_bits() as u32)
+            }
+            Self::SvePredReverse { size, pd, pn } => {
+                SVE_PRED_REV_BASE
+                    | (size.size_bits() << 22)
+                    | ((pn.as_operand_bits() as u32) << 5)
+                    | (pd.as_operand_bits() as u32)
             }
             Self::SveReverseElements { size, zd, zn } => {
                 SVE_REV_BASE
@@ -15599,6 +16191,12 @@ impl Arm64Instruction {
                 SVE_INSR_BASE
                     | (size.size_bits() << 22)
                     | ((rn.as_operand_bits() as u32) << 5)
+                    | (zdn.as_operand_bits() as u32)
+            }
+            Self::SveInsrSimd { size, zdn, vm } => {
+                SVE_INSR_SIMD_BASE
+                    | (size.size_bits() << 22)
+                    | ((vm.as_operand_bits() as u32) << 5)
                     | (zdn.as_operand_bits() as u32)
             }
             Self::SveExtractLast {
@@ -16065,6 +16663,54 @@ impl Arm64Instruction {
                     SVE_STRUCTQ_LD_SCALAR_BASE | (cm1 << 23) | common
                 }
             }
+            Self::SveContiguousQuadwordImm {
+                store,
+                doubleword,
+                pg,
+                zt,
+                rn,
+                imm,
+            } => {
+                check_governing_predicate(*pg)?;
+                if *imm < -8 || *imm > 7 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SVE contiguous-quadword immediate is -8..=7 (times VL)",
+                    });
+                }
+                let common = (((*imm as u32) & 0xF) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32);
+                if *store {
+                    SVE_CONTIGQ_ST_IMM_BASE | if *doubleword { SVE_CONTIGQ_ST_D } else { 0 } | common
+                } else {
+                    SVE_CONTIGQ_LD_IMM_BASE | if *doubleword { SVE_CONTIGQ_LD_D } else { 0 } | common
+                }
+            }
+            Self::SveContiguousQuadwordScalar {
+                store,
+                doubleword,
+                pg,
+                zt,
+                rn,
+                rm,
+            } => {
+                check_governing_predicate(*pg)?;
+                if rm.as_operand_bits() == 31 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SVE scalar+scalar index Xm cannot be XZR (use the scalar+immediate form)",
+                    });
+                }
+                let common = ((rm.as_operand_bits() as u32) << 16)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((rn.as_operand_bits() as u32) << 5)
+                    | (zt.as_operand_bits() as u32);
+                if *store {
+                    SVE_CONTIGQ_ST_SCALAR_BASE | if *doubleword { SVE_CONTIGQ_ST_D } else { 0 } | common
+                } else {
+                    SVE_CONTIGQ_LD_SCALAR_BASE | if *doubleword { SVE_CONTIGQ_LD_D } else { 0 } | common
+                }
+            }
             Self::SvePredVectorMove {
                 to_vector,
                 size,
@@ -16134,6 +16780,31 @@ impl Arm64Instruction {
                     });
                 }
                 SVE2_AES2_MULTIVEC_BASE
+                    | ((*decrypt as u32) << 10)
+                    | ((*four as u32) << 18)
+                    | ((*index as u32) << 19)
+                    | ((zm.as_operand_bits() as u32) << 5)
+                    | (zdn_base.as_operand_bits() as u32)
+            }
+            Self::SveAes2MultiVecPlain {
+                decrypt,
+                four,
+                zdn_base,
+                zm,
+                index,
+            } => {
+                if zm.as_operand_bits() > 7 || *index > 3 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SVE AES2 multiplier is Z0..Z7 and the index is 0..=3",
+                    });
+                }
+                let align = if *four { 0b11 } else { 0b1 };
+                if zdn_base.as_operand_bits() & align != 0 {
+                    return Err(EncodeError::InvalidOperandCombination {
+                        detail: "the SVE AES2 destination list base must be even (vgx2) or a multiple of 4 (vgx4)",
+                    });
+                }
+                SVE2_AES2_MULTIVEC_PLAIN_BASE
                     | ((*decrypt as u32) << 10)
                     | ((*four as u32) << 18)
                     | ((*index as u32) << 19)
@@ -17035,6 +17706,38 @@ impl Arm64Instruction {
                     | ((zn.as_operand_bits() as u32) << 5)
                     | (zda.as_operand_bits() as u32)
             }
+            Self::Sve2ComplexMulAddIndexed {
+                size,
+                rotation,
+                zda,
+                zn,
+                zm,
+                index,
+            } => {
+                let size_index_zm =
+                    check_sve_complex_indexed(*size, Arm64VectorElement::H, *zm, *index)?;
+                SVE_SQRDCMLAH_INDEXED_BASE
+                    | size_index_zm
+                    | (rotation.code() << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
+            Self::Sve2ComplexDotIndexed {
+                size,
+                rotation,
+                zda,
+                zn,
+                zm,
+                index,
+            } => {
+                let size_index_zm =
+                    check_sve_complex_indexed(*size, Arm64VectorElement::S, *zm, *index)?;
+                SVE_CDOT_INDEXED_BASE
+                    | size_index_zm
+                    | (rotation.code() << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zda.as_operand_bits() as u32)
+            }
             Self::SveFpComplexAdd {
                 size,
                 rotation,
@@ -17146,6 +17849,14 @@ impl Arm64Instruction {
                     | ((zm.as_operand_bits() as u32) << 5)
                     | (zdn.as_operand_bits() as u32)
             }
+            Self::SveExtConstructive { zd, zn, imm8 } => {
+                let imm = *imm8 as u32;
+                SVE_EXT_CONSTRUCTIVE_BASE
+                    | ((imm >> 3) << 16)
+                    | ((imm & 0x7) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
+            }
             Self::SveSplice { size, pg, zdn, zm } => {
                 check_governing_predicate(*pg)?;
                 SVE_SPLICE_BASE
@@ -17153,6 +17864,14 @@ impl Arm64Instruction {
                     | ((pg.as_operand_bits() as u32) << 10)
                     | ((zm.as_operand_bits() as u32) << 5)
                     | (zdn.as_operand_bits() as u32)
+            }
+            Self::SveSpliceConstructive { size, pg, zd, zn } => {
+                check_governing_predicate(*pg)?;
+                SVE_SPLICE_CONSTRUCTIVE_BASE
+                    | (size.size_bits() << 22)
+                    | ((pg.as_operand_bits() as u32) << 10)
+                    | ((zn.as_operand_bits() as u32) << 5)
+                    | (zd.as_operand_bits() as u32)
             }
             Self::SveCompact { size, pg, zd, zn } => {
                 check_governing_predicate(*pg)?;
@@ -19038,17 +19757,21 @@ impl Arm64Instruction {
             let dtype = (word >> 21) & 0xF;
             let msize = Arm64VectorElement::from_size_bits(dtype >> 2);
             let esize = Arm64VectorElement::from_size_bits(dtype & 0b11);
-            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
-            let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
-            let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
-            return Ok(Some(Self::SveContiguousStore {
-                msize,
-                esize,
-                pg,
-                zt,
-                rn,
-                imm4: sign_extend((word >> 16) & 0xF, 4) as i8,
-            }));
+            // esize >= msize is required for a real store; the dtype values where esize < msize belong to the
+            // SVE2p1 128-bit contiguous ST1W/ST1D -- reject so they fall through to that decode.
+            if esize.size_bits() >= msize.size_bits() {
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let rn = Arm64GeneralPurposeRegister::from_operand_bits_sp(reg_field(word, 5));
+                return Ok(Some(Self::SveContiguousStore {
+                    msize,
+                    esize,
+                    pg,
+                    zt,
+                    rn,
+                    imm4: sign_extend((word >> 16) & 0xF, 4) as i8,
+                }));
+            }
         }
         // SVE contiguous load/store, scalar base + scalar index ([Xn, Xm, LSL #log2(access)]). Rm==31 (XZR) is the
         // reserved "use scalar+imm" encoding and falls through.
@@ -19117,7 +19840,8 @@ impl Arm64Instruction {
                 rm,
             }));
         }
-        if word & SVE_LD1RQ_MASK == SVE_LD1RQ_IMM_BASE {
+        // The imm form's imm4 stops at [19:16] -- bit 20 set there is the SVE2p1 128-bit contiguous LD1W/LD1D space.
+        if word & (SVE_LD1RQ_MASK | 0x0010_0000) == SVE_LD1RQ_IMM_BASE {
             let size = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
             let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
             let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
@@ -19145,7 +19869,7 @@ impl Arm64Instruction {
                 rm,
             }));
         }
-        if word & SVE_LD1RQ_MASK == SVE_LD1RO_IMM_BASE {
+        if word & (SVE_LD1RQ_MASK | 0x0010_0000) == SVE_LD1RO_IMM_BASE {
             let size = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
             let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
             let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
@@ -19380,6 +20104,30 @@ impl Arm64Instruction {
                 }));
             }
         }
+        // The first-fault (LDFF1) twin of the gather above -- identical fields with bit13 set.
+        if word & SVE_GATHER_VEC_IMM_MASK == SVE_GATHER_VEC_IMM_BASE | SVE_GATHER_VEC_IMM_FF {
+            let element = if (word >> 30) & 1 == 1 {
+                Arm64VectorElement::D
+            } else {
+                Arm64VectorElement::S
+            };
+            let msz = Arm64VectorElement::from_size_bits((word >> 23) & 0b11);
+            let signed = (word >> 14) & 1 == 0;
+            if check_sve_gather_element(msz, element, signed).is_ok() {
+                let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+                let zt = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                return Ok(Some(Self::SveGatherLoadVectorImmFirstFault {
+                    msz,
+                    element,
+                    signed,
+                    pg,
+                    zt,
+                    zn,
+                    imm5: ((word >> 16) & 0x1F) as u8,
+                }));
+            }
+        }
         // SVE scatter store (vector base + immediate). element_s at [21]; only access-size <= element decodes.
         if word & SVE_SCATTER_VEC_IMM_MASK == SVE_SCATTER_VEC_IMM_BASE {
             let element = if (word >> 21) & 1 == 1 {
@@ -19552,6 +20300,26 @@ impl Arm64Instruction {
                 zm,
             }));
         }
+        // SVE integer compare against wide (Zm.d) elements: the op rows the same-size decode cannot match.
+        // A .d element is the same-size space, so it falls through here.
+        if let Some(op) = (word & SVE_INT_CMP_WIDE_MASK == SVE_INT_CMP_VEC_BASE && (word >> 22) & 0b11 != 0b11)
+            .then(|| Arm64SveIntCompareWideOp::from_bits((word >> 13) & 0b111, (word >> 4) & 1))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pd = Arm64PredicateRegister::from_operand_bits(reg_field(word, 0));
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveIntCompareWide {
+                op,
+                size,
+                pd,
+                pg,
+                zn,
+                zm,
+            }));
+        }
         // SVE predicated FP binary (destructive). Same mask value; distinguished by the 0x65.. base + [15:13]=100.
         // SVE BFSCALE (FEAT_SVE_BFSCALE): FSCALE in the BF16 size==00 slot. Checked BEFORE the regular FP pred-bin decode,
         // which would otherwise read size==00 as a bogus `.b` FSCALE.
@@ -19602,6 +20370,23 @@ impl Arm64Instruction {
                 zm,
             }));
         }
+        // SVE FP binary with an immediate constant (predicated): op rows 0..=7 at [18:16]; .b is unallocated.
+        if let Some(op) = (word & SVE_FP_PRED_BIN_IMM_MASK == SVE_FP_PRED_BIN_IMM_BASE
+            && (word >> 22) & 0b11 != 0b00)
+            .then(|| Arm64SveFpPredBinOp::from_opcode((word >> 16) & 0x7))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveFpBinaryImmPredicated {
+                op,
+                size,
+                pg,
+                zdn,
+                i1: (word >> 5) & 1 == 1,
+            }));
+        }
         // SVE FP compare (vectors) -> predicate. Reuses the int-compare mask value; the 0x65.. base + bit14=1 select it.
         if let Some(op) = (word & SVE_INT_CMP_VEC_MASK == SVE_FP_CMP_VEC_BASE)
             .then(|| Arm64SveFpCompareOp::from_bits((word >> 13) & 0b111, (word >> 4) & 1))
@@ -19620,6 +20405,19 @@ impl Arm64Instruction {
                 zn,
                 zm,
             }));
+        }
+        // SVE FP compare against zero -> predicate; the size-00 space and the eq/lt pairs outside the
+        // six modeled ops are unallocated.
+        if let Some(op) = (word & SVE_FP_CMP_ZERO_MASK == SVE_FP_CMP_ZERO_BASE
+            && (word >> 22) & 0b11 != 0)
+            .then(|| Arm64SveFpCmpZeroOp::from_bits((word >> 16) & 0b111, (word >> 4) & 1))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pd = Arm64PredicateRegister::from_operand_bits((word & 0xF) as u8);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveFpCompareZero { op, size, pd, pg, zn }));
         }
         // SVE FADDA (FP strictly-ordered accumulating reduction): pins [31:24]+[21:16]+[15:13]; size/Pg/Zm/Vdn vary.
         if word & 0xFF3F_E000 == SVE_FADDA_BASE {
@@ -19738,9 +20536,10 @@ impl Arm64Instruction {
                 imm6: sign_extend((word >> 5) & 0x3F, 6) as i8,
             }));
         }
-        // SME floating-point outer product (FMOPA/FMOPS/BFMOPA/BFMOPS). precision from [24] (bf16) and [22] (.d).
+        // SME floating-point outer product (FMOPA/FMOPS/BFMOPA/BFMOPS). precision from [24] (bf16 region),
+        // [22] (.d) and [21] (the fp16-widening selector within the [24]=1 region).
         if let Some(precision) = (word & SME_FP_MOP_MASK == SME_FP_MOP_BASE)
-            .then(|| Arm64SmeFpPrecision::from_bits((word >> 24) & 1, (word >> 22) & 1))
+            .then(|| Arm64SmeFpPrecision::from_bits((word >> 24) & 1, (word >> 22) & 1, (word >> 21) & 1))
             .flatten()
         {
             let za_tile = (word & 0x7) as u8;
@@ -19949,6 +20748,34 @@ impl Arm64Instruction {
                 }));
             }
         }
+        // The .q SME MOVA ([16]=1, size pinned to 11): a 4-bit tile, no slice-offset bits.
+        if word & SME_MOVA_Q_MASK == SME_MOVA_Q_BASE {
+            let to_vector = (word >> 17) & 1 == 1;
+            let (za_tile, z_field, spacer_zero) = if to_vector {
+                (((word >> 5) & 0xF) as u8, (word & 0x1F) as u8, (word >> 9) & 1 == 0)
+            } else {
+                ((word & 0xF) as u8, ((word >> 5) & 0x1F) as u8, (word >> 4) & 1 == 0)
+            };
+            if spacer_zero {
+                return Ok(Some(Self::SmeMovaQuad {
+                    to_vector,
+                    vertical: (word >> 15) & 1 == 1,
+                    za_tile,
+                    slice_reg: ((word >> 13) & 0b11) as u8,
+                    pg: Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8),
+                    z: Arm64ScalableVectorRegister::from_operand_bits(z_field),
+                }));
+            }
+        }
+        // The zeroing .q tile-slice read (MOVAZ; the [9]=1, Pg=000 sibling of the .q to-vector frame).
+        if word & SME_MOVAZ_Q_MASK == SME_MOVAZ_Q_BASE {
+            return Ok(Some(Self::SmeMovazQuad {
+                vertical: (word >> 15) & 1 == 1,
+                za_tile: ((word >> 5) & 0xF) as u8,
+                slice_reg: ((word >> 13) & 0b11) as u8,
+                z: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+            }));
+        }
         // SME LD1/ST1 to a ZA tile slice. msz[24:22] (B/H/W/D/Q); the tile:offset field [3:0] splits by size.
         if let Some(size) = (word & SME_TILE_LDST_MASK == SME_TILE_LDST_BASE)
             .then(|| Arm64SmeTileSize::from_msz((word >> 22) & 0b111))
@@ -20108,6 +20935,18 @@ impl Arm64Instruction {
                 decrement: (word >> 11) & 1 == 1,
                 unsigned: (word >> 10) & 1 == 1,
                 zd,
+                pattern: ((word >> 5) & 0x1F) as u8,
+                mul: (((word >> 16) & 0xF) + 1) as u8,
+            }));
+        }
+        // Plain (non-saturating) vector inc/dec; the byte-element space (size 00) is unallocated.
+        if word & SVE_INCDEC_VECTOR_MASK == SVE_INCDEC_VECTOR_BASE && (word >> 22) & 0b11 != 0 {
+            let element = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            return Ok(Some(Self::SveIncDecVector {
+                element,
+                decrement: (word >> 10) & 1 == 1,
+                zdn,
                 pattern: ((word >> 5) & 0x1F) as u8,
                 mul: (((word >> 16) & 0xF) + 1) as u8,
             }));
@@ -20414,6 +21253,16 @@ impl Arm64Instruction {
                 index: ((word >> 19) & 0x3) as u8,
             }));
         }
+        // The plain multi-vector AESE/AESD rounds ([16]=0, no fused mix-columns).
+        if word & SVE2_AES2_MULTIVEC_MASK == SVE2_AES2_MULTIVEC_PLAIN_BASE {
+            return Ok(Some(Self::SveAes2MultiVecPlain {
+                decrypt: (word >> 10) & 1 == 1,
+                four: (word >> 18) & 1 == 1,
+                zdn_base: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                zm: Arm64ScalableVectorRegister::from_operand_bits(((word >> 5) & 0x7) as u8),
+                index: ((word >> 19) & 0x3) as u8,
+            }));
+        }
         // FEAT_FPRCVT scalar convert FP <-> int-in-FP-register. opcode-validity keeps it off the regular FP<->GP converts.
         if word & FPRCVT_MASK == FPRCVT_BASE
             && let Some(op) = Arm64FprcvtOp::from_opcode((word >> 16) & 0x3F)
@@ -20538,6 +21387,46 @@ impl Arm64Instruction {
                 rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(((word >> 5) & 0x1F) as u8),
                 rm: Arm64GeneralPurposeRegister::from_operand_bits(((word >> 16) & 0x1F) as u8),
             }));
+        }
+        // SVE2.1 128-bit-element contiguous LD1W/LD1D/ST1W/ST1D {Zt.Q}. The store bases pin [23:22] per access
+        // (01/10 there belong to the byte/half contiguous stores and fall through).
+        let contigq = |store: bool, doubleword: bool, imm_form: bool| {
+            Some(if imm_form {
+                Self::SveContiguousQuadwordImm {
+                    store,
+                    doubleword,
+                    pg: Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0x7) as u8),
+                    zt: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                    rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(((word >> 5) & 0x1F) as u8),
+                    imm: sign_extend((word >> 16) & 0xF, 4) as i8,
+                }
+            } else {
+                Self::SveContiguousQuadwordScalar {
+                    store,
+                    doubleword,
+                    pg: Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0x7) as u8),
+                    zt: Arm64ScalableVectorRegister::from_operand_bits((word & 0x1F) as u8),
+                    rn: Arm64GeneralPurposeRegister::from_operand_bits_sp(((word >> 5) & 0x1F) as u8),
+                    rm: Arm64GeneralPurposeRegister::from_operand_bits(((word >> 16) & 0x1F) as u8),
+                }
+            })
+        };
+        if word & SVE_CONTIGQ_LD_IMM_MASK == SVE_CONTIGQ_LD_IMM_BASE {
+            return Ok(contigq(false, word & SVE_CONTIGQ_LD_D != 0, true));
+        }
+        if word & SVE_CONTIGQ_LD_SCALAR_MASK == SVE_CONTIGQ_LD_SCALAR_BASE && reg_field(word, 16) != 31 {
+            return Ok(contigq(false, word & SVE_CONTIGQ_LD_D != 0, false));
+        }
+        if word & SVE_CONTIGQ_ST_IMM_MASK == SVE_CONTIGQ_ST_IMM_BASE
+            || word & SVE_CONTIGQ_ST_IMM_MASK == SVE_CONTIGQ_ST_IMM_BASE | SVE_CONTIGQ_ST_D
+        {
+            return Ok(contigq(true, word & SVE_CONTIGQ_ST_D == SVE_CONTIGQ_ST_D, true));
+        }
+        if (word & SVE_CONTIGQ_ST_SCALAR_MASK == SVE_CONTIGQ_ST_SCALAR_BASE
+            || word & SVE_CONTIGQ_ST_SCALAR_MASK == SVE_CONTIGQ_ST_SCALAR_BASE | SVE_CONTIGQ_ST_D)
+            && reg_field(word, 16) != 31
+        {
+            return Ok(contigq(true, word & SVE_CONTIGQ_ST_D == SVE_CONTIGQ_ST_D, false));
         }
         // SVE2.1 quadword gather LD1Q / scatter ST1Q (vector .d base + optional scalar offset).
         if word & SVE_LDST1Q_MASK == SVE_LD1Q_BASE || word & SVE_LDST1Q_MASK == SVE_ST1Q_BASE {
@@ -20692,6 +21581,9 @@ impl Arm64Instruction {
         } else if word & SVE_INT_MUL_INDEXED_MASK == (SVE_INT_INDEXED_BASE | 0xF000) {
             // SQDMULH (indexed): [15:10] = 111100.
             Some(Arm64SveIntIndexedOp::Sqdmulh)
+        } else if word & SVE_INT_MUL_INDEXED_MASK == (SVE_INT_INDEXED_BASE | 0xF400) {
+            // SQRDMULH (indexed): [15:10] = 111101.
+            Some(Arm64SveIntIndexedOp::Sqrdmulh)
         } else if word & SVE_INT_MLA_INDEXED_MASK == (SVE_INT_INDEXED_BASE | 0x0800) {
             // MLA/MLS: [15:11] = 00001, subtract bit at [10].
             Arm64SveIntIndexedOp::from_opcode((word >> 10) & 0b111111)
@@ -21314,6 +22206,54 @@ impl Arm64Instruction {
                 index,
             }));
         }
+        // The SVE2 indexed SQRDCMLAH ([15:12]=0111) and indexed CDOT ([15:12]=0100) share the scheme; CDOT's
+        // size bit selects the .s/.d ACCUMULATOR instead of .h/.s.
+        let complex2_indexed = if word & SVE_COMPLEX_INDEXED_MASK == SVE_SQRDCMLAH_INDEXED_BASE {
+            Some(false)
+        } else if word & SVE_COMPLEX_INDEXED_MASK == SVE_CDOT_INDEXED_BASE {
+            Some(true)
+        } else {
+            None
+        };
+        if let Some(dot) = complex2_indexed {
+            let low = if dot {
+                Arm64VectorElement::S
+            } else {
+                Arm64VectorElement::H
+            };
+            let (size, index, zm_bits) = if (word >> 22) & 1 == 0 {
+                (low, ((word >> 19) & 0b11) as u8, ((word >> 16) & 0b111) as u8)
+            } else {
+                (
+                    Arm64VectorElement::from_size_bits(low.size_bits() + 1),
+                    ((word >> 20) & 1) as u8,
+                    ((word >> 16) & 0b1111) as u8,
+                )
+            };
+            let rotation = Arm64ComplexRotation::from_code((word >> 10) & 0b11);
+            let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(zm_bits);
+            return Ok(Some(if dot {
+                Self::Sve2ComplexDotIndexed {
+                    size,
+                    rotation,
+                    zda,
+                    zn,
+                    zm,
+                    index,
+                }
+            } else {
+                Self::Sve2ComplexMulAddIndexed {
+                    size,
+                    rotation,
+                    zda,
+                    zn,
+                    zm,
+                    index,
+                }
+            }));
+        }
         // SVE predicate break (BRKA/BRKB, BRKN propagate, BRKPA/BRKPB pair). All P0-P15 (4-bit predicate fields).
         if word & SVE_BRK_UNARY_MASK == SVE_BRK_UNARY_BASE {
             let pd = Arm64PredicateRegister::from_operand_bits(reg_field(word, 0));
@@ -21664,7 +22604,7 @@ impl Arm64Instruction {
         // SVE predicated shift by immediate. The element size is the position of the highest set bit of the 7-bit
         // tszh:tszl:imm3 value (minus 3); the shift is recovered from that and the op direction.
         if let Some(op) = (word & SVE_SHIFT_IMM_MASK == SVE_SHIFT_IMM_BASE)
-            .then(|| Arm64SveShiftImmOp::from_opc((word >> 16) & 0x7))
+            .then(|| Arm64SveShiftImmOp::from_opc((word >> 16) & 0xF))
             .flatten()
         {
             let v = (((word >> 22) & 0x3) << 5) | (((word >> 8) & 0x3) << 3) | ((word >> 5) & 0x7); // tszh:tszl:imm3
@@ -21703,6 +22643,68 @@ impl Arm64Instruction {
                 size,
                 pg,
                 zdn,
+                zm,
+            }));
+        }
+        // SVE predicated shift by wide (Zm.d) elements: [21:19]=011; only the plain op rows and .b/.h/.s decode.
+        if let Some(op) = (word & SVE_SHIFT_VEC_MASK == SVE_SHIFT_WIDE_PRED_BASE && (word >> 22) & 0b11 != 0b11)
+            .then(|| Arm64SvePredShiftVectorOp::from_opc((word >> 16) & 0x7))
+            .flatten()
+            .filter(|op| check_sve_plain_shift(*op).is_ok())
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveShiftWidePredicated {
+                op,
+                size,
+                pg,
+                zdn,
+                zm,
+            }));
+        }
+        // SVE unpredicated shift by immediate ([15:12]=1001; opc 10 is unallocated, v < 8 has no element size).
+        if let Some(op) = (word & SVE_SHIFT_UNPRED_MASK == SVE_SHIFT_IMM_UNPRED_BASE)
+            .then(|| Arm64SvePredShiftVectorOp::from_opc((word >> 10) & 0b11))
+            .flatten()
+        {
+            let v = (((word >> 22) & 0x3) << 5) | ((word >> 16) & 0x1F); // tszh:tszl:imm3, flat
+            if v >= 8 {
+                let size_bits = (31 - v.leading_zeros()) - 3;
+                let esize = 8u32 << size_bits;
+                let shift = if matches!(op, Arm64SvePredShiftVectorOp::Lsl) {
+                    v - esize
+                } else {
+                    2 * esize - v
+                };
+                let size = Arm64VectorElement::from_size_bits(size_bits);
+                let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+                let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+                return Ok(Some(Self::SveShiftImmediateUnpredicated {
+                    op,
+                    size,
+                    zd,
+                    zn,
+                    shift: shift as u8,
+                }));
+            }
+        }
+        // SVE unpredicated shift by wide (Zm.d) elements ([15:12]=1000; .b/.h/.s only).
+        if let Some(op) = (word & SVE_SHIFT_UNPRED_MASK == SVE_SHIFT_WIDE_UNPRED_BASE
+            && (word >> 22) & 0b11 != 0b11)
+            .then(|| Arm64SvePredShiftVectorOp::from_opc((word >> 10) & 0b11))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
+            return Ok(Some(Self::SveShiftWideUnpredicated {
+                op,
+                size,
+                zd,
+                zn,
                 zm,
             }));
         }
@@ -21895,6 +22897,23 @@ impl Arm64Instruction {
                 zm,
             }));
         }
+        // SVE permute predicates (ZIP/UZP/TRN over P registers).
+        if let Some(op) = (word & SVE_PRED_PERMUTE_MASK == SVE_PRED_PERMUTE_BASE)
+            .then(|| Arm64VectorPermuteOp::from_sve_opcode((word >> 10) & 0x7))
+            .flatten()
+        {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pd = Arm64PredicateRegister::from_operand_bits((word & 0xF) as u8);
+            let pn = Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8);
+            let pm = Arm64PredicateRegister::from_operand_bits(((word >> 16) & 0xF) as u8);
+            return Ok(Some(Self::SvePredPermute {
+                op,
+                size,
+                pd,
+                pn,
+                pm,
+            }));
+        }
         // SVE unpredicated FP binary ([15:13]=000, bit21=0; the FMA group is bit21=1).
         if let Some(op) = (word & SVE_INT_BIN_UNPRED_MASK == SVE_FP_BIN_UNPRED_BASE)
             .then(|| Arm64SveFpBinUnpredOp::from_opcode((word >> 10) & 0x7))
@@ -21956,6 +22975,12 @@ impl Arm64Instruction {
             let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
             let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
             return Ok(Some(Self::SveReverseElements { size, zd, zn }));
+        }
+        if word & SVE_PRED_REV_MASK == SVE_PRED_REV_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pd = Arm64PredicateRegister::from_operand_bits((word & 0xF) as u8);
+            let pn = Arm64PredicateRegister::from_operand_bits(((word >> 5) & 0xF) as u8);
+            return Ok(Some(Self::SvePredReverse { size, pd, pn }));
         }
         if let Some(width) = (word & SVE_REVB_MASK == SVE_REVB_BASE)
             .then(|| Arm64SveReverseWidth::from_opc((word >> 16) & 0b11))
@@ -22094,22 +23119,20 @@ impl Arm64Instruction {
                 return Ok(Some(Self::Sve2FpLogbZeroing { size, pg, zd, zn }));
             }
         }
-        // SVE2 FP16/BF16 widening multiply-add long (FMLALB/T, FMLSLB/T, BFMLALB/T). .s from .h.
+        // SVE2 FP16/BF16 widening multiply-add long (FMLALB/T, FMLSLB/T, BFMLALB/T, and the FEAT_SVE2p1
+        // BFMLSLB/T at bf16+subtract). .s from .h.
         if word & SVE2_FMLAL_MASK == SVE2_FMLAL_BASE {
             let zda = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
             let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
             let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 16));
-            // BF16 forms have no subtract; a bf16+subtract bit pattern is unallocated here.
-            if !((word >> 22) & 1 == 1 && (word >> 13) & 1 == 1) {
-                return Ok(Some(Self::Sve2FpWidenMulAddLong {
-                    bf16: (word >> 22) & 1 == 1,
-                    subtract: (word >> 13) & 1 == 1,
-                    top: (word >> 10) & 1 == 1,
-                    zda,
-                    zn,
-                    zm,
-                }));
-            }
+            return Ok(Some(Self::Sve2FpWidenMulAddLong {
+                bf16: (word >> 22) & 1 == 1,
+                subtract: (word >> 13) & 1 == 1,
+                top: (word >> 10) & 1 == 1,
+                zda,
+                zn,
+                zm,
+            }));
         }
         // SVE2 FP16/BF16 widening multiply-add long by indexed element. 3-bit index split i2[20]:i1[19]:i0[11].
         if word & SVE2_FMLAL_INDEXED_MASK == SVE2_FMLAL_INDEXED_BASE {
@@ -22315,6 +23338,12 @@ impl Arm64Instruction {
             let rn = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 5));
             return Ok(Some(Self::SveInsr { size, zdn, rn }));
         }
+        if word & SVE_INSR_MASK == SVE_INSR_SIMD_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let vm = Arm64FloatRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveInsrSimd { size, zdn, vm }));
+        }
         if word & SVE_LAST_GP_MASK == SVE_LAST_GP_BASE {
             let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
             let rd = Arm64GeneralPurposeRegister::from_operand_bits(reg_field(word, 0));
@@ -22388,12 +23417,27 @@ impl Arm64Instruction {
             let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
             return Ok(Some(Self::SveExt { zdn, zm, imm8 }));
         }
+        // SVE2 constructive EXT ([23:21]=011 beside the destructive 001; same field layout over a pair source).
+        if word & SVE_EXT_MASK == SVE_EXT_CONSTRUCTIVE_BASE {
+            let imm8 = ((((word >> 16) & 0x1F) << 3) | ((word >> 10) & 0x7)) as u8;
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveExtConstructive { zd, zn, imm8 }));
+        }
         if word & SVE_SPLICE_MASK == SVE_SPLICE_BASE {
             let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
             let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
             let zdn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
             let zm = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
             return Ok(Some(Self::SveSplice { size, pg, zdn, zm }));
+        }
+        // SVE2 constructive SPLICE ([21:16]=101101 beside the destructive 101100).
+        if word & SVE_SPLICE_MASK == SVE_SPLICE_CONSTRUCTIVE_BASE {
+            let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
+            let pg = Arm64PredicateRegister::from_operand_bits(((word >> 10) & 0b111) as u8);
+            let zd = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 0));
+            let zn = Arm64ScalableVectorRegister::from_operand_bits(reg_field(word, 5));
+            return Ok(Some(Self::SveSpliceConstructive { size, pg, zd, zn }));
         }
         if word & SVE_SPLICE_MASK == SVE_COMPACT_BASE {
             let size = Arm64VectorElement::from_size_bits((word >> 22) & 0b11);
@@ -25363,7 +26407,7 @@ impl Arm64Instruction {
             return Ok(Some(Self::VecBfcvtn { top, rd, rn }));
         }
         // Advanced SIMD two-register-misc NOT (U=1, opcode 00101, size 00 -- byte-wise `.8b`/`.16b`). The size
-        // must be 00: the same opcode with size 01 is RBIT (not modeled), so the mask pins the size.
+        // must be 00: the same opcode with size 01 is RBIT (decoded just below), so the mask pins the size.
         if word & VEC_NOT_MASK == 0x2E20_5800 {
             let arrangement = if (word >> 30) & 1 == 1 {
                 Arm64VectorArrangement::B16
@@ -25372,6 +26416,21 @@ impl Arm64Instruction {
             };
             let (rd, rn) = decode_vec_two(word);
             return Ok(Some(Self::VecNot {
+                arrangement,
+                rd,
+                rn,
+            }));
+        }
+        // Advanced SIMD two-register-misc RBIT (U=1, opcode 00101, size 01 -- NOT's opcode row, byte-wise
+        // `.8b`/`.16b`).
+        if word & VEC_NOT_MASK == 0x2E60_5800 {
+            let arrangement = if (word >> 30) & 1 == 1 {
+                Arm64VectorArrangement::B16
+            } else {
+                Arm64VectorArrangement::B8
+            };
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::VecRbit {
                 arrangement,
                 rd,
                 rn,
@@ -25519,6 +26578,38 @@ impl Arm64Instruction {
                     shift: shift as u8,
                 }));
             }
+        }
+
+        // Advanced SIMD fixed-point converts (SCVTF/UCVTF/FCVTZS/FCVTZU #fbits): the same shift-by-immediate
+        // mask, opcodes 11100/11111 (disjoint from every shift op). immh 001x = halfword, 01xx = word, 1xxx =
+        // doubleword; immh 0001 (byte) is unallocated and immh 0000 is the modified-immediate group (decoded
+        // earlier). fbits = 2*element_bits - immh:immb.
+        if let Some(op) = Arm64VectorFixedConvertOp::from_base(word & VEC_SHIFT_IMM_MASK) {
+            let immh_immb = (word >> 16) & 0x7F;
+            let immh = immh_immb >> 3;
+            let size = if immh & 0b1000 != 0 {
+                3
+            } else if immh & 0b0100 != 0 {
+                2
+            } else if immh & 0b0010 != 0 {
+                1
+            } else {
+                return Err(DecodeError::InvalidOpcode); // no byte-element fixed-point convert
+            };
+            let arrangement = Arm64VectorArrangement::from_q_and_size((word >> 30) & 1, size);
+            if matches!(arrangement, Arm64VectorArrangement::D1) {
+                return Err(DecodeError::InvalidOpcode); // a 64-bit convert has no .1d (scalar) vector form
+            }
+            let element_bits = 8u32 << size;
+            let fbits = 2 * element_bits - immh_immb;
+            let (rd, rn) = decode_vec_two(word);
+            return Ok(Some(Self::VecFixedConvert {
+                op,
+                arrangement,
+                rd,
+                rn,
+                fbits: fbits as u8,
+            }));
         }
 
         // Advanced SIMD across-lanes reductions (ADDV/SMAXV/.../SADDLV/FMAXV...). Integer ops carry the lane size
@@ -26559,11 +27650,14 @@ impl Arm64Instruction {
             | Self::SveGatherPrefetchVectorImm { .. }
             | Self::SveGatherPrefetchScalarVector { .. }
             | Self::SveGatherLoadVectorImm { .. }
+            | Self::SveGatherLoadVectorImmFirstFault { .. }
             | Self::SveGatherLoadScalarVector { .. }
             | Self::SveScatterStoreVectorImm { .. }
             | Self::SveScatterStoreScalarVector { .. }
             | Self::SveIntCompareVectors { .. }
+            | Self::SveIntCompareWide { .. }
             | Self::SveFpCompareVectors { .. }
+            | Self::SveFpCompareZero { .. }
             | Self::SveFpAddStrictReduction { .. }
             | Self::SveFpTrigMulAdd { .. }
             | Self::SvePredicateUnpack { .. }
@@ -26573,6 +27667,7 @@ impl Arm64Instruction {
             | Self::SveIncDecScalar { .. }
             | Self::SveSaturatingIncDecScalar { .. }
             | Self::SveSaturatingIncDecVector { .. }
+            | Self::SveIncDecVector { .. }
             | Self::SveDupScalar { .. }
             | Self::SveDupImmediate { .. }
             | Self::SveDupIndexed { .. }
@@ -26580,8 +27675,10 @@ impl Arm64Instruction {
             | Self::SveIntUnaryPredicated { .. }
             | Self::SveIntReduction { .. }
             | Self::SveFpReduction { .. }
-            | Self::SveShiftImmediatePredicated { .. }
             | Self::SveShiftVectorPredicated { .. }
+            | Self::SveShiftWidePredicated { .. }
+            | Self::SveShiftImmediateUnpredicated { .. }
+            | Self::SveShiftWideUnpredicated { .. }
             | Self::SvePredicateCountScalar { .. }
             | Self::SvePredicateCountVector { .. }
             | Self::SveFillSpillVector { .. }
@@ -26594,6 +27691,8 @@ impl Arm64Instruction {
             | Self::SveMovprfxUnpredicated { .. }
             | Self::SveMovprfxPredicated { .. }
             | Self::SvePermute { .. }
+            | Self::SvePredPermute { .. }
+            | Self::SvePredReverse { .. }
             | Self::SveFpBinaryUnpredicated { .. }
             | Self::SveCopyImmediate { .. }
             | Self::SveCopyScalar { .. }
@@ -26612,6 +27711,7 @@ impl Arm64Instruction {
             | Self::SvePfirst { .. }
             | Self::SvePnext { .. }
             | Self::SveInsr { .. }
+            | Self::SveInsrSimd { .. }
             | Self::SveExtractLast { .. }
             | Self::SveExtractLastSimd { .. }
             | Self::SveConditionalExtractVector { .. }
@@ -26670,6 +27770,8 @@ impl Arm64Instruction {
             },
 
             Self::Sve2GatherNonTemporalLoad { .. } | Self::Sve2ScatterNonTemporalStore { .. } => Arm64InstructionRequirement::sve2(),
+            Self::SveExtConstructive { .. } | Self::SveSpliceConstructive { .. } => Arm64InstructionRequirement::sve2(),
+            Self::Sve2ComplexMulAddIndexed { .. } | Self::Sve2ComplexDotIndexed { .. } => Arm64InstructionRequirement::sve2(),
 
             Self::SmeStartStop { .. }
             | Self::SmeReadStreamingVectorLength { .. }
@@ -26745,7 +27847,7 @@ impl Arm64Instruction {
             Self::Sme2NarrowConvert { .. } | Self::Sme2NarrowConvertNoN { .. } | Self::Sme2FpCvtNarrow { .. } | Self::Sme2QuadShiftNarrow { .. } | Self::Sme2ShiftNarrowNoN { .. } | Self::Sme2UnpackWiden { .. } | Self::Sme2VectorSelect { .. } => Arm64InstructionRequirement::sme2(),
             Self::Sme2MovaArrayToVec { .. } | Self::Sme2MovaVecToArray { .. } => Arm64InstructionRequirement::sme2(),
             Self::Sme2MovaTileSlice { .. } => Arm64InstructionRequirement::sme2(),
-            Self::Sme2MovazArray { .. } | Self::Sme2MovazTileSingle { .. } | Self::Sme2MovazTileMulti { .. } => Arm64InstructionRequirement::sme2p1(),
+            Self::Sme2MovazArray { .. } | Self::Sme2MovazTileSingle { .. } | Self::Sme2MovazTileMulti { .. } | Self::SmeMovazQuad { .. } => Arm64InstructionRequirement::sme2p1(),
             Self::Sme2MovtTable { .. } => Arm64InstructionRequirement::sme_lutv2(),
             Self::PointerAuthLr(..) => Arm64InstructionRequirement::pauth_lr(),
             #[cfg(feature = "experimental")]
@@ -26771,7 +27873,7 @@ impl Arm64Instruction {
             | Self::SveBf16MulAddIndexed { .. } => Arm64InstructionRequirement::sve_b16b16(),
             Self::PTruePredicateCounter { .. } | Self::CountPredicateCounter { .. } => Arm64InstructionRequirement::sve2p1(),
             Self::PredicateExtractSingle { .. } | Self::PredicateExtractPair { .. } => Arm64InstructionRequirement::sve2p1(),
-            Self::SmeMova { .. } => Arm64InstructionRequirement::sme(),
+            Self::SmeMova { .. } | Self::SmeMovaQuad { .. } => Arm64InstructionRequirement::sme(),
             Self::SmeTileLoadStore { .. } => Arm64InstructionRequirement::sme(),
             Self::SmeZero { .. } => Arm64InstructionRequirement::sme(),
             Self::SmeZeroZt0 => Arm64InstructionRequirement::sme2(),
@@ -26804,9 +27906,10 @@ impl Arm64Instruction {
                 Arm64SveCryptoDestructiveOp::Sm4e => Arm64InstructionRequirement::sve_sm4(),
             },
             Self::Sve2AesMixColumns { .. } => Arm64InstructionRequirement::sve_aes(),
-            Self::SveAes2MultiVec { .. } => Arm64InstructionRequirement::sve_aes2(),
+            Self::SveAes2MultiVec { .. } | Self::SveAes2MultiVecPlain { .. } => Arm64InstructionRequirement::sve_aes2(),
             Self::SvePredVectorMove { .. } | Self::SveQuadwordGatherScatter { .. }
-            | Self::SveStructuredQuadwordImm { .. } | Self::SveStructuredQuadwordScalar { .. } => Arm64InstructionRequirement::sve2p1(),
+            | Self::SveStructuredQuadwordImm { .. } | Self::SveStructuredQuadwordScalar { .. }
+            | Self::SveContiguousQuadwordImm { .. } | Self::SveContiguousQuadwordScalar { .. } => Arm64InstructionRequirement::sve2p1(),
             Self::SveFp8Matmul { half: true, .. } => Arm64InstructionRequirement::f8f16mm(),
             Self::SveFp8Matmul { half: false, .. } => Arm64InstructionRequirement::f8f32mm(),
             Self::Sve2PolyMultiply128 { .. } => Arm64InstructionRequirement::sve_aes(),
@@ -27011,6 +28114,13 @@ impl Arm64Instruction {
                     Arm64InstructionRequirement::advanced_simd()
                 }
             },
+            Self::VecFixedConvert { arrangement, .. } => {
+                if matches!(arrangement, Arm64VectorArrangement::H4 | Arm64VectorArrangement::H8) {
+                    Arm64InstructionRequirement::fp16()
+                } else {
+                    Arm64InstructionRequirement::advanced_simd()
+                }
+            },
             Self::ScalarByElement { op: Arm64ScalarByElementOp::Sqrdmlah | Arm64ScalarByElementOp::Sqrdmlsh, .. } => Arm64InstructionRequirement::rdm(),
             Self::ScalarByElement { .. } => Arm64InstructionRequirement::advanced_simd(),
             Self::VecCrypto3 { op, .. } => crypto_family_requirement(op.family()),
@@ -27035,6 +28145,7 @@ impl Arm64Instruction {
             | Self::VecIntUnary { .. }
             | Self::VecNarrow { .. }
             | Self::VecNot { .. }
+            | Self::VecRbit { .. }
             | Self::VecShiftImm { .. }
             | Self::VecPermute { .. }
             | Self::VecThreeDifferent { .. }
@@ -27077,6 +28188,13 @@ impl Arm64Instruction {
             },
             Self::SveFpBinaryPredicated { op, .. } => if op.is_faminmax() {
                 Arm64InstructionRequirement::faminmax()
+            } else {
+                Arm64InstructionRequirement::sve()
+            },
+            Self::SveFpBinaryImmPredicated { .. } => Arm64InstructionRequirement::sve(),
+            // The saturating/rounding shift-immediate rows are FEAT_SVE2; asr/lsr/lsl/asrd are base SVE.
+            Self::SveShiftImmediatePredicated { op, .. } => if op.is_sve2() {
+                Arm64InstructionRequirement::sve2()
             } else {
                 Arm64InstructionRequirement::sve()
             },
@@ -28098,6 +29216,24 @@ fn vec_not_word(
     Ok(0x2E20_5800 | (arrangement.q_bit() << 30) | vec_two_regs(rd, rn))
 }
 
+// Build a NEON RBIT (bit reverse within each byte) two-register-misc word: 0x2E605800 | (Q<<30) | Vn<<5 | Vd.
+// The same opcode row as NOT, with the size field fixed at 01 -- byte-wise, only the `.8b`/`.16b` arrangements.
+fn vec_rbit_word(
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+) -> Result<u32, EncodeError> {
+    if !matches!(
+        arrangement,
+        Arm64VectorArrangement::B8 | Arm64VectorArrangement::B16
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "NEON RBIT is only valid for the .8b/.16b arrangements",
+        });
+    }
+    Ok(0x2E60_5800 | (arrangement.q_bit() << 30) | vec_two_regs(rd, rn))
+}
+
 // Build a NEON shift-by-immediate word (SHL/SSHR/USHR). `immh:immb` folds element size + shift: left
 // `immh:immb = element_bits + shift` (shift 0..element_bits-1); right `immh:immb = 2*element_bits - shift`
 // (shift 1..element_bits). The `.1d` arrangement is invalid (that is the scalar form).
@@ -28165,6 +29301,35 @@ fn vec_shift_imm_word(
         }
         2 * element_bits - shift
     };
+    Ok(op.base() | (arrangement.q_bit() << 30) | (immh_immb << 16) | vec_two_regs(rd, rn))
+}
+
+// Build a NEON vector fixed-point convert word (SCVTF/UCVTF/FCVTZS/FCVTZU #fbits): the shift-by-immediate
+// class with `immh:immb = 2*element_bits - fbits` (`fbits` 1..element_bits). Half/single/double elements only
+// -- a byte element is unallocated, and the single-lane `.1d` is the scalar form.
+fn vec_fixed_convert_word(
+    op: Arm64VectorFixedConvertOp,
+    arrangement: Arm64VectorArrangement,
+    rd: &Arm64FloatRegister,
+    rn: &Arm64FloatRegister,
+    fbits: u8,
+) -> Result<u32, EncodeError> {
+    if matches!(
+        arrangement,
+        Arm64VectorArrangement::B8 | Arm64VectorArrangement::B16 | Arm64VectorArrangement::D1
+    ) {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "NEON fixed-point converts take the .4h/.8h/.2s/.4s/.2d arrangements (no byte element, no single-lane .1d)",
+        });
+    }
+    let element_bits = 8u32 << arrangement.size_bits(); // 16 / 32 / 64
+    let fbits = fbits as u32;
+    if fbits == 0 || fbits > element_bits {
+        return Err(EncodeError::InvalidOperandCombination {
+            detail: "NEON fixed-point fbits must be 1..element_bits",
+        });
+    }
+    let immh_immb = 2 * element_bits - fbits;
     Ok(op.base() | (arrangement.q_bit() << 30) | (immh_immb << 16) | vec_two_regs(rd, rn))
 }
 

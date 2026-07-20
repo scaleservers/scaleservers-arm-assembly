@@ -98,6 +98,9 @@ pub use arm64_vector_three_different_op::{
 mod arm64_vector_shift_long_narrow_op;
 pub use arm64_vector_shift_long_narrow_op::Arm64VectorShiftLongNarrowOp;
 
+mod arm64_vector_fixed_convert_op;
+pub use arm64_vector_fixed_convert_op::Arm64VectorFixedConvertOp;
+
 mod arm64_vector_narrow_op;
 pub use arm64_vector_narrow_op::Arm64VectorNarrowOp;
 
@@ -246,6 +249,9 @@ pub use arm64_sve_load_type::Arm64SveContiguousLoadType;
 
 mod arm64_sve_int_compare_op;
 pub use arm64_sve_int_compare_op::Arm64SveIntCompareOp;
+
+mod arm64_sve_int_compare_wide_op;
+pub use arm64_sve_int_compare_wide_op::Arm64SveIntCompareWideOp;
 
 mod arm64_sve_fp_pred_bin_op;
 pub use arm64_sve_fp_pred_bin_op::Arm64SveFpPredBinOp;
@@ -456,6 +462,9 @@ pub use arm64_sve_narrow_convert_op::Arm64SveNarrowConvertOp;
 
 mod arm64_sve_shift_narrow_op;
 pub use arm64_sve_shift_narrow_op::Arm64SveShiftNarrowOp;
+
+mod arm64_sve_fp_cmp_zero_op;
+pub use arm64_sve_fp_cmp_zero_op::Arm64SveFpCmpZeroOp;
 
 mod arm64_sme2_fp_cvt_narrow_op;
 pub use arm64_sme2_fp_cvt_narrow_op::Arm64Sme2FpCvtNarrowOp;

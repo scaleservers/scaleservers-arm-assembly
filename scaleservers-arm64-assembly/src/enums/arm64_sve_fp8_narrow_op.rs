@@ -1,8 +1,8 @@
 // Copyright (c) Scaleservers LLC
 
 /// SVE FP8 narrowing convert op (FEAT_FP8): narrow a two-vector source list to a single `Zd.b` of 8-bit
-/// floating-point lanes. `FCVTN`/`BFCVTN` read a `.h` pair (FP16/BFloat16 -> FP8); `FCVTNB` reads a `.s` pair.
-/// The op is the `[11:10]` field.
+/// floating-point lanes. `FCVTN`/`BFCVTN` read a `.h` pair (FP16/BFloat16 -> FP8); `FCVTNB`/`FCVTNT` read a
+/// `.s` pair into the even/odd (bottom/top) destination bytes. The op is the `[11:10]` field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Arm64SveFp8NarrowOp {
     /// `FCVTN Zd.b, {Zn.h-Zn+1.h}` -- FP16 -> FP8. `[11:10] = 00`.
@@ -11,6 +11,8 @@ pub enum Arm64SveFp8NarrowOp {
     Fcvtnb,
     /// `BFCVTN Zd.b, {Zn.h-Zn+1.h}` -- BFloat16 -> FP8. `[11:10] = 10`.
     Bfcvtn,
+    /// `FCVTNT Zd.b, {Zn.s-Zn+1.s}` -- FP32 -> FP8 (top). `[11:10] = 11`.
+    Fcvtnt,
 }
 
 impl Arm64SveFp8NarrowOp {
@@ -20,16 +22,17 @@ impl Arm64SveFp8NarrowOp {
             Self::Fcvtn => 0b00,
             Self::Fcvtnb => 0b01,
             Self::Bfcvtn => 0b10,
+            Self::Fcvtnt => 0b11,
         }
     }
 
-    /// Recover the op from the `[11:10]` field, or `None` for the unallocated `11`.
+    /// Recover the op from the `[11:10]` field (all four values are allocated).
     pub fn from_op_bits(bits: u32) -> Option<Self> {
         Some(match bits & 0b11 {
             0b00 => Self::Fcvtn,
             0b01 => Self::Fcvtnb,
             0b10 => Self::Bfcvtn,
-            _ => return None,
+            _ => Self::Fcvtnt,
         })
     }
 
@@ -39,17 +42,18 @@ impl Arm64SveFp8NarrowOp {
             Self::Fcvtn => "fcvtn",
             Self::Fcvtnb => "fcvtnb",
             Self::Bfcvtn => "bfcvtn",
+            Self::Fcvtnt => "fcvtnt",
         }
     }
 
-    /// The source-list element letter: `.s` for `FCVTNB`, `.h` for `FCVTN`/`BFCVTN`.
+    /// The source-list element letter: `.s` for `FCVTNB`/`FCVTNT`, `.h` for `FCVTN`/`BFCVTN`.
     pub fn source_letter(self) -> &'static str {
         match self {
-            Self::Fcvtnb => "s",
+            Self::Fcvtnb | Self::Fcvtnt => "s",
             Self::Fcvtn | Self::Bfcvtn => "h",
         }
     }
 
-    /// All three ops, for exhaustive round-trip testing.
-    pub const ALL: [Self; 3] = [Self::Fcvtn, Self::Fcvtnb, Self::Bfcvtn];
+    /// All four ops, for exhaustive round-trip testing.
+    pub const ALL: [Self; 4] = [Self::Fcvtn, Self::Fcvtnb, Self::Bfcvtn, Self::Fcvtnt];
 }
