@@ -40,6 +40,12 @@ pub use float_immediate::{
 mod bitmask_immediate;
 pub use bitmask_immediate::{decode_bitmask, encode_bitmask};
 
+// Assembly-string emission (model -> UAL text). Adds the `to_assembly_string` inherent method to
+// `Arm64Instruction`; a disassembler renders through this layer. `ArmAssemblySyntax` selects LLVM- or
+// GNU-flavored formatting.
+pub mod emit;
+pub use emit::ArmAssemblySyntax;
+
 // Target-architecture gating: restrict the emittable set to a processor profile. AArch64 is a single linear
 // lineage, so the gate is a rank compare on the ISA version plus a feature-set check.
 pub mod targets;
